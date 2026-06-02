@@ -211,6 +211,15 @@ GOOGLE_CLIENT_SECRET="your-client-secret"
 
 Redis is required for the OAuth code-exchange callback. This stack includes Redis, so OAuth works out of the box once credentials are set.
 
+For Chrome extension or native-app flows (PKCE), also uncomment the optional block in `auth.env`:
+
+```ini
+GOOGLE_OAUTH_REDIRECT_URI=https://yourdomain.com/user/google-auth/oauth-callback/
+OAUTH_ALLOWED_REDIRECT_SCHEMES=chrome-extension://
+# OAUTH_ALLOWED_REDIRECT_PREFIXES=chrome-extension://your-extension-id.../
+CORS_ALLOWED_ORIGIN_SCHEMES=chrome-extension://
+```
+
 ---
 
 ## Volumes
@@ -296,7 +305,7 @@ Also update the `Host` rules in the production config to match your actual FQDN.
 
 ## Troubleshooting
 
-**Services fail to start immediately** — `auth_user_service` waits for MariaDB to pass its health check. MariaDB can take 20–30 s on first boot. Watch the logs with `docker compose logs -f`.
+**Services fail to start immediately** — `auth_user_service` waits for MariaDB to pass its health check (MariaDB can take 20–30 s on first boot), then `fastapi_service` waits for `auth_user_service` to pass its own health check. Watch the logs with `docker compose logs -f`.
 
 **`changethis` rejection on startup** — the service refuses to start if placeholder secrets are detected. Replace all `changethis` values in `auth.env`.
 

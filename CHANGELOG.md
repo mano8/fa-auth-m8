@@ -6,6 +6,69 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — SecureAndAlign branch
 
+### Added
+
+- **mypy type-checking in CI** — new `typecheck` job in `.github/workflows/CI.yaml` runs
+  `mypy auth_user_service` and `mypy examples/fastapi_service` on every PR against `main`.
+  Runs on Python 3.14 only (no matrix needed for static analysis).
+
+- **Healthchecks + auto-restart on all 6 compose stacks** — `auth_user_service` and
+  `fastapi_service` now have `healthcheck` + `restart: unless-stopped` in every
+  `docker-compose.yml`. The probe uses Python's built-in `urllib.request` (no curl/wget
+  required in the slim image) against the service's own health endpoint:
+  `http://localhost:8000/user/health/` and `http://localhost:8000/fastapi/health/`
+  respectively. `fastapi_service.depends_on.auth_user_service` changed from
+  `service_started` → `service_healthy` so the consumer only starts once the auth service
+  is confirmed reachable.
+
+- **`/fastapi/health/` endpoint in `fastapi_service` template** — process-only liveness
+  probe added to `examples/fastapi_service/main.py`. Always returns `{"status": "ok"}` with
+  HTTP 200 when the process is running; has no external dependencies.
+
+- **Route tests for `profile` and `google_auth`** — `tests/routes/test_profile.py` (16 tests)
+  covers all branches of `read_user_me`, `update_user_me`, `update_password_me`, and
+  `delete_user_me`. `tests/routes/test_google_auth.py` (19 tests) covers all helpers and
+  every error/success branch of `google_auth_callback` including Redis unavailability,
+  HTTPXError, HTTPException re-raise, and callback URI derivation.
+
+- **100% branch coverage enforced in CI** — `.github/workflows/CI.yaml` now includes
+  `--cov-fail-under=100`. Any PR that drops coverage below 100% on measured code will fail.
+
+### Fixed
+
+- **`auth_user_service/.example_env` fully aligned with codebase** — rewrote the stale local
+  development env file. It was referencing deprecated field names (`TOKEN_ALGORITHM`,
+  `GOOGLE_REDIRECT_URI`, non-existent `GOOGLE_SCOPES`/`GOOGLE_TOKEN_URL`) and was missing
+  ~15 settings: `SELECTED_DB`, `TOKEN_MODE`, `REDIS_SSL` block, `REFRESH_SECRET_KEY_OLD`,
+  degradation policy block, rate limiting block, API key rate limiting block,
+  `METRICS_ENABLED`, `METRICS_GROUPS`, and Chrome extension OAuth settings.
+  `TRUSTED_PROXY_COUNT` now defaults to `0` for local development without a proxy.
+
+- **Root README Auth & OAuth table** — added `GOOGLE_OAUTH_REDIRECT_URI`,
+  `OAUTH_ALLOWED_REDIRECT_SCHEMES`, `OAUTH_ALLOWED_REDIRECT_PREFIXES`, and
+  `CORS_ALLOWED_ORIGIN_SCHEMES` (all present in every `auth.env.example` but missing
+  from the documentation table).
+
+- **Google OAuth section added to rs256_m8, vault_m8, hardened_m8, metrics_m8 READMEs** —
+  all 6 stack READMEs now include the Google OAuth section with both standard client
+  credentials and the Chrome extension / native-app PKCE optional settings.
+
+- **80 mypy errors eliminated across `auth_user_service` and `fastapi_service`** — resolved
+  all type errors covering: wrong return types (`SecurityHelper` token creators, dashboard
+  controllers, `get_range_activity`); missing `None` guards for `hashed_password` in
+  `profile.py` and `services/auth.py` (OAuth users now explicitly blocked from the password-
+  change endpoint); `prefixed_fk` signature corrected from `type` to `str`; `OAuthSessionStore`
+  and `AuthCodeStore` now decode `bytes` responses from redis-py (some deployments return raw
+  bytes); SQLAlchemy `delete().where()` comparisons wrapped with `col()` for type safety;
+  `Sequence[ClientSession]` return type aligned with SQLModel output; alembic env files
+  narrowed with `assert configuration is not None` before indexed assignment; `ActivityStats`
+  TypedDict used throughout dashboard controllers instead of untyped dicts; missing `return`
+  added to `fastapi_service/category.py` exception handler. A `mypy.ini` at the repo root
+  excludes auto-generated alembic migration files.
+
+- **Bandit scan returns 0 issues** — no medium/high severity findings in `auth_user_service`
+  or `fastapi_service`.
+
 ### Security
 
 - **Production Traefik CSP profile** — added `production_dynamic_conf.yml` to all 6 compose

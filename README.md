@@ -99,6 +99,8 @@ Five ready-to-run stacks are provided under [`examples/docker_compose/`](https:/
 
 **Start here →** [`quickstart_m8`](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose/quickstart_m8) for the fastest path to a running stack.
 
+All stacks include `healthcheck` probes and `restart: unless-stopped` on `auth_user_service` and `fastapi_service`. The consumer service waits for the auth service health check to pass (`service_healthy`) before starting.
+
 ### Token modes at a glance
 
 The `TOKEN_MODE` column in the table above controls how tokens are validated across your services:
@@ -334,6 +336,7 @@ Set `SELECTED_DB` in `.env` (or `auth.env`):
 | `TABLES_PREFIX` | no | `auth` | DB table name prefix (e.g. `auth_user`, `auth_api_key`) |
 | `SET_DOCS` | no | `true` | Enable Swagger UI at `{API_PREFIX}/docs`. Always disabled when `ENVIRONMENT=production`; setting `SET_DOCS=true` together with `ENVIRONMENT=production` raises a startup error. |
 | `SET_REDOC` | no | `true` | Enable ReDoc at `{API_PREFIX}/redoc`. Same production gate as `SET_DOCS`. |
+| `SET_OPEN_API` | no | `true` | Enable OpenAPI schema at `{API_PREFIX}/openapi.json`. Same production gate as `SET_DOCS`. |
 
 ### Tokens
 
@@ -406,6 +409,10 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 | `FIRST_SUPERUSER_PASSWORD` | yes | Password of the bootstrap superuser — used only on first run |
 | `GOOGLE_CLIENT_ID` | no | Google OAuth2 client ID |
 | `GOOGLE_CLIENT_SECRET` | no | Google OAuth2 client secret |
+| `GOOGLE_OAUTH_REDIRECT_URI` | no | Fixed backend callback URI for native-app PKCE OAuth. Must match Google Console exactly. Defaults to auto-derived from request URL when empty. |
+| `OAUTH_ALLOWED_REDIRECT_SCHEMES` | no | URI scheme(s) accepted as `redirect_target` at `/google-api/login-url/` (e.g. `chrome-extension://`). |
+| `OAUTH_ALLOWED_REDIRECT_PREFIXES` | no | Lock OAuth redirects to specific extension IDs/prefixes. Empty = open public-client model. |
+| `CORS_ALLOWED_ORIGIN_SCHEMES` | no | Scheme-level CORS origins for native-app `fetch()` calls (e.g. `chrome-extension://`). |
 | `PRIVATE_API_SECRET` | yes | Shared secret for `X-Internal-Token` header |
 
 ### Auth Degradation Policy
@@ -693,6 +700,19 @@ alembic -c auth_user_service/alembic.ini upgrade head
 ruff format .
 ruff check .
 ruff check . --fix
+```
+
+### Type checking
+
+```bash
+mypy auth_user_service --ignore-missing-imports
+mypy examples/fastapi_service --ignore-missing-imports
+```
+
+### Security scan
+
+```bash
+bandit -r auth_user_service examples/fastapi_service --severity-level medium
 ```
 
 ### Tests

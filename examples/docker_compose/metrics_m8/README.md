@@ -247,6 +247,28 @@ histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
 
 ---
 
+## Google OAuth (optional)
+
+Uncomment and fill in `auth.env`:
+
+```ini
+GOOGLE_CLIENT_ID="your-client-id.apps.googleusercontent.com"
+GOOGLE_CLIENT_SECRET="your-client-secret"
+```
+
+Redis is required for the OAuth code-exchange callback. This stack includes Redis, so OAuth works once credentials are set.
+
+For Chrome extension or native-app flows (PKCE), also uncomment the optional block in `auth.env`:
+
+```ini
+GOOGLE_OAUTH_REDIRECT_URI=https://yourdomain.com/user/google-auth/oauth-callback/
+OAUTH_ALLOWED_REDIRECT_SCHEMES=chrome-extension://
+# OAUTH_ALLOWED_REDIRECT_PREFIXES=chrome-extension://your-extension-id.../
+CORS_ALLOWED_ORIGIN_SCHEMES=chrome-extension://
+```
+
+---
+
 ## Volumes
 
 | Path | Purpose |
@@ -317,6 +339,8 @@ Also update the `Host` rules in the production config to match your actual FQDN.
 
 **Services fail to start immediately** — `auth_user_service` waits for PostgreSQL to pass
 its health check (`pg_isready`). PostgreSQL typically initialises in 10–20 s on first boot.
+`fastapi_service` then waits for `auth_user_service` to pass its own health check. Watch
+the logs with `docker compose logs -f`.
 
 **`changethis` rejection on startup** — replace all `changethis` values in `.env`
 and `auth.env`.
