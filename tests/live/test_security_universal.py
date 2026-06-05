@@ -632,7 +632,7 @@ class TestF_MetricsAPI:
     Traefik.  See the SECURITY CONTRACT comment in dynamic_conf.yml.
     """
 
-    _URL = f"https://localhost:4430/user/metrics"
+    _URL = "https://localhost:4430/user/metrics"
 
     def test_f2_01_metrics_blocked_by_traefik(self):
         """GOOD: Traefik returns 404 — /metrics not reachable from the internet."""
@@ -655,6 +655,50 @@ class TestF_MetricsAPI:
         assert not metrics_paths, (
             f"[FINDING-F2-02] Metrics route exposed in OpenAPI: {metrics_paths}. "
             f"Ensure the metrics endpoint is registered with include_in_schema=False."
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# F3  HEALTH ENDPOINT EXPOSURE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestF_HealthAPI:
+    """Category F3 — Health endpoint security.
+
+    /health is NOT routed through Traefik's public entrypoint so public
+    requests receive 404.  It is only reachable via the internal api entrypoint
+    (port 9000 from within the Docker network).
+
+    OPERATOR NOTE: if any test below fails with a non-404 status, it means
+    Traefik is misconfigured — PathPrefix(`/user/health`) is missing from the
+    exclusion list in auth-public-router (dynamic_conf.yml).  Add it and restart
+    Traefik.  See the SECURITY CONTRACT comment in dynamic_conf.yml.
+    """
+
+    _URL = "https://localhost:4430/user/health/"
+
+    def test_f3_01_health_blocked_by_traefik(self):
+        """GOOD: Traefik returns 404 — /health not reachable from the internet."""
+        try:
+            r = requests.get(self._URL, timeout=TIMEOUT, verify=False)  # noqa: S501
+        except requests.exceptions.SSLError:
+            return
+        assert r.status_code == 404, (
+            f"[TRAEFIK MISCONFIGURATION] PathPrefix(`/user/health`) is not excluded "
+            f"from auth-public-router in dynamic_conf.yml. "
+            f"Got {r.status_code}, expected 404. "
+            f"Fix: add PathPrefix(`/user/health`) to the exclusion list and restart Traefik."
+        )
+
+    def test_f3_02_health_absent_from_openapi(self):
+        """Health endpoint must not appear in the public OpenAPI schema."""
+        r = requests.get(f"{AUTH_BASE}/openapi.json", timeout=TIMEOUT)
+        paths = r.json().get("paths", {})
+        health_paths = [p for p in paths if "/health" in p]
+        assert not health_paths, (
+            f"[APP MISCONFIGURATION] Health route exposed in OpenAPI: {health_paths}. "
+            f"Ensure the health endpoint is registered with include_in_schema=False."
         )
 
 
