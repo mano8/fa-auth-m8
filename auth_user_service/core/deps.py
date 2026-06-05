@@ -230,11 +230,16 @@ def get_current_active_superuser(current_user: CurrentUser) -> UserModel:
 
 
 def verify_private_api_secret(
-    x_internal_token: str = Header(..., alias="X-Internal-Token"),
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
 ) -> None:
-    """Reject requests that do not carry the correct inter-service secret."""
-    expected = settings.PRIVATE_API_SECRET.get_secret_value()
-    if not secrets.compare_digest(x_internal_token, expected):
+    """Reject requests that do not carry the correct inter-service secret.
+
+    Uses Optional header (not required) so a missing header returns 401, not
+    FastAPI's 422 Unprocessable Entity which would leak endpoint structure.
+    """
+    if x_internal_token is None or not secrets.compare_digest(
+        x_internal_token, settings.PRIVATE_API_SECRET.get_secret_value()
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
         )

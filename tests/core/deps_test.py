@@ -259,6 +259,12 @@ class TestVerifyPrivateApiSecret:
 
         assert exc_info.value.status_code == 401
 
+    def test_missing_header_raises_401(self):
+        with pytest.raises(HTTPException) as exc_info:
+            verify_private_api_secret(x_internal_token=None)
+
+        assert exc_info.value.status_code == 401
+
 
 class TestGetRedisDegradedSince:
     def test_returns_none_initially(self):

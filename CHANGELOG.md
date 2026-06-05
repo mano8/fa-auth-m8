@@ -4,6 +4,47 @@ All notable changes to `fa-auth-m8` will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.9.3] — 2026-06-05 · Shell script permissions + private-route security hardening
+
+### Fixed
+
+- **All `.sh` scripts now stored as `100755` in git** (`auth_user_service/scripts/`,
+  `examples/fastapi_full/scripts/`, `examples/docker_compose/*/init.sh`).
+  Files were stored as `100644`; on hosts with `core.filemode=false` (WSL2, Windows,
+  CI runners) the missing execute bit caused `Permission denied` from bind-mounted volumes.
+  Fixed via `git update-index --chmod=+x` — independent of host `core.filemode`.
+
+- **`verify_private_api_secret` now returns 401 for missing header** (`auth_user_service/core/deps.py`).
+  The previous `Header(...)` (required) caused FastAPI to raise 422 Unprocessable Entity
+  when `X-Internal-Token` was absent, leaking endpoint structure. Changed to
+  `Header(default=None)` with an explicit `None` check so both missing and wrong tokens
+  consistently return 401 Unauthorized.
+
+- **Private router excluded from OpenAPI schema** (`auth_user_service/routes/__init__.py`).
+  `include_router(private.router)` now passes `include_in_schema=False` so
+  `/user/private/` routes are invisible in the public OpenAPI JSON.
+
+- **All 6 compose stacks: Traefik `auth-public-router` now excludes `/user/private/`**
+  (`examples/docker_compose/*/traefik/dynamic_conf.yml`).
+  The path was reachable from the public internet — FastAPI's own `X-Internal-Token`
+  check was the only guard. Traefik now returns 404 before the request reaches the app,
+  making the route invisible. A SECURITY CONTRACT comment block documents which paths
+  are excluded and why, with a pointer to the live tests.
+
+- **`fastapi-m8` requirement bumped to `>=1.1.3`** (`examples/fastapi_full/requirements_base.txt`).
+
+### Added
+
+- **`TestF_MetricsAPI` live tests** (`tests/live/test_security_universal.py`).
+  Mirrors the existing `TestF_PrivateAPI` pattern: verifies Traefik returns 404 for
+  `/user/metrics` from the public internet and that `/metrics` is absent from OpenAPI.
+
+- **Diagnostic error messages for `TestF_PrivateAPI` F01–F03** — failures now print
+  `[TRAEFIK MISCONFIGURATION]` with the exact fix required (path to add, router name,
+  config file location).
+
+---
+
 ## [Unreleased] — SecureAndAlign branch
 
 ### Security
