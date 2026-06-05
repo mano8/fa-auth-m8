@@ -518,8 +518,13 @@ class TestF_PrivateAPI:
     """Category F — Inter-service private endpoint security.
 
     /private/ is NOT routed through Traefik so public requests receive 404.
-    Tests verify that Traefik-level block is in place AND document the
-    secret-key exposure risk for direct in-network access.
+    Tests verify that the Traefik-level block is in place AND that the app
+    consistently returns 401 (not 422) for missing/wrong tokens on direct access.
+
+    OPERATOR NOTE: if any test below fails with a non-404 status, it means
+    Traefik is misconfigured — PathPrefix(`/user/private`) is missing from the
+    exclusion list in auth-public-router (dynamic_conf.yml).  Add it and restart
+    Traefik.  See the SECURITY CONTRACT comment in dynamic_conf.yml.
     """
 
     _URL = f"{AUTH_BASE}/private/users/"
@@ -534,26 +539,40 @@ class TestF_PrivateAPI:
         """GOOD: Traefik returns 404 — /private/ not reachable from the internet."""
         r = requests.post(self._URL, json=self._BODY, timeout=TIMEOUT)
         assert r.status_code == 404, (
-            f"[FINDING-F01] Private endpoint reachable through Traefik: "
-            f"{r.status_code}. Expected 404."
+            f"[TRAEFIK MISCONFIGURATION] PathPrefix(`/user/private`) is not excluded "
+            f"from auth-public-router in dynamic_conf.yml. "
+            f"Got {r.status_code}, expected 404. "
+            f"Fix: add PathPrefix(`/user/private`) to the exclusion list and restart Traefik."
         )
 
     def test_f02_private_route_blocked_with_wrong_token(self):
+        """GOOD: Traefik returns 404 regardless of token value."""
         r = requests.post(
             self._URL,
             json=self._BODY,
             headers={"X-Internal-Token": "wrong_totally"},
             timeout=TIMEOUT,
         )
-        assert r.status_code == 404
+        assert r.status_code == 404, (
+            f"[TRAEFIK MISCONFIGURATION] PathPrefix(`/user/private`) is not excluded "
+            f"from auth-public-router in dynamic_conf.yml. "
+            f"Got {r.status_code}, expected 404. "
+            f"Fix: add PathPrefix(`/user/private`) to the exclusion list and restart Traefik."
+        )
 
     def test_f03_private_route_blocked_with_admin_jwt(self, admin_headers: dict):
+        """GOOD: Traefik returns 404 regardless of JWT in Authorization header."""
         body = {
             **self._BODY,
             "email": f"pvt_jwt_{uuid.uuid4().hex[:6]}@redteam-test.com",
         }
         r = requests.post(self._URL, json=body, headers=admin_headers, timeout=TIMEOUT)
-        assert r.status_code == 404
+        assert r.status_code == 404, (
+            f"[TRAEFIK MISCONFIGURATION] PathPrefix(`/user/private`) is not excluded "
+            f"from auth-public-router in dynamic_conf.yml. "
+            f"Got {r.status_code}, expected 404. "
+            f"Fix: add PathPrefix(`/user/private`) to the exclusion list and restart Traefik."
+        )
 
     def test_f04_private_api_secret_committed_to_repo_documents_finding(self):
         """
@@ -592,6 +611,94 @@ class TestF_PrivateAPI:
         private_paths = [p for p in paths if "/private/" in p]
         assert not private_paths, (
             f"[FINDING-F05] Private routes exposed in OpenAPI: {private_paths}"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# F2  METRICS ENDPOINT EXPOSURE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestF_MetricsAPI:
+    """Category F2 — Prometheus metrics endpoint security.
+
+    /metrics is NOT routed through Traefik's public entrypoint so public
+    requests receive 404.  It is only reachable via the internal api entrypoint
+    (port 9000 from within the Docker network).
+
+    OPERATOR NOTE: if any test below fails with a non-404 status, it means
+    Traefik is misconfigured — PathPrefix(`/user/metrics`) is missing from the
+    exclusion list in auth-public-router (dynamic_conf.yml).  Add it and restart
+    Traefik.  See the SECURITY CONTRACT comment in dynamic_conf.yml.
+    """
+
+    _URL = "https://localhost:4430/user/metrics"
+
+    def test_f2_01_metrics_blocked_by_traefik(self):
+        """GOOD: Traefik returns 404 — /metrics not reachable from the internet."""
+        try:
+            r = requests.get(self._URL, timeout=TIMEOUT, verify=False)  # noqa: S501
+        except requests.exceptions.SSLError:
+            return
+        assert r.status_code == 404, (
+            f"[TRAEFIK MISCONFIGURATION] PathPrefix(`/user/metrics`) is not excluded "
+            f"from auth-public-router in dynamic_conf.yml. "
+            f"Got {r.status_code}, expected 404. "
+            f"Fix: add PathPrefix(`/user/metrics`) to the exclusion list and restart Traefik."
+        )
+
+    def test_f2_02_metrics_absent_from_openapi(self):
+        """Metrics endpoint must not appear in the public OpenAPI schema."""
+        r = requests.get(f"{AUTH_BASE}/openapi.json", timeout=TIMEOUT)
+        paths = r.json().get("paths", {})
+        metrics_paths = [p for p in paths if "/metrics" in p]
+        assert not metrics_paths, (
+            f"[FINDING-F2-02] Metrics route exposed in OpenAPI: {metrics_paths}. "
+            f"Ensure the metrics endpoint is registered with include_in_schema=False."
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# F3  HEALTH ENDPOINT EXPOSURE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestF_HealthAPI:
+    """Category F3 — Health endpoint security.
+
+    /health is NOT routed through Traefik's public entrypoint so public
+    requests receive 404.  It is only reachable via the internal api entrypoint
+    (port 9000 from within the Docker network).
+
+    OPERATOR NOTE: if any test below fails with a non-404 status, it means
+    Traefik is misconfigured — PathPrefix(`/user/health`) is missing from the
+    exclusion list in auth-public-router (dynamic_conf.yml).  Add it and restart
+    Traefik.  See the SECURITY CONTRACT comment in dynamic_conf.yml.
+    """
+
+    _URL = "https://localhost:4430/user/health/"
+
+    def test_f3_01_health_blocked_by_traefik(self):
+        """GOOD: Traefik returns 404 — /health not reachable from the internet."""
+        try:
+            r = requests.get(self._URL, timeout=TIMEOUT, verify=False)  # noqa: S501
+        except requests.exceptions.SSLError:
+            return
+        assert r.status_code == 404, (
+            f"[TRAEFIK MISCONFIGURATION] PathPrefix(`/user/health`) is not excluded "
+            f"from auth-public-router in dynamic_conf.yml. "
+            f"Got {r.status_code}, expected 404. "
+            f"Fix: add PathPrefix(`/user/health`) to the exclusion list and restart Traefik."
+        )
+
+    def test_f3_02_health_absent_from_openapi(self):
+        """Health endpoint must not appear in the public OpenAPI schema."""
+        r = requests.get(f"{AUTH_BASE}/openapi.json", timeout=TIMEOUT)
+        paths = r.json().get("paths", {})
+        health_paths = [p for p in paths if "/health" in p]
+        assert not health_paths, (
+            f"[APP MISCONFIGURATION] Health route exposed in OpenAPI: {health_paths}. "
+            f"Ensure the health endpoint is registered with include_in_schema=False."
         )
 
 
