@@ -44,6 +44,7 @@ if settings.METRICS_ENABLED:
         data, content_type = _render_metrics()
         return Response(content=data, media_type=content_type)
 
+
 app = create_app(
     settings,
     api_router,
