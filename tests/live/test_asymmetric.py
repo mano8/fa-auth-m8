@@ -327,9 +327,7 @@ class TestI_CrossServiceTokens:
 
     _SVC_LIST = f"{SVC_BASE}/category/"
 
-    def test_i01_valid_auth_token_accepted_by_fastapi_full(
-        self, admin_headers: dict
-    ):
+    def test_i01_valid_auth_token_accepted_by_fastapi_full(self, admin_headers: dict):
         r = requests.get(self._SVC_LIST, headers=admin_headers, timeout=TIMEOUT)
         assert r.status_code == 200, (
             f"Cross-service token propagation failed: {r.status_code} {r.text}"
