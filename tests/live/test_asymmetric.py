@@ -2,7 +2,7 @@
 Live Security Tests — Asymmetric Algorithms (RS256 / ES256)
 ===========================================================
 Target:  http://localhost:9000/user/    (auth_user_service)
-         http://localhost:9000/fastapi/ (fastapi_service)
+         http://localhost:9000/fastapi/ (fastapi_full)
 Config:  ACCESS_TOKEN_ALGORITHM=RS256 or ES256
 
 Attacker Scenarios
@@ -323,19 +323,17 @@ class TestH_JWKS:
 
 
 class TestI_CrossServiceTokens:
-    """Category I — Asymmetric token accepted/rejected by downstream fastapi service."""
+    """Category I — Asymmetric token accepted/rejected by downstream fastapi_full service."""
 
     _SVC_LIST = f"{SVC_BASE}/category/"
 
-    def test_i01_valid_auth_token_accepted_by_fastapi_service(
-        self, admin_headers: dict
-    ):
+    def test_i01_valid_auth_token_accepted_by_fastapi_full(self, admin_headers: dict):
         r = requests.get(self._SVC_LIST, headers=admin_headers, timeout=TIMEOUT)
         assert r.status_code == 200, (
             f"Cross-service token propagation failed: {r.status_code} {r.text}"
         )
 
-    def test_i02_forged_token_accepted_by_fastapi_service(self, committed_key_forge):
+    def test_i02_forged_token_accepted_by_fastapi_full(self, committed_key_forge):
         """CRITICAL: committed key grants full access to all downstream services."""
         token = committed_key_forge(is_superuser=True)
         r = requests.get(self._SVC_LIST, headers=_auth(token), timeout=TIMEOUT)
@@ -343,7 +341,7 @@ class TestI_CrossServiceTokens:
             "[CRITICAL-I02] Forged cross-service token unexpectedly rejected"
         )
 
-    def test_i03_alg_none_rejected_by_fastapi_service(self):
+    def test_i03_alg_none_rejected_by_fastapi_full(self):
         r = requests.get(
             self._SVC_LIST, headers=_auth(forge_alg_none()), timeout=TIMEOUT
         )
@@ -351,11 +349,11 @@ class TestI_CrossServiceTokens:
             "[CRITICAL-I03] alg=none accepted by downstream fastapi service"
         )
 
-    def test_i04_fastapi_service_rejects_no_token(self):
+    def test_i04_fastapi_full_rejects_no_token(self):
         r = requests.get(self._SVC_LIST, timeout=TIMEOUT)
         assert r.status_code in (401, 403)
 
-    def test_i05_attacker_generated_key_rejected_by_fastapi_service(
+    def test_i05_attacker_generated_key_rejected_by_fastapi_full(
         self, stack_config: dict, live_jwks_keys: list[dict]
     ):
         """Downstream service must also reject tokens from an attacker-generated key."""
