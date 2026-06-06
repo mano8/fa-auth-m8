@@ -416,6 +416,18 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 | `CORS_ALLOWED_ORIGIN_SCHEMES` | no | Scheme-level CORS origins for native-app `fetch()` calls (e.g. `chrome-extension://`). |
 | `PRIVATE_API_SECRET` | yes | Shared secret for `X-Internal-Token` header |
 
+### Event Signing
+
+`auth-sdk-m8 ≥ 1.0.0` introduces **secure-by-default event signing** (F3): when `EVENT_SIGNING_ENABLED=true` (the default), the service **fails closed at boot** unless a strong `EVENT_SIGNING_KEY` is configured. Set the key in `auth_user_service/.env` and in every consumer stack's env file.
+
+| Variable | Required | Default | Description |
+| -------- | -------- | ------- | ----------- |
+| `EVENT_SIGNING_ENABLED` | no | `true` | Master switch. When `true`, `EVENT_SIGNING_KEY` is **required at startup** — the service will not boot without it. Set `false` only to disable event signing entirely (opt-out). |
+| `EVENT_SIGNING_KEY` | if enabled | — | HMAC key used to sign event-bus payloads. Must satisfy the secret-key strength policy (32+ chars, mixed-case, digit, non-alphanumeric). **Never use the dev placeholder in production.** |
+| `EVENT_SIGNING_ACCEPT_UNSIGNED` | no | `false` | Transitional flag for rolling upgrades: when `true`, consumers accept signed or unsigned messages (still reject forged signatures). Flip back to `false` once every publisher signs. |
+
+> **Auth Redis is private to fa-auth-m8.** Consumer services check revocation via the HTTP private API (`POST /private/v1/jti-status`) — they never connect to the auth Redis directly. The event bus, when wired in a future wave, **must use a separate Redis instance**; consumers must never share the session/blacklist store.
+
 ### Auth Degradation Policy
 
 Controls what happens to each security control when Redis is unavailable. All settings are optional; the defaults represent the recommended production posture.
@@ -672,6 +684,14 @@ or `AUTH_STRICT_MODE=true` to force all failure-mode controls closed. The issuer
 ### Issuer / audience enforcement (opt-in)
 
 Set `TOKEN_ISSUER` and `TOKEN_AUDIENCE` to the **same values** in both the auth service and every consumer. When set, the auth service embeds `iss`/`aud` claims in issued tokens and all validators require an exact match.
+
+### Event signing and auth Redis isolation
+
+**`EVENT_SIGNING_KEY` is required at boot** (auth-sdk-m8 ≥ 1.0.0 secure-by-default, F3) unless `EVENT_SIGNING_ENABLED=false`. Set it in `auth_user_service/.env` and in every consumer stack's env file before starting any service. The dev placeholder (`DEV-ONLY-do-not-use-event-signing-key-Aa1!`) shipped in example env files must be replaced with a secrets-managed value in staging and production.
+
+**Auth Redis is sensitive and fa-auth-only.** The session/JTI blacklist Redis instance is private to this service. Consumer services check revocation via the HTTP private API (`POST /private/v1/jti-status`) — they never connect to auth Redis directly. This boundary is already enforced architecturally (see [Revocation check](#revocation-check-stateful-mode) above).
+
+**When the event bus is wired (future wave)**, it MUST use a **separate** Redis instance. Consumers must never share the session/blacklist store with the event bus. The event bus is a best-effort accelerator; the revocation authority remains the HTTP private API.
 
 ---
 

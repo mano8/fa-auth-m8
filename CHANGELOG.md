@@ -4,6 +4,23 @@ All notable changes to `fa-auth-m8` will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — secure/aud-iss-rs256 branch · PR #2c
+
+### Security
+
+- **Secure-by-default event signing adopted (F3)** — `auth-sdk-m8 ≥ 1.0.0` (repointed from `0.7.1`)
+  activates the `_enforce_event_signing_key` boot validator. The service now fails closed at
+  startup when `EVENT_SIGNING_ENABLED=true` (default) and no `EVENT_SIGNING_KEY` is configured.
+  A dev-only placeholder key (`DEV-ONLY-do-not-use-event-signing-key-Aa1!`) is provisioned in
+  `auth_user_service/.env` and propagated to every example and compose stack env file so
+  operators can see and set the knob. Replace with a secrets-managed value before staging or
+  production deployment — the placeholder is clearly labelled and must not be reused.
+
+- **`fastapi-m8` repointed to `>=1.2.0`** in all example requirement files
+  (`examples/fastapi_full/requirements_base.txt`, `examples/fastapi_minimal/requirements.txt`).
+
+---
+
 ## [0.9.3] — 2026-06-05 · Shell script permissions + private-route security hardening
 
 ### Fixed
