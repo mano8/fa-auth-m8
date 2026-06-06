@@ -53,10 +53,8 @@ class OAuthController:
                     clock_skew_in_seconds=10,
                 )
             except Exception as e:
-                logger.warning("OAuth id_token validation failed: %s", e)
-                raise HTTPException(
-                    status_code=400, detail="Invalid id_token"
-                ) from e
+                logger.warning("id_token verification error", exc_info=True)
+                raise HTTPException(status_code=400, detail="Invalid id_token") from e
 
             return OAuthGoogleToken(
                 access_token=token_data.get("access_token"),
