@@ -574,7 +574,13 @@ class TestF_PrivateAPI:
             "email": f"pvt_jwt_{uuid.uuid4().hex[:6]}@redteam-test.com",
         }
         try:
-            r = requests.post(self._URL, json=body, headers=admin_headers, timeout=TIMEOUT, verify=False)  # noqa: S501
+            r = requests.post(
+                self._URL,
+                json=body,
+                headers=admin_headers,
+                timeout=TIMEOUT,
+                verify=False,
+            )  # noqa: S501
         except requests.exceptions.SSLError:
             return
         assert r.status_code == 404, (
