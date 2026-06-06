@@ -4,6 +4,47 @@ All notable changes to `fa-auth-m8` will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — secure/aud-iss-rs256 branch · PR #2c
+
+### Security
+
+- **Strict `aud`/`iss` validation adopted by default (F1)** — `auth-sdk-m8 ≥ 1.0.0` defaults
+  `TOKEN_STRICT_VALIDATION=true`, and `build_access_validator` now consumes that strict profile:
+  the service enforces exact `iss`/`aud` binding and pins the configured algorithm. The previous
+  "permissive when `TOKEN_ISSUER`/`TOKEN_AUDIENCE` are unset" path is gone — `CommonSettings`
+  fails closed at boot unless both are set. Self-issued tokens validate round-trip; a token for a
+  different issuer or audience is rejected (`403`). Every example `auth.env.example` **and**
+  `api.env.example` now sets `TOKEN_ISSUER` / `TOKEN_AUDIENCE` (identical on both sides) so each
+  stack — auth service and consumer — boots under the strict default. Operators on a legacy posture
+  opt out with `TOKEN_STRICT_VALIDATION=false`.
+
+- **Issuer embeds `iat`/`nbf` so self-issued tokens pass the strict profile (F1).**
+  `SecurityHelper.create_access_token` now sets `iat` and `nbf`, which the SDK's `strict()`
+  required-claims set demands. Without this, a service issuing under `TOKEN_STRICT_VALIDATION=true`
+  would reject its own freshly-minted tokens. The strict issue→validate round trip is now covered
+  end-to-end by `tests/security/test_iss_aud_validation.py`.
+
+- **RS256 issuance + JWKS publication is the default posture (F2)** — `ACCESS_TOKEN_ALGORITHM`
+  defaults to `RS256` (asymmetric). The auth service signs access tokens with the mounted private
+  key, embeds a `kid`, and publishes the public key set at `/.well-known/jwks.json` for
+  zero-downtime rotation; consumers resolve keys via `JWKS_URI`. Key strength (≥ 2048-bit RSA) is
+  enforced at boot. HS256 remains available as a documented opt-out
+  (`ACCESS_TOKEN_ALGORITHM=HS256` + `ACCESS_SECRET_KEY`). See the README **“Migrating an existing
+  HS256 deployment”** note for the rollout path.
+
+- **Secure-by-default event signing adopted (F3)** — `auth-sdk-m8 ≥ 1.0.0` (repointed from `0.7.1`)
+  activates the `_enforce_event_signing_key` boot validator. The service now fails closed at
+  startup when `EVENT_SIGNING_ENABLED=true` (default) and no `EVENT_SIGNING_KEY` is configured.
+  A dev-only placeholder key (`DEV-ONLY-do-not-use-event-signing-key-Aa1!`) is provisioned in
+  `auth_user_service/.env` and propagated to every example and compose stack env file so
+  operators can see and set the knob. Replace with a secrets-managed value before staging or
+  production deployment — the placeholder is clearly labelled and must not be reused.
+
+- **`fastapi-m8` repointed to `>=1.2.0`** in all example requirement files
+  (`examples/fastapi_full/requirements_base.txt`, `examples/fastapi_minimal/requirements.txt`).
+
+---
+
 ## [0.9.3] — 2026-06-05 · Shell script permissions + private-route security hardening
 
 ### Fixed

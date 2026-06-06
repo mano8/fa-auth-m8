@@ -8,7 +8,7 @@
 
 A production-ready, self-hosted FastAPI (Python 3.14) authentication microservice for Docker Compose. Provides JWT authentication (HS256, RS256, ES256), Google OAuth2 with PKCE, Redis-backed stateful session management, role-based access control (RBAC), API key management with per-key rate limiting, and a private inter-service API — ready to drop into any Docker-based Python microservice stack.
 
-Consumer services validate tokens **locally** using the companion [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8) package (`pip install auth-sdk-m8`) — no round-trip to the auth service on every request. In `stateful` mode, revocation is checked via a lightweight HTTP call to the auth service private API (`POST /private/v1/jti-status`) instead of connecting to auth Redis directly, keeping the Redis instance private to the auth service.
+Consumer services validate tokens **locally** using [fastapi-m8](https://github.com/mano8/fastapi-m8) (`pip install fastapi-m8 --upgrade`) — no round-trip to the auth service on every request. `fastapi-m8` bundles [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8) for JWT validation and shared schemas; advanced consumers can also import `auth_sdk_m8` types directly. In `stateful` mode, revocation is checked via a lightweight HTTP call to the auth service private API (`POST /private/v1/jti-status`) instead of connecting to auth Redis directly, keeping the Redis instance private to the auth service.
 
 The included example stacks use `_m8` in their names as a personal naming convention — not a framework requirement. Any stack can be copied and adapted for your own project by renaming the Docker services, network, and env files.
 
@@ -80,7 +80,7 @@ The included example stacks use `_m8` in their names as a personal naming conven
 └────────┘
 ```
 
-Consumer services validate tokens locally (JWT signature check + optional Redis blacklist via `auth-sdk-m8`) — no per-request call to the auth service. Other services on the same Docker network can also call the private API at `http://auth-service:8000/user/private/` for operations such as creating users programmatically.
+Consumer services validate tokens locally (JWT signature check + optional Redis blacklist via `fastapi-m8`) — no per-request call to the auth service. Other services on the same Docker network can also call the private API at `http://auth-service:8000/user/private/` for operations such as creating users programmatically.
 
 ---
 
@@ -344,7 +344,7 @@ Set `SELECTED_DB` in `.env` (or `auth.env`):
 | Variable | Required | Default | Description |
 | -------- | -------- | ------- | ----------- |
 | `TOKEN_MODE` | no | `stateful` | `stateless` \| `hybrid` \| `stateful` — controls Redis usage and JTI revocation |
-| `ACCESS_TOKEN_ALGORITHM` | no | `HS256` | Signing algorithm for access tokens (`HS256`, `RS256`, `ES256`) |
+| `ACCESS_TOKEN_ALGORITHM` | no | `RS256` | Signing algorithm for access tokens. Secure-by-default `RS256` (asymmetric + JWKS); `ES256` also supported; `HS256` is a documented opt-out (symmetric) |
 | `REFRESH_TOKEN_ALGORITHM` | no | `HS256` | Signing algorithm for refresh tokens |
 | `ACCESS_SECRET_KEY` | HS256 only | — | Symmetric signing key for access tokens |
 | `REFRESH_SECRET_KEY` | yes | — | Signing key for refresh tokens (always HS256) |
@@ -355,16 +355,19 @@ Set `SELECTED_DB` in `.env` (or `auth.env`):
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | no | `120` | Refresh token lifetime |
 | `REFRESH_TOKEN_COOKIE_EXPIRE_SECONDS` | no | `3600` | Refresh cookie max-age |
 | `TOKENS_ENCRYPTION_KEY` | yes | — | Key for `SessionMiddleware` cookie signing |
-| `TOKEN_ISSUER` | no | — | When set, embeds `iss` in tokens and requires a match on validation |
-| `TOKEN_AUDIENCE` | no | — | When set, embeds `aud` in tokens and requires a match on validation |
+| `TOKEN_ISSUER` | if strict | — | `iss` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
+| `TOKEN_AUDIENCE` | if strict | — | `aud` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
+| `TOKEN_STRICT_VALIDATION` | no | `true` | Secure-by-default strict profile (`auth-sdk-m8 ≥ 1.0.0`): enforces `iss`/`aud` binding and pins the configured algorithm; the service fails closed at boot unless `TOKEN_ISSUER`/`TOKEN_AUDIENCE` are set. Set `false` to opt out (legacy/local), enforcing `iss`/`aud` only when configured. |
 | `ACCESS_KEY_ID` | no | — | Explicit `kid` in JWT headers and JWKS; auto-derived from key fingerprint when unset |
 | `AUTH_SERVICE_ROLE` | no | `issuer` | `issuer` (auth service) or `consumer` (downstream services) |
 | `JWKS_URI` | no | — | Consumer services: JWKS endpoint URL; enables automatic `JwksKeyResolver` wiring |
 | `JWKS_CACHE_TTL_SECONDS` | no | `300` | JWKS key cache TTL in seconds |
 
-**HS256 (default)** — set `ACCESS_SECRET_KEY` and `REFRESH_SECRET_KEY`; leave asymmetric key vars blank.
+**RS256 / ES256 (secure-by-default)** — `ACCESS_TOKEN_ALGORITHM` defaults to `RS256`: the auth service signs with the mounted private key and publishes JWKS (see below). RSA keys must be ≥ 2048-bit (enforced at boot).
 
-**RS256 / ES256** — set `ACCESS_TOKEN_ALGORITHM`, `ACCESS_PRIVATE_KEY_FILE`, `ACCESS_PUBLIC_KEY_FILE`. Mount the key files into the container (see `examples/docker_compose/rs256_m8/keys/`). Generate a key pair:
+**HS256 (opt-out)** — set `ACCESS_TOKEN_ALGORITHM=HS256`, `ACCESS_SECRET_KEY`, and `REFRESH_SECRET_KEY`; leave asymmetric key vars blank.
+
+**Generating asymmetric keys** — set `ACCESS_PRIVATE_KEY_FILE` and `ACCESS_PUBLIC_KEY_FILE`, then mount the key files into the container (see `examples/docker_compose/rs256_m8/keys/`). Generate a key pair:
 
 ```bash
 # RS256
@@ -377,6 +380,11 @@ openssl ec -in private.pem -pubout -out public.pem
 ```
 
 Or use `bash init.sh` in any asymmetric stack — it generates the correct key type automatically.
+
+**Migrating an existing HS256 deployment** — `auth-sdk-m8 ≥ 1.0.0` flips the defaults to RS256 + strict `iss`/`aud`. Existing deployments have two coherent paths:
+
+- **Adopt the secure default (recommended):** generate an RSA key pair, set `ACCESS_PRIVATE_KEY_FILE` / `ACCESS_PUBLIC_KEY_FILE`, point consumers at `JWKS_URI`, and set the same `TOKEN_ISSUER` / `TOKEN_AUDIENCE` on the auth service and every consumer. Roll the public key / JWKS out to consumers **before** switching the issuer so in-flight tokens still validate.
+- **Stay on the legacy posture (opt-out):** set `ACCESS_TOKEN_ALGORITHM=HS256` (with `ACCESS_SECRET_KEY`) and `TOKEN_STRICT_VALIDATION=false`. The service then behaves as it did before 1.0.0 — `iss`/`aud` enforced only when configured.
 
 ### Database
 
@@ -415,6 +423,18 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 | `OAUTH_ALLOWED_REDIRECT_PREFIXES` | no | Lock OAuth redirects to specific extension IDs/prefixes. Empty = open public-client model. |
 | `CORS_ALLOWED_ORIGIN_SCHEMES` | no | Scheme-level CORS origins for native-app `fetch()` calls (e.g. `chrome-extension://`). |
 | `PRIVATE_API_SECRET` | yes | Shared secret for `X-Internal-Token` header |
+
+### Event Signing
+
+`auth-sdk-m8 ≥ 1.0.0` introduces **secure-by-default event signing** (F3): when `EVENT_SIGNING_ENABLED=true` (the default), the service **fails closed at boot** unless a strong `EVENT_SIGNING_KEY` is configured. Set the key in `auth_user_service/.env` and in every consumer stack's env file.
+
+| Variable | Required | Default | Description |
+| -------- | -------- | ------- | ----------- |
+| `EVENT_SIGNING_ENABLED` | no | `true` | Master switch. When `true`, `EVENT_SIGNING_KEY` is **required at startup** — the service will not boot without it. Set `false` only to disable event signing entirely (opt-out). |
+| `EVENT_SIGNING_KEY` | if enabled | — | HMAC key used to sign event-bus payloads. Must satisfy the secret-key strength policy (32+ chars, mixed-case, digit, non-alphanumeric). **Never use the dev placeholder in production.** |
+| `EVENT_SIGNING_ACCEPT_UNSIGNED` | no | `false` | Transitional flag for rolling upgrades: when `true`, consumers accept signed or unsigned messages (still reject forged signatures). Flip back to `false` once every publisher signs. |
+
+> **Auth Redis is private to fa-auth-m8.** Consumer services check revocation via the HTTP private API (`POST /private/v1/jti-status`) — they never connect to the auth Redis directly. The event bus, when wired in a future wave, **must use a separate Redis instance**; consumers must never share the session/blacklist store.
 
 ### Auth Degradation Policy
 
@@ -622,27 +642,40 @@ Endpoints under `/user/private/` are for inter-service calls only:
 
 ## Consumer Service Integration
 
-`examples/fastapi_full` and `examples/fastapi_minimal` are reference implementations showing how a downstream microservice integrates with `auth_user_service` using `fastapi-m8` and `auth-sdk-m8`. `fastapi_full` demonstrates DB session, health checks, auth deps, and lifespan teardown; `fastapi_minimal` is the minimal three-step setup.
+`examples/fastapi_full` and `examples/fastapi_minimal` are reference implementations showing how a downstream microservice integrates with `auth_user_service` using [fastapi-m8](https://github.com/mano8/fastapi-m8) and [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8). `fastapi_full` demonstrates DB session, health checks, auth deps, and lifespan teardown; `fastapi_minimal` is the minimal three-step setup.
 
-`auth-sdk-m8` is a standard pip package — install it in any FastAPI consumer service:
+[fastapi-m8](https://github.com/mano8/fastapi-m8) is the recommended consumer integration package — it wires CORS, health, lifespan, and auth dependencies in a few lines and bundles `auth-sdk-m8` for JWT validation and shared schemas:
 
 ```bash
-pip install auth-sdk-m8
+pip install fastapi-m8 --upgrade                        # minimal consumer
+pip install "fastapi-m8[db,postgres,mysql]" --upgrade   # with SQLModel + DB drivers (fastapi_full)
 ```
 
-### Token validation
+### Minimal integration
 
 ```python
-from auth_sdk_m8.security import build_access_validator, ValidationHooks
+# core/deps.py
+from fastapi_m8 import AuthDeps, build_auth_deps
+from .config import settings
 
-_validator = build_access_validator(settings, hooks=_hooks)
+auth: AuthDeps = build_auth_deps(settings)
+CurrentUser = auth.CurrentUser
 ```
 
-`build_access_validator` reads `ACCESS_TOKEN_ALGORITHM`, `ACCESS_SECRET_KEY` / `ACCESS_PUBLIC_KEY_FILE`, `TOKEN_ISSUER`, `TOKEN_AUDIENCE`, and `JWKS_URI` directly from a `CommonSettings` instance.
+```python
+# main.py
+from fastapi_m8 import AppLifecycle, create_app
+from .core.deps import auth
+
+app = create_app(settings, api_router, service_name="my-service", service_version="1.0.0",
+                 lifecycle=AppLifecycle(auth_deps=auth))
+```
+
+`build_auth_deps` reads `ACCESS_TOKEN_ALGORITHM`, `ACCESS_SECRET_KEY` / `ACCESS_PUBLIC_KEY_FILE`, `TOKEN_ISSUER`, `TOKEN_AUDIENCE`, `JWKS_URI`, `TOKEN_MODE`, `INTROSPECTION_URL`, and failure-mode settings directly from a `ConsumerServiceSettings` instance.
 
 ### JWKS-based key validation (RS256/ES256)
 
-When `JWKS_URI` is set, `build_access_validator` wires up `JwksKeyResolver` automatically. The resolver fetches `/.well-known/jwks.json`, caches keys by `kid`, and refreshes on cache miss — supporting zero-downtime key rotation.
+When `JWKS_URI` is set, `build_auth_deps` wires up `JwksKeyResolver` automatically. The resolver fetches `/.well-known/jwks.json`, caches keys by `kid`, and refreshes on cache miss — supporting zero-downtime key rotation.
 
 ```ini
 ACCESS_TOKEN_ALGORITHM=RS256
@@ -669,9 +702,17 @@ or `AUTH_STRICT_MODE=true` to force all failure-mode controls closed. The issuer
 `/private/v1/jti-status` endpoint mirrors the same setting: Redis-unavailable returns
 `active=false` when `fail_closed` is effective.
 
-### Issuer / audience enforcement (opt-in)
+### Issuer / audience enforcement (secure-by-default)
 
-Set `TOKEN_ISSUER` and `TOKEN_AUDIENCE` to the **same values** in both the auth service and every consumer. When set, the auth service embeds `iss`/`aud` claims in issued tokens and all validators require an exact match.
+`auth-sdk-m8 ≥ 1.0.0` enables `TOKEN_STRICT_VALIDATION` by default. Set `TOKEN_ISSUER` and `TOKEN_AUDIENCE` to the **same values** in both the auth service and every consumer: the auth service embeds `iss`/`aud` claims in issued tokens and all validators require an exact match. Under the strict default the service **fails closed at boot** until both are set. Opt out for legacy/local deployments with `TOKEN_STRICT_VALIDATION=false`, which enforces `iss`/`aud` only when configured.
+
+### Event signing and auth Redis isolation
+
+**`EVENT_SIGNING_KEY` is required at boot** (auth-sdk-m8 ≥ 1.0.0 secure-by-default, F3) unless `EVENT_SIGNING_ENABLED=false`. Set it in `auth_user_service/.env` and in every consumer stack's env file before starting any service. The dev placeholder (`DEV-ONLY-do-not-use-event-signing-key-Aa1!`) shipped in example env files must be replaced with a secrets-managed value in staging and production.
+
+**Auth Redis is sensitive and fa-auth-only.** The session/JTI blacklist Redis instance is private to this service. Consumer services check revocation via the HTTP private API (`POST /private/v1/jti-status`) — they never connect to auth Redis directly. This boundary is already enforced architecturally (see [Revocation check](#revocation-check-stateful-mode) above).
+
+**When the event bus is wired (future wave)**, it MUST use a **separate** Redis instance. Consumers must never share the session/blacklist store with the event bus. The event bus is a best-effort accelerator; the revocation authority remains the HTTP private API.
 
 ---
 
@@ -793,7 +834,8 @@ Alert rules for `metrics_m8` and `vault_m8` stacks (`prometheus/alerts.yml`):
 
 - [FastAPI](https://fastapi.tiangolo.com/)
 - [SQLModel](https://sqlmodel.tiangolo.com/) + [Alembic](https://alembic.sqlalchemy.org/)
-- [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8) — shared schemas, JWT validation, refresh token rotation, JWKS resolver, base controllers
+- [fastapi-m8](https://github.com/mano8/fastapi-m8) — consumer service integration (CORS, health, auth deps, lifespan); consumer services install this
+- [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8) — shared schemas, JWT validation, refresh token rotation, JWKS resolver, base controllers; bundled by `fastapi-m8`, also used directly by the auth service
 - [Redis](https://redis.io/) — session revocation, refresh token allowlist, rate limiting, PKCE store, write-behind queue
 - [PyJWT](https://pyjwt.readthedocs.io/) + [passlib](https://passlib.readthedocs.io/) + [cryptography](https://cryptography.io/)
 - [google-auth](https://google-auth.readthedocs.io/) — Google OAuth2

@@ -222,20 +222,19 @@ class TestGetCurrentUserIssAud:
 
 
 class TestStrictConfig:
-    """TokenValidationConfig with require_iss=True and require_aud=True."""
+    """The secure-by-default TokenValidationConfig.strict() profile.
+
+    create_access_token embeds iat/nbf (the claims strict() requires), so a
+    self-issued token validates end-to-end under the real strict() profile.
+    """
 
     def _strict_validator(self) -> TokenValidator:
-        # strict() also requires iat/nbf which create_access_token doesn't
-        # embed, so we build an equivalent config scoped to what we generate.
         return TokenValidator(
             secrets=_SECRET,
-            config=TokenValidationConfig(
-                allowed_algorithms=["HS256"],
+            config=TokenValidationConfig.strict(
                 issuer="https://auth.example.com",
                 audience="https://api.example.com",
-                require_iss=True,
-                require_aud=True,
-                leeway_seconds=2,
+                allowed_algorithms=["HS256"],
             ),
         )
 
