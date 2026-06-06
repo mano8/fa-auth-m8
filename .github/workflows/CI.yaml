@@ -126,6 +126,13 @@ jobs:
           REDIS_PASSWORD=CiTestRed_Passw0rd
           ACCESS_SECRET_KEY=CiTest-AccessKey-fa-auth2024-AbCdE
           REFRESH_SECRET_KEY=CiTest-RefreshKey-fa-auth2024-AbCd
+          # auth-sdk-m8 >= 1.0.0 secure-by-default: this single-service CI run uses the
+          # documented opt-out — HS256 symmetric keys + strict iss/aud off — plus a test
+          # EVENT_SIGNING_KEY so the boot validators pass without RSA keys or a key store.
+          ACCESS_TOKEN_ALGORITHM=HS256
+          REFRESH_TOKEN_ALGORITHM=HS256
+          TOKEN_STRICT_VALIDATION=false
+          EVENT_SIGNING_KEY=CiTest-EventSigning-fa-auth2024-AbCd
           FIRST_SUPERUSER=ci-admin@example.com
           FIRST_SUPERUSER_PASSWORD=CiTestSup_Pass0rd
           PRIVATE_API_SECRET=CiTest-PrivateApi-fa-auth2024-AbCd
