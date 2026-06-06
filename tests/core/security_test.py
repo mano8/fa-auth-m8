@@ -82,6 +82,9 @@ class TestSecurityHelper:
         assert decoded_token["type"] == "access"
         assert "exp" in decoded_token
         assert "jti" in decoded_token
+        # iat/nbf are required by the SDK strict() profile and must be embedded.
+        assert "iat" in decoded_token
+        assert "nbf" in decoded_token
 
     def test_create_refresh_token(self, minimal_data, token_secrets_fixture):
         """

@@ -13,9 +13,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   the service enforces exact `iss`/`aud` binding and pins the configured algorithm. The previous
   "permissive when `TOKEN_ISSUER`/`TOKEN_AUDIENCE` are unset" path is gone — `CommonSettings`
   fails closed at boot unless both are set. Self-issued tokens validate round-trip; a token for a
-  different issuer or audience is rejected (`403`). Every example `auth.env.example` now sets
-  `TOKEN_ISSUER` / `TOKEN_AUDIENCE` so each stack boots under the strict default. Operators on a
-  legacy posture opt out with `TOKEN_STRICT_VALIDATION=false`.
+  different issuer or audience is rejected (`403`). Every example `auth.env.example` **and**
+  `api.env.example` now sets `TOKEN_ISSUER` / `TOKEN_AUDIENCE` (identical on both sides) so each
+  stack — auth service and consumer — boots under the strict default. Operators on a legacy posture
+  opt out with `TOKEN_STRICT_VALIDATION=false`.
+
+- **Issuer embeds `iat`/`nbf` so self-issued tokens pass the strict profile (F1).**
+  `SecurityHelper.create_access_token` now sets `iat` and `nbf`, which the SDK's `strict()`
+  required-claims set demands. Without this, a service issuing under `TOKEN_STRICT_VALIDATION=true`
+  would reject its own freshly-minted tokens. The strict issue→validate round trip is now covered
+  end-to-end by `tests/security/test_iss_aud_validation.py`.
 
 - **RS256 issuance + JWKS publication is the default posture (F2)** — `ACCESS_TOKEN_ALGORITHM`
   defaults to `RS256` (asymmetric). The auth service signs access tokens with the mounted private

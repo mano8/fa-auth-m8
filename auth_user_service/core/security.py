@@ -56,10 +56,16 @@ class SecurityHelper(ComSecurityHelper):
             str:
                 The encoded JWT access token as a string.
         """
-        expire = datetime.now(timezone.utc) + expires_delta
+        now = datetime.now(timezone.utc)
+        expire = now + expires_delta
         jti = str(uuid.uuid4())
         to_encode = data.model_dump()
-        to_encode.update({"exp": expire, "jti": jti, "type": "access"})
+        # iat/nbf are part of the SDK's strict() required-claims set, so the
+        # issuer must embed them for self-issued tokens to validate under the
+        # secure-by-default profile (TOKEN_STRICT_VALIDATION=true).
+        to_encode.update(
+            {"exp": expire, "iat": now, "nbf": now, "jti": jti, "type": "access"}
+        )
         if issuer:
             to_encode["iss"] = issuer
         if audience:
