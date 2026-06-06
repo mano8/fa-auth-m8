@@ -133,6 +133,25 @@ class TestUpdateUserMe:
             )
         mock_handle.assert_called_once()
 
+    def test_privileged_field_not_persisted(self, db_session, sample_user) -> None:
+        """Privileged field injected into model_dump must be filtered by _SELF_SERVICE_FIELDS."""
+        user_in = MagicMock(spec=UserUpdateMe)
+        user_in.email = None  # skip conflict check
+        user_in.model_dump.return_value = {
+            "full_name": "Injected",
+            "is_superuser": True,
+        }
+        original_superuser = sample_user.is_superuser
+        with patch("auth_user_service.routes.profile.UserController"):
+            result = update_user_me(
+                session=db_session,
+                current_user=sample_user,
+                user_in=user_in,
+            )
+        assert result.success is True
+        db_session.refresh(sample_user)
+        assert sample_user.is_superuser == original_superuser
+
 
 # ---------------------------------------------------------------------------
 # update_password_me

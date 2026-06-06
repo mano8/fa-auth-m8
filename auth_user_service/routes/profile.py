@@ -21,6 +21,9 @@ from auth_user_service.core.exceptions import handle_route_exception
 
 router = APIRouter(prefix="/profile", tags=["profile"])
 
+# Explicit allowlist for self-service profile updates — must never include is_superuser.
+_SELF_SERVICE_FIELDS: frozenset[str] = frozenset({"email", "full_name", "avatar"})
+
 
 @router.patch(
     "/update/me/",
@@ -48,7 +51,7 @@ def update_user_me(
             raise HTTPException(status_code=404, detail="User not found")
         user_data = user_in.model_dump(exclude_unset=True)
         for field, value in user_data.items():
-            if field in set(type(db_user).model_fields):
+            if field in _SELF_SERVICE_FIELDS:
                 setattr(db_user, field, value)
         session.add(db_user)
         session.commit()

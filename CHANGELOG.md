@@ -45,6 +45,46 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased] — harden/quickwins branch
+
+### Security
+
+- **Explicit field allowlists replace `model_fields` reflection — mass-assignment hardening (F4)**
+  (`auth_user_service/routes/profile.py`, `auth_user_service/services/users.py`).
+  Both update paths previously gated `setattr` on `type(db_user).model_fields` — any field
+  present on the `User` ORM model (including `is_superuser`) could be written if it appeared
+  in the inbound payload. Replaced with static `frozenset` constants:
+  `_SELF_SERVICE_FIELDS = {"email", "full_name", "avatar"}` for the self-service profile
+  endpoint and `_ADMIN_UPDATE_FIELDS = {"email", "full_name", "avatar", "role",
+  "oauth_user_id", "hashed_password"}` for the admin update path. `is_superuser` is
+  explicitly absent from both allowlists. Regression tests confirm that an injected
+  `is_superuser=True` payload is silently dropped at both call sites.
+
+- **Generic error for OAuth `id_token` verification failures (F7)**
+  (`auth_user_service/services/oauth.py`).
+  `OAuthController.verify_id_token` previously returned `f"Invalid id_token: {e}"` in the
+  HTTP 400 response body, leaking Google-side error details to callers. The response now
+  returns the fixed string `"Invalid id_token"` while the original exception is logged
+  server-side at `WARNING` level for diagnostics.
+
+### Changed
+
+- **`fastapi-m8` pin bumped to `>=1.1.4`** (`examples/fastapi_full/requirements_base.txt`,
+  `examples/fastapi_minimal/requirements.txt`).
+
+- **`SERVE_DOCS_IN_PRODUCTION` setting documented across all compose stacks** — all six
+  `auth.env.example` files now include the commented-out `SERVE_DOCS_IN_PRODUCTION` setting
+  (introduced in `auth-sdk-m8 0.7.3`) with its opt-in warning. README updated to reflect
+  that docs can be explicitly enabled in production via this flag.
+
+### Removed
+
+- **Redundant `is_superuser` recheck inside `get_session_by_id` removed (F9)**
+  (`auth_user_service/routes/sessions.py`).
+  The route already enforces superuser access via its FastAPI dependency; the duplicate
+  `is_superuser` guard inside the handler body could never trigger and was dead code.
+  Removed to simplify the call path.
+
 ## [Unreleased] — SecureAndAlign branch
 
 ### Security

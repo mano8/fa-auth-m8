@@ -1,6 +1,7 @@
 """Unit tests for services.users.UserController."""
 
 import uuid
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -97,6 +98,25 @@ class TestUpdateUser:
         )
 
         assert updated.hashed_password == old_hash
+
+    def test_privileged_field_blocked_by_allowlist(self, db_session, sample_user):
+        """is_superuser injected into the update dict must be dropped by _ADMIN_UPDATE_FIELDS."""
+        user_in = MagicMock()
+        user_in.model_dump.return_value = {
+            "is_superuser": True,
+            "full_name": "Injected",
+        }
+        original_superuser = sample_user.is_superuser
+
+        updated = UserController.update_user(
+            session=db_session,
+            db_user=sample_user,
+            user_in=user_in,
+        )
+
+        db_session.refresh(updated)
+        assert updated.is_superuser == original_superuser
+        assert updated.full_name == "Injected"
 
 
 class TestGetUser:

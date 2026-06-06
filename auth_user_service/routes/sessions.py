@@ -65,11 +65,6 @@ def get_session_by_id(
     """
     try:
         client_session = session.get(ClientSession, session_id)
-        if not current_user.is_superuser:
-            raise HTTPException(
-                status_code=403,
-                detail="The user doesn't have enough privileges",
-            )
         return client_session
     except HTTPException:
         raise

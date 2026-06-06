@@ -1,5 +1,6 @@
 """Manage add on auth."""
 
+import logging
 from google.oauth2 import id_token
 from google.auth.transport import requests as googleRequests
 import httpx
@@ -7,6 +8,8 @@ from fastapi import HTTPException
 
 from auth_user_service.schemas.google import OAuthGoogleToken
 from auth_user_service.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class OAuthController:
@@ -50,9 +53,8 @@ class OAuthController:
                     clock_skew_in_seconds=10,
                 )
             except Exception as e:
-                raise HTTPException(
-                    status_code=400, detail=f"Invalid id_token: {e}"
-                ) from e
+                logger.warning("id_token verification error", exc_info=True)
+                raise HTTPException(status_code=400, detail="Invalid id_token") from e
 
             return OAuthGoogleToken(
                 access_token=token_data.get("access_token"),
