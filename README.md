@@ -8,7 +8,7 @@
 
 A production-ready, self-hosted FastAPI (Python 3.14) authentication microservice for Docker Compose. Provides JWT authentication (HS256, RS256, ES256), Google OAuth2 with PKCE, Redis-backed stateful session management, role-based access control (RBAC), API key management with per-key rate limiting, and a private inter-service API — ready to drop into any Docker-based Python microservice stack.
 
-Consumer services validate tokens **locally** using the companion [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8) package (`pip install auth-sdk-m8`) — no round-trip to the auth service on every request. In `stateful` mode, revocation is checked via a lightweight HTTP call to the auth service private API (`POST /private/v1/jti-status`) instead of connecting to auth Redis directly, keeping the Redis instance private to the auth service.
+Consumer services validate tokens **locally** using [fastapi-m8](https://github.com/mano8/fastapi-m8) (`pip install fastapi-m8 --upgrade`) — no round-trip to the auth service on every request. `fastapi-m8` bundles [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8) for JWT validation and shared schemas; advanced consumers can also import `auth_sdk_m8` types directly. In `stateful` mode, revocation is checked via a lightweight HTTP call to the auth service private API (`POST /private/v1/jti-status`) instead of connecting to auth Redis directly, keeping the Redis instance private to the auth service.
 
 The included example stacks use `_m8` in their names as a personal naming convention — not a framework requirement. Any stack can be copied and adapted for your own project by renaming the Docker services, network, and env files.
 
@@ -80,7 +80,7 @@ The included example stacks use `_m8` in their names as a personal naming conven
 └────────┘
 ```
 
-Consumer services validate tokens locally (JWT signature check + optional Redis blacklist via `auth-sdk-m8`) — no per-request call to the auth service. Other services on the same Docker network can also call the private API at `http://auth-service:8000/user/private/` for operations such as creating users programmatically.
+Consumer services validate tokens locally (JWT signature check + optional Redis blacklist via `fastapi-m8`) — no per-request call to the auth service. Other services on the same Docker network can also call the private API at `http://auth-service:8000/user/private/` for operations such as creating users programmatically.
 
 ---
 
@@ -642,27 +642,40 @@ Endpoints under `/user/private/` are for inter-service calls only:
 
 ## Consumer Service Integration
 
-`examples/fastapi_full` and `examples/fastapi_minimal` are reference implementations showing how a downstream microservice integrates with `auth_user_service` using `fastapi-m8` and `auth-sdk-m8`. `fastapi_full` demonstrates DB session, health checks, auth deps, and lifespan teardown; `fastapi_minimal` is the minimal three-step setup.
+`examples/fastapi_full` and `examples/fastapi_minimal` are reference implementations showing how a downstream microservice integrates with `auth_user_service` using [fastapi-m8](https://github.com/mano8/fastapi-m8) and [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8). `fastapi_full` demonstrates DB session, health checks, auth deps, and lifespan teardown; `fastapi_minimal` is the minimal three-step setup.
 
-`auth-sdk-m8` is a standard pip package — install it in any FastAPI consumer service:
+[fastapi-m8](https://github.com/mano8/fastapi-m8) is the recommended consumer integration package — it wires CORS, health, lifespan, and auth dependencies in a few lines and bundles `auth-sdk-m8` for JWT validation and shared schemas:
 
 ```bash
-pip install auth-sdk-m8
+pip install fastapi-m8 --upgrade                        # minimal consumer
+pip install "fastapi-m8[db,postgres,mysql]" --upgrade   # with SQLModel + DB drivers (fastapi_full)
 ```
 
-### Token validation
+### Minimal integration
 
 ```python
-from auth_sdk_m8.security import build_access_validator, ValidationHooks
+# core/deps.py
+from fastapi_m8 import AuthDeps, build_auth_deps
+from .config import settings
 
-_validator = build_access_validator(settings, hooks=_hooks)
+auth: AuthDeps = build_auth_deps(settings)
+CurrentUser = auth.CurrentUser
 ```
 
-`build_access_validator` reads `ACCESS_TOKEN_ALGORITHM`, `ACCESS_SECRET_KEY` / `ACCESS_PUBLIC_KEY_FILE`, `TOKEN_ISSUER`, `TOKEN_AUDIENCE`, and `JWKS_URI` directly from a `CommonSettings` instance.
+```python
+# main.py
+from fastapi_m8 import AppLifecycle, create_app
+from .core.deps import auth
+
+app = create_app(settings, api_router, service_name="my-service", service_version="1.0.0",
+                 lifecycle=AppLifecycle(auth_deps=auth))
+```
+
+`build_auth_deps` reads `ACCESS_TOKEN_ALGORITHM`, `ACCESS_SECRET_KEY` / `ACCESS_PUBLIC_KEY_FILE`, `TOKEN_ISSUER`, `TOKEN_AUDIENCE`, `JWKS_URI`, `TOKEN_MODE`, `INTROSPECTION_URL`, and failure-mode settings directly from a `ConsumerServiceSettings` instance.
 
 ### JWKS-based key validation (RS256/ES256)
 
-When `JWKS_URI` is set, `build_access_validator` wires up `JwksKeyResolver` automatically. The resolver fetches `/.well-known/jwks.json`, caches keys by `kid`, and refreshes on cache miss — supporting zero-downtime key rotation.
+When `JWKS_URI` is set, `build_auth_deps` wires up `JwksKeyResolver` automatically. The resolver fetches `/.well-known/jwks.json`, caches keys by `kid`, and refreshes on cache miss — supporting zero-downtime key rotation.
 
 ```ini
 ACCESS_TOKEN_ALGORITHM=RS256
@@ -821,7 +834,8 @@ Alert rules for `metrics_m8` and `vault_m8` stacks (`prometheus/alerts.yml`):
 
 - [FastAPI](https://fastapi.tiangolo.com/)
 - [SQLModel](https://sqlmodel.tiangolo.com/) + [Alembic](https://alembic.sqlalchemy.org/)
-- [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8) — shared schemas, JWT validation, refresh token rotation, JWKS resolver, base controllers
+- [fastapi-m8](https://github.com/mano8/fastapi-m8) — consumer service integration (CORS, health, auth deps, lifespan); consumer services install this
+- [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8) — shared schemas, JWT validation, refresh token rotation, JWKS resolver, base controllers; bundled by `fastapi-m8`, also used directly by the auth service
 - [Redis](https://redis.io/) — session revocation, refresh token allowlist, rate limiting, PKCE store, write-behind queue
 - [PyJWT](https://pyjwt.readthedocs.io/) + [passlib](https://passlib.readthedocs.io/) + [cryptography](https://cryptography.io/)
 - [google-auth](https://google-auth.readthedocs.io/) — Google OAuth2
