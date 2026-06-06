@@ -8,6 +8,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Strict `aud`/`iss` validation adopted by default (F1)** — `auth-sdk-m8 ≥ 1.0.0` defaults
+  `TOKEN_STRICT_VALIDATION=true`, and `build_access_validator` now consumes that strict profile:
+  the service enforces exact `iss`/`aud` binding and pins the configured algorithm. The previous
+  "permissive when `TOKEN_ISSUER`/`TOKEN_AUDIENCE` are unset" path is gone — `CommonSettings`
+  fails closed at boot unless both are set. Self-issued tokens validate round-trip; a token for a
+  different issuer or audience is rejected (`403`). Every example `auth.env.example` now sets
+  `TOKEN_ISSUER` / `TOKEN_AUDIENCE` so each stack boots under the strict default. Operators on a
+  legacy posture opt out with `TOKEN_STRICT_VALIDATION=false`.
+
+- **RS256 issuance + JWKS publication is the default posture (F2)** — `ACCESS_TOKEN_ALGORITHM`
+  defaults to `RS256` (asymmetric). The auth service signs access tokens with the mounted private
+  key, embeds a `kid`, and publishes the public key set at `/.well-known/jwks.json` for
+  zero-downtime rotation; consumers resolve keys via `JWKS_URI`. Key strength (≥ 2048-bit RSA) is
+  enforced at boot. HS256 remains available as a documented opt-out
+  (`ACCESS_TOKEN_ALGORITHM=HS256` + `ACCESS_SECRET_KEY`). See the README **“Migrating an existing
+  HS256 deployment”** note for the rollout path.
+
 - **Secure-by-default event signing adopted (F3)** — `auth-sdk-m8 ≥ 1.0.0` (repointed from `0.7.1`)
   activates the `_enforce_event_signing_key` boot validator. The service now fails closed at
   startup when `EVENT_SIGNING_ENABLED=true` (default) and no `EVENT_SIGNING_KEY` is configured.

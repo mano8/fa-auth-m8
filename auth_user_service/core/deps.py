@@ -96,8 +96,12 @@ _redis_pool: Optional[ConnectionPool] = ConnectionPool(
 
 
 # Module-level validator — created once at startup from validated settings.
-# iss/aud enforcement is opt-in: set TOKEN_ISSUER / TOKEN_AUDIENCE in env to
-# enable.  When unset, validation is permissive for backward compatibility.
+# Secure-by-default (auth-sdk-m8 >= 1.0.0): TOKEN_STRICT_VALIDATION is on by
+# default, so build_access_validator consumes the strict profile — it enforces
+# iss/aud binding and pins the configured algorithm. CommonSettings' boot
+# validators require TOKEN_ISSUER / TOKEN_AUDIENCE when strict, so there is no
+# permissive "unset" path here; operators opt out of strictness for legacy
+# deployments via TOKEN_STRICT_VALIDATION=false.
 _access_validator = build_access_validator(settings, _hooks)
 
 

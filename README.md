@@ -344,7 +344,7 @@ Set `SELECTED_DB` in `.env` (or `auth.env`):
 | Variable | Required | Default | Description |
 | -------- | -------- | ------- | ----------- |
 | `TOKEN_MODE` | no | `stateful` | `stateless` \| `hybrid` \| `stateful` — controls Redis usage and JTI revocation |
-| `ACCESS_TOKEN_ALGORITHM` | no | `HS256` | Signing algorithm for access tokens (`HS256`, `RS256`, `ES256`) |
+| `ACCESS_TOKEN_ALGORITHM` | no | `RS256` | Signing algorithm for access tokens. Secure-by-default `RS256` (asymmetric + JWKS); `ES256` also supported; `HS256` is a documented opt-out (symmetric) |
 | `REFRESH_TOKEN_ALGORITHM` | no | `HS256` | Signing algorithm for refresh tokens |
 | `ACCESS_SECRET_KEY` | HS256 only | — | Symmetric signing key for access tokens |
 | `REFRESH_SECRET_KEY` | yes | — | Signing key for refresh tokens (always HS256) |
@@ -355,16 +355,19 @@ Set `SELECTED_DB` in `.env` (or `auth.env`):
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | no | `120` | Refresh token lifetime |
 | `REFRESH_TOKEN_COOKIE_EXPIRE_SECONDS` | no | `3600` | Refresh cookie max-age |
 | `TOKENS_ENCRYPTION_KEY` | yes | — | Key for `SessionMiddleware` cookie signing |
-| `TOKEN_ISSUER` | no | — | When set, embeds `iss` in tokens and requires a match on validation |
-| `TOKEN_AUDIENCE` | no | — | When set, embeds `aud` in tokens and requires a match on validation |
+| `TOKEN_ISSUER` | if strict | — | `iss` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
+| `TOKEN_AUDIENCE` | if strict | — | `aud` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
+| `TOKEN_STRICT_VALIDATION` | no | `true` | Secure-by-default strict profile (`auth-sdk-m8 ≥ 1.0.0`): enforces `iss`/`aud` binding and pins the configured algorithm; the service fails closed at boot unless `TOKEN_ISSUER`/`TOKEN_AUDIENCE` are set. Set `false` to opt out (legacy/local), enforcing `iss`/`aud` only when configured. |
 | `ACCESS_KEY_ID` | no | — | Explicit `kid` in JWT headers and JWKS; auto-derived from key fingerprint when unset |
 | `AUTH_SERVICE_ROLE` | no | `issuer` | `issuer` (auth service) or `consumer` (downstream services) |
 | `JWKS_URI` | no | — | Consumer services: JWKS endpoint URL; enables automatic `JwksKeyResolver` wiring |
 | `JWKS_CACHE_TTL_SECONDS` | no | `300` | JWKS key cache TTL in seconds |
 
-**HS256 (default)** — set `ACCESS_SECRET_KEY` and `REFRESH_SECRET_KEY`; leave asymmetric key vars blank.
+**RS256 / ES256 (secure-by-default)** — `ACCESS_TOKEN_ALGORITHM` defaults to `RS256`: the auth service signs with the mounted private key and publishes JWKS (see below). RSA keys must be ≥ 2048-bit (enforced at boot).
 
-**RS256 / ES256** — set `ACCESS_TOKEN_ALGORITHM`, `ACCESS_PRIVATE_KEY_FILE`, `ACCESS_PUBLIC_KEY_FILE`. Mount the key files into the container (see `examples/docker_compose/rs256_m8/keys/`). Generate a key pair:
+**HS256 (opt-out)** — set `ACCESS_TOKEN_ALGORITHM=HS256`, `ACCESS_SECRET_KEY`, and `REFRESH_SECRET_KEY`; leave asymmetric key vars blank.
+
+**Generating asymmetric keys** — set `ACCESS_PRIVATE_KEY_FILE` and `ACCESS_PUBLIC_KEY_FILE`, then mount the key files into the container (see `examples/docker_compose/rs256_m8/keys/`). Generate a key pair:
 
 ```bash
 # RS256
@@ -377,6 +380,11 @@ openssl ec -in private.pem -pubout -out public.pem
 ```
 
 Or use `bash init.sh` in any asymmetric stack — it generates the correct key type automatically.
+
+**Migrating an existing HS256 deployment** — `auth-sdk-m8 ≥ 1.0.0` flips the defaults to RS256 + strict `iss`/`aud`. Existing deployments have two coherent paths:
+
+- **Adopt the secure default (recommended):** generate an RSA key pair, set `ACCESS_PRIVATE_KEY_FILE` / `ACCESS_PUBLIC_KEY_FILE`, point consumers at `JWKS_URI`, and set the same `TOKEN_ISSUER` / `TOKEN_AUDIENCE` on the auth service and every consumer. Roll the public key / JWKS out to consumers **before** switching the issuer so in-flight tokens still validate.
+- **Stay on the legacy posture (opt-out):** set `ACCESS_TOKEN_ALGORITHM=HS256` (with `ACCESS_SECRET_KEY`) and `TOKEN_STRICT_VALIDATION=false`. The service then behaves as it did before 1.0.0 — `iss`/`aud` enforced only when configured.
 
 ### Database
 
@@ -681,9 +689,9 @@ or `AUTH_STRICT_MODE=true` to force all failure-mode controls closed. The issuer
 `/private/v1/jti-status` endpoint mirrors the same setting: Redis-unavailable returns
 `active=false` when `fail_closed` is effective.
 
-### Issuer / audience enforcement (opt-in)
+### Issuer / audience enforcement (secure-by-default)
 
-Set `TOKEN_ISSUER` and `TOKEN_AUDIENCE` to the **same values** in both the auth service and every consumer. When set, the auth service embeds `iss`/`aud` claims in issued tokens and all validators require an exact match.
+`auth-sdk-m8 ≥ 1.0.0` enables `TOKEN_STRICT_VALIDATION` by default. Set `TOKEN_ISSUER` and `TOKEN_AUDIENCE` to the **same values** in both the auth service and every consumer: the auth service embeds `iss`/`aud` claims in issued tokens and all validators require an exact match. Under the strict default the service **fails closed at boot** until both are set. Opt out for legacy/local deployments with `TOKEN_STRICT_VALIDATION=false`, which enforces `iss`/`aud` only when configured.
 
 ### Event signing and auth Redis isolation
 
