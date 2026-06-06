@@ -6,11 +6,13 @@ DOMAIN="localhost"
 ENVIRONMENT="local"
 
 API_PREFIX="/user"
-# Docs are always disabled when ENVIRONMENT=production (startup error if SET_DOCS=true there).
+# Docs are suppressed in ENVIRONMENT=production by default (auth-sdk-m8 ≥ 0.7.3).
 # In development/staging these flags act as opt-in overrides.
 SET_OPEN_API=true
 SET_DOCS=true
 SET_REDOC=true
+# Explicitly enable docs in production. Only for public/open-source APIs; emits a startup warning.
+#SERVE_DOCS_IN_PRODUCTION=false
 PROJECT_NAME="M8App"
 STACK_NAME="full-stack-m8-app"
 

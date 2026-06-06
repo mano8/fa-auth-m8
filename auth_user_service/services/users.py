@@ -9,6 +9,11 @@ from auth_user_service.core.security import SecurityHelper
 from auth_user_service.db_models.users import User, UserCreate, UserUpdate
 from auth_sdk_m8.schemas.base import AuthProviderType
 
+# Explicit allowlist for admin user updates — includes role, never includes is_superuser.
+_ADMIN_UPDATE_FIELDS: frozenset[str] = frozenset(
+    {"email", "full_name", "avatar", "role", "oauth_user_id", "hashed_password"}
+)
+
 
 class UserController:
     """User Controller"""
@@ -75,9 +80,8 @@ class UserController:
             extra_data["hashed_password"] = SecurityHelper.get_password_hash(
                 user_data["password"]
             )
-        db_fields = set(type(db_user).model_fields)
         for field, value in {**user_data, **extra_data}.items():
-            if field in db_fields:
+            if field in _ADMIN_UPDATE_FIELDS:
                 setattr(db_user, field, value)
         session.add(db_user)
         session.commit()

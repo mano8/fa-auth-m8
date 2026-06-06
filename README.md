@@ -131,7 +131,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | google-api | POST | `/google-api/exchange/` | — | One-time auth code exchange for tokens (PKCE verified, GETDEL atomic) |
 | google-auth | GET | `/google-auth/oauth-callback/` | — | Google OAuth2 PKCE callback — exchange code, create/update user |
 | profile | GET | `/profile/get/me/` | JWT | Read own profile |
-| profile | PATCH | `/profile/update/me/` | JWT | Update own profile |
+| profile | PATCH | `/profile/update/me/` | JWT | Update own profile (`email`, `full_name`, `avatar` only — explicit allowlist) |
 | profile | PATCH | `/profile/me/password/` | JWT | Change own password |
 | profile | DELETE | `/profile/delete/me/` | JWT | Delete own account |
 | api-keys | GET | `/profile/api-keys/verify` | X-API-Key | Validate key header, enforce rate limits, return key metadata |
@@ -157,7 +157,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | metrics | GET | `/metrics` | — | Prometheus metrics (`METRICS_ENABLED=true` only) |
 | private | POST | `/private/users/` | X-Internal-Token | Create user (inter-service, Docker network only) |
 
-Interactive docs at `{BACKEND_HOST}{API_PREFIX}/docs` when `SET_DOCS=true` **and** `ENVIRONMENT ≠ production`. In production both flags are ignored and docs are always off.
+Interactive docs at `{BACKEND_HOST}{API_PREFIX}/docs` when `SET_DOCS=true` **and** `ENVIRONMENT ≠ production`. In production docs are suppressed by default; set `SERVE_DOCS_IN_PRODUCTION=true` to explicitly enable them (emits a startup warning — use only for public/open-source APIs).
 
 ---
 
@@ -334,9 +334,10 @@ Set `SELECTED_DB` in `.env` (or `auth.env`):
 | `FRONTEND_HOST` | yes | — | Full frontend URL (e.g. `http://localhost:5173`) |
 | `BACKEND_CORS_ORIGINS` | yes | — | Comma-separated allowed origins |
 | `TABLES_PREFIX` | no | `auth` | DB table name prefix (e.g. `auth_user`, `auth_api_key`) |
-| `SET_DOCS` | no | `true` | Enable Swagger UI at `{API_PREFIX}/docs`. Always disabled when `ENVIRONMENT=production`; setting `SET_DOCS=true` together with `ENVIRONMENT=production` raises a startup error. |
+| `SET_DOCS` | no | `true` | Enable Swagger UI at `{API_PREFIX}/docs`. Suppressed in production unless `SERVE_DOCS_IN_PRODUCTION=true`. |
 | `SET_REDOC` | no | `true` | Enable ReDoc at `{API_PREFIX}/redoc`. Same production gate as `SET_DOCS`. |
 | `SET_OPEN_API` | no | `true` | Enable OpenAPI schema at `{API_PREFIX}/openapi.json`. Same production gate as `SET_DOCS`. |
+| `SERVE_DOCS_IN_PRODUCTION` | no | `false` | Explicitly serve docs in production (`auth-sdk-m8 ≥ 0.7.3`). Emits a startup warning. Only for public/open-source APIs. |
 
 ### Tokens
 
