@@ -15,7 +15,7 @@ from auth_user_service.routes import (
 )
 
 api_router = APIRouter()
-api_router.include_router(health.router)
+api_router.include_router(health.router, include_in_schema=False)
 api_router.include_router(jwks.router)
 api_router.include_router(profile.router)
 api_router.include_router(api_keys.router)
