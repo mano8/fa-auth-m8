@@ -27,19 +27,33 @@ def access_payload(
     is_active: bool = True,
     email: str = "forged@evil.com",
     token_type: str = "access",
+    iss: str | None = None,
+    aud: str | None = None,
 ) -> dict:
-    """Return a minimal but plausible access token payload."""
-    return {
+    """Return a minimal but plausible access token payload.
+
+    iat/nbf are always included — strict validators (auth-sdk >= 1.0.0) require them.
+    iss/aud are included only when provided; pass them for strict-validation stacks.
+    """
+    now = int(datetime.now(timezone.utc).timestamp())
+    payload: dict = {
         "sub": str(uuid.uuid4()),
         "email": email,
         "is_superuser": is_superuser,
         "is_active": is_active,
         "role": "user",
         "full_name": "Red Team",
-        "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
+        "exp": now + 3600,
+        "iat": now,
+        "nbf": now,
         "jti": str(uuid.uuid4()),
         "type": token_type,
     }
+    if iss is not None:
+        payload["iss"] = iss
+    if aud is not None:
+        payload["aud"] = aud
+    return payload
 
 
 def forge_alg_none(is_superuser: bool = True) -> str:
@@ -70,10 +84,14 @@ def forge_rs256(
     is_superuser: bool = True,
     token_type: str = "access",
     kid: str = _FALLBACK_KID,
+    iss: str | None = None,
+    aud: str | None = None,
 ) -> str:
     """Forge a cryptographically valid RS256 token using the given private key."""
     return jwt.encode(
-        access_payload(is_superuser=is_superuser, token_type=token_type),
+        access_payload(
+            is_superuser=is_superuser, token_type=token_type, iss=iss, aud=aud
+        ),
         private_key_pem,
         algorithm="RS256",
         headers={"kid": kid},
@@ -86,10 +104,14 @@ def forge_es256(
     is_superuser: bool = True,
     token_type: str = "access",
     kid: str = _FALLBACK_KID,
+    iss: str | None = None,
+    aud: str | None = None,
 ) -> str:
     """Forge a cryptographically valid ES256 token using the given EC private key."""
     return jwt.encode(
-        access_payload(is_superuser=is_superuser, token_type=token_type),
+        access_payload(
+            is_superuser=is_superuser, token_type=token_type, iss=iss, aud=aud
+        ),
         private_key_pem,
         algorithm="ES256",
         headers={"kid": kid},
@@ -103,15 +125,27 @@ def forge_asymmetric(
     is_superuser: bool = True,
     token_type: str = "access",
     kid: str = _FALLBACK_KID,
+    iss: str | None = None,
+    aud: str | None = None,
 ) -> str:
     """Dispatch RS256/ES256 forgery based on detected algorithm."""
     if alg.startswith("RS"):
         return forge_rs256(
-            key_pem, is_superuser=is_superuser, token_type=token_type, kid=kid
+            key_pem,
+            is_superuser=is_superuser,
+            token_type=token_type,
+            kid=kid,
+            iss=iss,
+            aud=aud,
         )
     if alg.startswith("ES"):
         return forge_es256(
-            key_pem, is_superuser=is_superuser, token_type=token_type, kid=kid
+            key_pem,
+            is_superuser=is_superuser,
+            token_type=token_type,
+            kid=kid,
+            iss=iss,
+            aud=aud,
         )
     raise ValueError(f"Unsupported asymmetric algorithm: {alg!r}")
 
