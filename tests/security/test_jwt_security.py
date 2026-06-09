@@ -29,7 +29,7 @@ def _make_token(
     is_active: bool = True,
     is_superuser: bool = False,
     expires: timedelta = timedelta(minutes=30),
-    secret_override: str = None,
+    secret_override: str | None = None,
 ) -> str:
     """Create a signed access token using real signing machinery."""
     from auth_user_service.core.config import settings

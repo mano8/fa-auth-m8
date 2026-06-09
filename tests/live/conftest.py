@@ -19,10 +19,15 @@ Usage examples
 import pathlib
 import uuid
 import warnings
+from typing import TypeAlias
 
 import pytest
 import requests
-from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurve
+from cryptography.hazmat.primitives.asymmetric.ec import (
+    EllipticCurve,
+    EllipticCurvePrivateKey,
+)
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
 # ---------------------------------------------------------------------------
 # Stack endpoints and test credentials (match compose stack defaults)
@@ -38,6 +43,7 @@ _ADMIN_PASSWORD = "Ocoti123@#@"
 _HEALTH_URL = f"{AUTH_BASE}/health/"
 _JWKS_URL = f"{AUTH_BASE}/.well-known/jwks.json"
 _DETECT_TIMEOUT = 5
+_PrivateKey: TypeAlias = RSAPrivateKey | EllipticCurvePrivateKey
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +444,7 @@ def asymmetric_key_pem(
     if alg.startswith("RS"):
         from cryptography.hazmat.primitives.asymmetric import rsa
 
-        k = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        k: _PrivateKey = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     else:
         from cryptography.hazmat.primitives.asymmetric import ec
 

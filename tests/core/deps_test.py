@@ -23,7 +23,7 @@ from auth_sdk_m8.schemas.base import Period
 from auth_sdk_m8.schemas.user import UserModel
 
 
-def _make_valid_token(user_id: str = None) -> str:
+def _make_valid_token(user_id: str | None = None) -> str:
     """Create a signed access token that passes decode_access_token validation."""
     import re
 

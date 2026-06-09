@@ -94,7 +94,8 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     """Run migrations in online mode."""
     configuration = config.get_section(config.config_ini_section)
-    assert configuration is not None
+    if configuration is None:
+        raise RuntimeError("Alembic configuration section is missing.")
     configuration["sqlalchemy.url"] = get_url()
 
     connectable = engine_from_config(
