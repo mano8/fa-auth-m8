@@ -24,6 +24,8 @@ M  API key security
 
 import json
 import uuid
+from collections.abc import Generator
+from typing import Any, cast
 
 import pytest
 import requests
@@ -528,7 +530,7 @@ class TestF_PrivateAPI:
     """
 
     _URL = "https://localhost:4430/user/private/users/"
-    _BODY = {
+    _BODY: dict[str, Any] = {
         "email": "pvt@redteam-test.com",
         "password": "Test!123",
         "full_name": "T",
@@ -862,7 +864,7 @@ class TestK_SecurityHeaders:
     @pytest.fixture(scope="class")
     def resp_headers(self) -> dict:
         """Fetch a real response and return its headers."""
-        return requests.get(f"{AUTH_BASE}/health/", timeout=TIMEOUT).headers
+        return dict(requests.get(f"{AUTH_BASE}/health/", timeout=TIMEOUT).headers)
 
     def test_k01_x_content_type_options_nosniff(self, resp_headers: dict):
         val = resp_headers.get("x-content-type-options", "")
@@ -945,7 +947,7 @@ class TestL_CookieSecurity:
         self, login_resp: requests.Response
     ):
         """Token value must live only in the cookie, not in JSON."""
-        cookie_val = login_resp.cookies.get("refresh_token", "")
+        cookie_val = cast(str, login_resp.cookies.get("refresh_token", ""))
         body_str = json.dumps(login_resp.json())
         assert cookie_val not in body_str, (
             "[FINDING-L04] Refresh token value in response body"
@@ -979,7 +981,7 @@ class TestM_ApiKeySecurity:
     _BASE = f"{AUTH_BASE}/profile/api-keys"
 
     @pytest.fixture(scope="class")
-    def admin_key(self, admin_headers: dict) -> dict:
+    def admin_key(self, admin_headers: dict) -> Generator[dict, None, None]:
         """Create one API key for the admin user; clean up after the class."""
         r = requests.post(
             f"{self._BASE}/",
@@ -999,7 +1001,7 @@ class TestM_ApiKeySecurity:
             )
 
     @pytest.fixture(scope="class")
-    def user_key(self, regular_user: dict) -> dict:
+    def user_key(self, regular_user: dict) -> Generator[dict, None, None]:
         """Create one API key for the regular user."""
         r = requests.post(
             f"{self._BASE}/",

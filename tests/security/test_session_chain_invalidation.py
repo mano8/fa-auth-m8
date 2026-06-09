@@ -30,7 +30,9 @@ def _make_db_session(jti: str, expires_in_seconds: int = 3600) -> MagicMock:
 class TestRevokeAllUserSessionsRedis:
     """Redis stores must be updated before the DB records are deleted."""
 
-    def _run(self, sessions: list, redis: MagicMock) -> int:
+    def _run(
+        self, sessions: list, redis: MagicMock
+    ) -> tuple[int, MagicMock, MagicMock]:
         with patch.object(
             SessionController,
             "get_user_active_sessions",

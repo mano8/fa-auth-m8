@@ -30,10 +30,13 @@ Run:
 
 import json
 from datetime import datetime, timedelta, timezone
+from typing import TypeAlias
 
 import jwt
 import pytest
 import requests
+from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePrivateKey
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
 from tests.live.suites.auth_flows import AUTH_BASE, SVC_BASE, TIMEOUT
 from tests.live.suites.token_forge import (
@@ -51,6 +54,7 @@ pytestmark = [
 ]
 
 _ME = f"{AUTH_BASE}/profile/get/me/"
+_PrivateKey: TypeAlias = RSAPrivateKey | EllipticCurvePrivateKey
 
 
 def _auth(bearer: str) -> dict:
@@ -223,7 +227,9 @@ class TestB_AsymmetricJWTAttacks:
         if alg.startswith("RS"):
             from cryptography.hazmat.primitives.asymmetric import rsa
 
-            k = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            k: _PrivateKey = rsa.generate_private_key(
+                public_exponent=65537, key_size=2048
+            )
         else:
             from cryptography.hazmat.primitives.asymmetric import ec
 
@@ -373,7 +379,9 @@ class TestI_CrossServiceTokens:
         if alg.startswith("RS"):
             from cryptography.hazmat.primitives.asymmetric import rsa
 
-            k = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            k: _PrivateKey = rsa.generate_private_key(
+                public_exponent=65537, key_size=2048
+            )
         else:
             from cryptography.hazmat.primitives.asymmetric import ec
 

@@ -9,7 +9,7 @@ from auth_user_service.db_models.sessions import ClientSessionCreate
 from auth_user_service.services.client_sessions import SessionController
 
 
-def _make_session_create(jti: str = None) -> ClientSessionCreate:
+def _make_session_create(jti: str | None = None) -> ClientSessionCreate:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     return ClientSessionCreate(
         jwt_jti=jti or str(uuid.uuid4()),

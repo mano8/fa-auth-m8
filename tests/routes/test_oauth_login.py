@@ -225,7 +225,7 @@ class TestGetGoogleLoginUrl:
         assert "code_challenge" in exc.value.detail
 
     @pytest.mark.anyio
-    async def test_http_redirect_hard_rejected(self):
+    async def test_http_redirect_rejected_by_default(self):
         with patch("auth_user_service.routes.oauth_login.settings", _login_settings()):
             with pytest.raises(HTTPException) as exc:
                 await get_google_login_url(
@@ -233,10 +233,10 @@ class TestGetGoogleLoginUrl:
                     code_challenge=_VALID_CODE_CHALLENGE,
                 )
         assert exc.value.status_code == 400
-        assert "web origins" in exc.value.detail
+        assert "scheme not allowed" in exc.value.detail
 
     @pytest.mark.anyio
-    async def test_https_redirect_hard_rejected(self):
+    async def test_https_redirect_rejected_by_default(self):
         with patch("auth_user_service.routes.oauth_login.settings", _login_settings()):
             with pytest.raises(HTTPException) as exc:
                 await get_google_login_url(
@@ -244,7 +244,101 @@ class TestGetGoogleLoginUrl:
                     code_challenge=_VALID_CODE_CHALLENGE,
                 )
         assert exc.value.status_code == 400
-        assert "web origins" in exc.value.detail
+        assert "scheme not allowed" in exc.value.detail
+
+    @pytest.mark.anyio
+    async def test_https_redirect_requires_prefix_allowlist(self):
+        s = _login_settings(OAUTH_ALLOWED_REDIRECT_SCHEMES=["https://"])
+        with patch("auth_user_service.routes.oauth_login.settings", s):
+            with pytest.raises(HTTPException) as exc:
+                await get_google_login_url(
+                    redirect_target="https://localhost:4430/en/auth/callback",
+                    code_challenge=_VALID_CODE_CHALLENGE,
+                )
+        assert exc.value.status_code == 400
+        assert "PREFIXES" in exc.value.detail
+
+    @pytest.mark.anyio
+    async def test_https_redirect_allowed_with_matching_prefix(self):
+        s = _login_settings(
+            OAUTH_ALLOWED_REDIRECT_SCHEMES=["https://"],
+            OAUTH_ALLOWED_REDIRECT_PREFIXES=["https://localhost:4430/en/auth/callback"],
+        )
+        with (
+            patch("auth_user_service.routes.oauth_login.settings", s),
+            patch(
+                "auth_user_service.routes.oauth_login.get_redis_client",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "auth_user_service.routes.oauth_login.AuthController.get_google_login_url",
+                return_value=("https://accounts.google.com/auth", "state-web", "v-web"),
+            ),
+        ):
+            result = await get_google_login_url(
+                redirect_target="https://localhost:4430/en/auth/callback",
+                code_challenge=_VALID_CODE_CHALLENGE,
+            )
+        assert result == {"url": "https://accounts.google.com/auth"}
+
+    @pytest.mark.anyio
+    async def test_http_redirect_limited_to_localhost(self):
+        s = _login_settings(
+            OAUTH_ALLOWED_REDIRECT_SCHEMES=["http://"],
+            OAUTH_ALLOWED_REDIRECT_PREFIXES=["http://evil.com/callback"],
+        )
+        with patch("auth_user_service.routes.oauth_login.settings", s):
+            with pytest.raises(HTTPException) as exc:
+                await get_google_login_url(
+                    redirect_target="http://evil.com/callback",
+                    code_challenge=_VALID_CODE_CHALLENGE,
+                )
+        assert exc.value.status_code == 400
+        assert "localhost" in exc.value.detail
+
+    @pytest.mark.anyio
+    async def test_http_localhost_redirect_rejected_in_production(self):
+        s = _login_settings(
+            ENVIRONMENT="production",
+            OAUTH_ALLOWED_REDIRECT_SCHEMES=["http://"],
+            OAUTH_ALLOWED_REDIRECT_PREFIXES=["http://localhost:4321/en/auth/callback"],
+        )
+        with patch("auth_user_service.routes.oauth_login.settings", s):
+            with pytest.raises(HTTPException) as exc:
+                await get_google_login_url(
+                    redirect_target="http://localhost:4321/en/auth/callback",
+                    code_challenge=_VALID_CODE_CHALLENGE,
+                )
+        assert exc.value.status_code == 400
+        assert "production" in exc.value.detail
+
+    @pytest.mark.anyio
+    async def test_http_localhost_redirect_allowed_in_development(self):
+        s = _login_settings(
+            ENVIRONMENT="development",
+            OAUTH_ALLOWED_REDIRECT_SCHEMES=["http://"],
+            OAUTH_ALLOWED_REDIRECT_PREFIXES=["http://localhost:4321/en/auth/callback"],
+        )
+        with (
+            patch("auth_user_service.routes.oauth_login.settings", s),
+            patch(
+                "auth_user_service.routes.oauth_login.get_redis_client",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "auth_user_service.routes.oauth_login.AuthController.get_google_login_url",
+                return_value=(
+                    "https://accounts.google.com/auth",
+                    "state-http",
+                    "v-http",
+                ),
+            ),
+        ):
+            result = await get_google_login_url(
+                redirect_target="http://localhost:4321/en/auth/callback",
+                code_challenge=_VALID_CODE_CHALLENGE,
+            )
+        assert result == {"url": "https://accounts.google.com/auth"}
 
     @pytest.mark.anyio
     async def test_disallowed_scheme_raises_400(self):

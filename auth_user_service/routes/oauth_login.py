@@ -36,7 +36,7 @@ router = APIRouter(prefix="/google-api", tags=["google-api"])
 _CHALLENGE_RE = re.compile(r"[A-Za-z0-9\-_]{43,128}")
 # RFC 7636 §4.1 code_verifier (unreserved chars, 43-128 chars).
 _VERIFIER_RE = re.compile(r"[A-Za-z0-9\-._~]{43,128}")
-# Hard-rejected web origin schemes — auth_code must never reach a server-logged URL.
+# Web origin schemes require explicit scheme and prefix allowlisting.
 _WEB_SCHEMES = {"http://", "https://"}
 # Maximum sizes for defensive payload caps.
 _SESSION_PAYLOAD_MAX = 4096
@@ -77,25 +77,48 @@ def _validate_redirect_target(redirect_target: str) -> None:
     parsed = urlparse(redirect_target)
     scheme = f"{parsed.scheme}://"
 
-    if scheme in _WEB_SCHEMES:
+    if not parsed.netloc:
         raise HTTPException(
-            status_code=400,
-            detail="redirect_target scheme not allowed: web origins are not permitted.",
+            status_code=400, detail="redirect_target must include a host."
         )
     if scheme not in settings.OAUTH_ALLOWED_REDIRECT_SCHEMES:
         raise HTTPException(
             status_code=400, detail="redirect_target scheme not allowed."
         )
-    if not parsed.netloc:
-        raise HTTPException(
-            status_code=400, detail="redirect_target must include a host."
-        )
+    if scheme in _WEB_SCHEMES:
+        if not settings.OAUTH_ALLOWED_REDIRECT_PREFIXES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "web redirect targets require OAUTH_ALLOWED_REDIRECT_PREFIXES."
+                ),
+            )
+        if scheme == "http://" and not _is_safe_http_redirect(parsed.hostname):
+            raise HTTPException(
+                status_code=400,
+                detail="http redirect targets are limited to localhost.",
+            )
+        environment = getattr(settings, "ENVIRONMENT", "local")
+        if not isinstance(environment, str):
+            environment = "local"
+        if scheme == "http://" and environment in {"production", "staging"}:
+            raise HTTPException(
+                status_code=400,
+                detail="http redirect targets are not allowed in production.",
+            )
     if settings.OAUTH_ALLOWED_REDIRECT_PREFIXES and not _uri_prefix_match_any(
         redirect_target, settings.OAUTH_ALLOWED_REDIRECT_PREFIXES
     ):
         raise HTTPException(
             status_code=400, detail="redirect_target not in allowed prefixes."
         )
+
+
+def _is_safe_http_redirect(hostname: str | None) -> bool:
+    """Return True when an HTTP redirect host is local development only."""
+    if hostname is None:
+        return False
+    return hostname.lower() in {"localhost", "127.0.0.1", "::1"}
 
 
 def _build_session_payload(
@@ -129,12 +152,10 @@ async def get_google_login_url(
     the OAuth ``state`` key and returns the Google auth URL.
 
     Security:
-    - ``redirect_target`` scheme must be in ``OAUTH_ALLOWED_REDIRECT_SCHEMES``
-      (default ``chrome-extension://``).
-    - ``http://`` and ``https://`` are hard-rejected regardless of config.
-    - The extension is a public OAuth client; scheme-only validation is
-      intentional.  Set ``OAUTH_ALLOWED_REDIRECT_PREFIXES`` to restrict to
-      specific extension IDs.
+    - ``redirect_target`` scheme must be in ``OAUTH_ALLOWED_REDIRECT_SCHEMES``.
+    - Web schemes (``http://`` or ``https://``) require
+      ``OAUTH_ALLOWED_REDIRECT_PREFIXES`` to pin trusted callback origins.
+    - Plain HTTP is limited to localhost and is rejected in production/staging.
     """
     _validate_redirect_target(redirect_target)
     if not code_challenge:

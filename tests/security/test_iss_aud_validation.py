@@ -37,7 +37,7 @@ _USER_DATA = TokenAccessData(
 _EXPIRES = timedelta(minutes=30)
 
 
-def _make_token(issuer: str = None, audience: str = None) -> str:
+def _make_token(issuer: str | None = None, audience: str | None = None) -> str:
     token, _ = SecurityHelper.create_access_token(
         data=_USER_DATA,
         expires_delta=_EXPIRES,
@@ -48,7 +48,9 @@ def _make_token(issuer: str = None, audience: str = None) -> str:
     return token
 
 
-def _make_validator(issuer: str = None, audience: str = None) -> TokenValidator:
+def _make_validator(
+    issuer: str | None = None, audience: str | None = None
+) -> TokenValidator:
     return TokenValidator(
         secrets=_SECRET,
         config=TokenValidationConfig(
