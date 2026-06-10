@@ -6,7 +6,7 @@ This module loads environment settings securely and applies best practices.
 from pathlib import Path
 from typing import Optional
 
-from pydantic import EmailStr, SecretStr, field_validator
+from pydantic import EmailStr, Field, SecretStr, field_validator
 from pydantic_settings import SettingsConfigDict
 from auth_sdk_m8.utils.paths import find_dotenv
 from auth_sdk_m8.core.config import CommonSettings
@@ -36,11 +36,13 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
         "GOOGLE_CLIENT_ID",
         "GOOGLE_CLIENT_SECRET",
         "PRIVATE_API_SECRET",
+        "SESSION_SECRET",
         "TOKENS_ENCRYPTION_KEY",
     ]
     passwords = CommonSettings.passwords + ["FIRST_SUPERUSER_PASSWORD"]
     secret_keys = CommonSettings.secret_keys + [
         "PRIVATE_API_SECRET",
+        "SESSION_SECRET",
         "TOKENS_ENCRYPTION_KEY",
     ]
     TABLES_PREFIX: str = "auth"
@@ -59,6 +61,14 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
             raise ValueError("TRUSTED_PROXY_COUNT must be >= 0")
         return v
 
+    # Coarse per-source-IP login cap, shared across all accounts. Catches a
+    # credential-spray that rotates the username every attempt (which evades
+    # the per-email LOGIN_RATE_LIMIT_REQUESTS counter). Set higher than the
+    # per-email limit to tolerate shared NAT / office egress IPs. Reuses the
+    # per-email window (LOGIN_RATE_LIMIT_WINDOW_MINUTES). Defined here rather
+    # than in the shared SDK so this hardening ships without an SDK release.
+    LOGIN_IP_RATE_LIMIT_REQUESTS: int = Field(50, ge=1, le=100000)
+
     # API key rate limiting defaults (0 = disabled for that period)
     API_KEY_STRICT_RATE_LIMIT: bool = False
     API_KEY_DEFAULT_LIMIT_MINUTE: int = 60
@@ -76,6 +86,10 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     # Never auto-generated from request host to prevent host-spoofing.
     GOOGLE_OAUTH_REDIRECT_URI: str = ""
     PRIVATE_API_SECRET: SecretStr
+    # Dedicated signing key for the Starlette session cookie. Kept separate
+    # from TOKENS_ENCRYPTION_KEY (key separation): rotating the session key
+    # must not invalidate encrypted external tokens, and vice versa.
+    SESSION_SECRET: SecretStr
     TOKENS_ENCRYPTION_KEY: SecretStr
 
 

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from auth_user_service.core.client import (
     AuthCodeStore,
     ExchangeRateLimiter,
+    LoginIpRateLimiter,
     LoginRateLimiter,
     OAuthSessionStore,
     RateLimitResult,
@@ -445,6 +446,59 @@ class TestLoginRateLimiter:
         assert limiter.is_allowed("user@example.com") is True
         self.mock_redis.incr.return_value = 4
         assert limiter.is_allowed("user@example.com") is False
+
+
+class TestLoginIpRateLimiter:
+    def setup_method(self):
+        self.mock_redis = MagicMock()
+        self.limiter = LoginIpRateLimiter(self.mock_redis)
+
+    def test_key_format(self):
+        assert self.limiter._key("192.168.1.1") == "login:ip:192.168.1.1"
+
+    def test_is_allowed_first_attempt_sets_expiry(self):
+        self.mock_redis.incr.return_value = 1
+        assert self.limiter.is_allowed("192.168.1.1") is True
+        self.mock_redis.expire.assert_called_once()
+        _, ttl = self.mock_redis.expire.call_args[0]
+        assert ttl == 900
+
+    def test_is_allowed_within_max_attempts(self):
+        self.mock_redis.incr.return_value = 50
+        assert self.limiter.is_allowed("192.168.1.1") is True
+
+    def test_is_allowed_exceeds_max_attempts(self):
+        self.mock_redis.incr.return_value = 51
+        assert self.limiter.is_allowed("192.168.1.1") is False
+
+    def test_is_allowed_subsequent_no_expire(self):
+        self.mock_redis.incr.return_value = 3
+        self.limiter.is_allowed("192.168.1.1")
+        self.mock_redis.expire.assert_not_called()
+
+    def test_key_strips_control_chars(self):
+        assert "\n" not in self.limiter._key("127.0.0.1\ninjection")
+
+    def test_key_truncated_to_max_len(self):
+        key = self.limiter._key("a" * 100)
+        expected = len(LoginIpRateLimiter.PREFIX) + LoginIpRateLimiter.MAX_ID_LEN
+        assert len(key) == expected
+
+    def test_constants(self):
+        assert LoginIpRateLimiter.DEFAULT_MAX_REQUESTS == 50
+        assert LoginIpRateLimiter.DEFAULT_WINDOW_SECONDS == 900
+        assert LoginIpRateLimiter.PREFIX == "login:ip:"
+
+    def test_no_reset_method(self):
+        # The per-IP window must not be resettable on a successful login.
+        assert not hasattr(self.limiter, "reset")
+
+    def test_custom_max_requests_blocks_at_correct_count(self):
+        limiter = LoginIpRateLimiter(self.mock_redis, max_requests=3, window_seconds=60)
+        self.mock_redis.incr.return_value = 3
+        assert limiter.is_allowed("1.2.3.4") is True
+        self.mock_redis.incr.return_value = 4
+        assert limiter.is_allowed("1.2.3.4") is False
 
 
 class TestRefreshRateLimiter:

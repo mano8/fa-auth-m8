@@ -8,8 +8,10 @@ the X-Internal-Token header to match PRIVATE_API_SECRET.
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel, EmailStr, Field
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from auth_sdk_m8.utils.email import normalize_email
 
 from auth_user_service.core.config import settings
 from auth_user_service.core.deps import (
@@ -19,6 +21,7 @@ from auth_user_service.core.deps import (
 )
 from auth_user_service.core.security import SecurityHelper
 from auth_user_service.db_models.users import User, UserPublic
+from auth_user_service.services.users import UserController
 
 router = APIRouter(
     tags=["private"],
@@ -43,23 +46,48 @@ class PrivateUserCreate(BaseModel):
     """Private Create user"""
 
     email: EmailStr
-    password: str
+    # Mirror the public registration password policy (UserRegister): an
+    # internal caller must not be able to seat a user with a sub-policy
+    # password just because it holds PRIVATE_API_SECRET.
+    password: str = Field(min_length=8, max_length=128)
     full_name: str
     is_verified: bool = False
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _normalise_email(cls, v: str) -> str:
+        """Lowercase/strip so the duplicate check and stored value match the
+        public path's normalisation."""
+        return normalize_email(v)
 
 
 @router.post("/users/", response_model=UserPublic)
 def create_user(user_in: PrivateUserCreate, session: SessionDep) -> Any:
     """
     Create a new user (internal service call only).
+
+    Network isolation + PRIVATE_API_SECRET gate *who* may call this, but they
+    do not validate the payload. We still enforce the same invariants as the
+    public registration path — defence in depth so a compromised or buggy
+    internal caller cannot create duplicate-email or weak-password accounts —
+    and we honour the accepted ``is_verified`` flag (mapped to
+    ``email_verified``) instead of silently dropping it.
     """
+    existing = UserController.get_user_by_email(session=session, email=user_in.email)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail="The user with this email already exists in the system.",
+        )
     user = User(
         email=user_in.email,
         full_name=user_in.full_name,
+        email_verified=user_in.is_verified,
         hashed_password=SecurityHelper.get_password_hash(user_in.password),
     )
     session.add(user)
     session.commit()
+    session.refresh(user)
     return user
 
 

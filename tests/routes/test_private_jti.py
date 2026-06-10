@@ -3,11 +3,14 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from auth_user_service.routes.private import (
     JtiStatusRequest,
     JtiStatusResponse,
+    PrivateUserCreate,
     check_jti_status,
+    create_user,
 )
 
 
@@ -108,3 +111,57 @@ def test_jti_status_request_rejects_empty_jti() -> None:
     """JtiStatusRequest must reject empty jti (min_length=1)."""
     with pytest.raises(Exception):
         JtiStatusRequest(jti="")
+
+
+# ── private create_user validation (F8.2) ─────────────────────────────────────
+
+
+def test_private_user_create_enforces_password_policy() -> None:
+    """A sub-policy (<8 char) password is rejected at the schema boundary."""
+    with pytest.raises(Exception):
+        PrivateUserCreate(email="a@b.com", password="short", full_name="A")
+
+
+def test_private_user_create_normalises_email() -> None:
+    """Email is lowercased/stripped so the dup-check and stored value match."""
+    model = PrivateUserCreate(
+        email="  MixedCase@Example.COM ", password="goodpassword", full_name="A"
+    )
+    assert model.email == "mixedcase@example.com"
+
+
+def test_create_user_rejects_duplicate_email() -> None:
+    """An existing email yields 409 instead of a silent duplicate insert."""
+    session = MagicMock()
+    body = PrivateUserCreate(
+        email="dup@example.com", password="goodpassword", full_name="Dup"
+    )
+    with patch(
+        "auth_user_service.routes.private.UserController"
+    ) as mock_ctrl:
+        mock_ctrl.get_user_by_email.return_value = object()  # already exists
+        with pytest.raises(HTTPException) as exc:
+            create_user(user_in=body, session=session)
+    assert exc.value.status_code == 409
+    session.add.assert_not_called()
+    session.commit.assert_not_called()
+
+
+def test_create_user_honours_is_verified_flag() -> None:
+    """The accepted is_verified flag maps to email_verified (was dropped)."""
+    session = MagicMock()
+    body = PrivateUserCreate(
+        email="new@example.com",
+        password="goodpassword",
+        full_name="New",
+        is_verified=True,
+    )
+    with patch("auth_user_service.routes.private.UserController") as mock_ctrl:
+        mock_ctrl.get_user_by_email.return_value = None
+        create_user(user_in=body, session=session)
+
+    created = session.add.call_args.args[0]
+    assert created.email == "new@example.com"
+    assert created.email_verified is True
+    assert created.hashed_password is not None
+    session.commit.assert_called_once()

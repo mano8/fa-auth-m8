@@ -169,12 +169,30 @@ class ClientSession(ClientSessionBase, SQLModel, table=True):
     )
 
 
-class ClientSessionPublic(ClientSessionBase, SQLModel):
+class ClientSessionPublic(TimestampMixin, SQLModel):
     """
-    Public representation of a session (no token hashes).
+    Public representation of a session.
+
+    Deliberately does NOT inherit from ``ClientSessionBase``: that base carries
+    the secret material (``refresh_token_hash`` and the encrypted
+    ``external_access_token`` / ``external_refresh_token``), and inheriting it
+    would serialise those secrets back out — even to a superuser. Only
+    non-secret session metadata is listed here; the encrypted-token *expiry*
+    is exposed, but the token values are not.
     """
 
     id: uuid.UUID = Field(description="ClientSession ID")
+    provider: AuthProviderType = Field(description="Login provider for this session")
+    jwt_jti: str = Field(description="Internal JWT unique identifier (JTI)")
+    jwt_expires_at: datetime = Field(description="Internal JWT expiration (UTC)")
+    refresh_expires_at: datetime = Field(
+        description="Internal refresh token expiration (UTC)"
+    )
+    revoked: bool = Field(description="Whether this session has been revoked")
+    external_token_expires_at: Optional[datetime] = Field(
+        default=None,
+        description="Google OAuth token expiration timestamp (UTC)",
+    )
 
 
 class ClientSessionsPublic(SQLModel):
@@ -182,9 +200,11 @@ class ClientSessionsPublic(SQLModel):
     Container model for multiple public item representations.
 
     Attributes:
-        data (list[LoginClientSessionPublic]): List of public item models.
+        data (list[ClientSessionPublic]): List of public item models.
         count (int): Total count of items.
     """
 
-    data: list[ClientSession]
+    # Must be the public model, not the table model — otherwise the list
+    # endpoint serialises refresh_token_hash + encrypted external tokens.
+    data: list[ClientSessionPublic]
     count: int

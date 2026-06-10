@@ -22,6 +22,7 @@ from auth_sdk_m8.schemas.auth import TokenSecret
 from auth_sdk_m8.schemas.base import ResponseMessage
 
 from auth_user_service.core.client import (
+    LoginIpRateLimiter,
     LoginRateLimiter,
     RedisRefreshStore,
     RefreshRateLimiter,
@@ -125,12 +126,23 @@ def _enforce_login_rate_limit(
 ) -> None:
     """Check and enforce the login rate limit. Raises 429 or 503 as appropriate."""
     if redis is not None:
-        limiter = LoginRateLimiter(
+        window = settings.LOGIN_RATE_LIMIT_WINDOW_MINUTES * 60
+        email_limiter = LoginRateLimiter(
             redis,
             settings.LOGIN_RATE_LIMIT_REQUESTS,
-            settings.LOGIN_RATE_LIMIT_WINDOW_MINUTES * 60,
+            window,
         )
-        if not limiter.is_allowed(email):
+        ip_limiter = LoginIpRateLimiter(
+            redis,
+            settings.LOGIN_IP_RATE_LIMIT_REQUESTS,
+            window,
+        )
+        # Evaluate both windows unconditionally so each counter advances even
+        # when the other is already over limit — a username-rotating spray must
+        # still accrue against the per-IP cap.
+        email_ok = email_limiter.is_allowed(email)
+        ip_ok = ip_limiter.is_allowed(ip)
+        if not (email_ok and ip_ok):
             if _m and _m.login_attempts_total:
                 _m.login_attempts_total.labels(result="rate_limited").inc()
             logger.warning("event=login.rate_limited ip=%s ts=%s", ip, _now_iso())

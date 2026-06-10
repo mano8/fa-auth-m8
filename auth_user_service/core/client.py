@@ -256,6 +256,51 @@ class LoginRateLimiter:
         self.client.delete(self._key(identifier))
 
 
+class LoginIpRateLimiter:
+    """Coarse fixed-window login limiter keyed by client IP.
+
+    Complements :class:`LoginRateLimiter` (per-email): a credential-spray that
+    rotates the username on every request never trips the per-email counter,
+    but still originates from a bounded set of source IPs. This caps total
+    login attempts per IP across *all* accounts. The default threshold is
+    deliberately higher than the per-email limit so shared NAT / office egress
+    IPs are not throttled under normal use.
+
+    Unlike the per-email counter, this one is **not** reset on a successful
+    login — otherwise an attacker could clear the IP window by interleaving a
+    single valid credential.
+    """
+
+    DEFAULT_MAX_REQUESTS: Final[int] = 50
+    DEFAULT_WINDOW_SECONDS: Final[int] = 900  # 15 minutes
+    PREFIX: Final[str] = "login:ip:"
+    MAX_ID_LEN: Final[int] = 45  # covers IPv4 + IPv6 + port
+
+    def __init__(
+        self,
+        client: Redis,
+        max_requests: int = DEFAULT_MAX_REQUESTS,
+        window_seconds: int = DEFAULT_WINDOW_SECONDS,
+    ) -> None:
+        self.client = client
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+
+    def _key(self, ip: str) -> str:
+        # Strip control chars (including CRLF) and cap length to prevent
+        # Redis key namespace pollution / memory exhaustion.
+        safe = "".join(c for c in ip if c.isprintable())
+        return f"{self.PREFIX}{safe[: self.MAX_ID_LEN]}"
+
+    def is_allowed(self, ip: str) -> bool:
+        """Increment the per-IP counter and return True if still within limit."""
+        key = self._key(ip)
+        count = self.client.incr(key)
+        if count == 1:
+            self.client.expire(key, self.window_seconds)
+        return count <= self.max_requests
+
+
 class RefreshRateLimiter:
     """Fixed-window refresh attempt limiter keyed by user ID.
 
