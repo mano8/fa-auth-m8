@@ -20,6 +20,7 @@ from auth_user_service.routes import api_router
 from auth_user_service.core.config import settings
 from auth_sdk_m8.observability import metrics as _metrics
 from auth_sdk_m8.observability.middleware import MetricsMiddleware
+from auth_sdk_m8.security.headers import add_security_headers_middleware
 
 _logger = logging.getLogger(__name__)
 
@@ -288,6 +289,12 @@ app.add_middleware(
 
 if settings.METRICS_ENABLED:
     app.add_middleware(MetricsMiddleware)
+
+# Production/staging response-hardening headers (HSTS + CSP + Referrer/Permissions
+# policy). fa-auth builds its own FastAPI() app, so it wires the shared SDK layer
+# directly — same env-gated middleware consumer services get via create_app. A
+# no-op outside production (ENVIRONMENT=="production" or STRICT_PRODUCTION_MODE).
+add_security_headers_middleware(app, settings)
 
 app.include_router(api_router, prefix=settings.API_PREFIX)
 
