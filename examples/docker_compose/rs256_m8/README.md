@@ -101,6 +101,7 @@ DB_PASSWORD="<generate>"
 DB_ROOT_PASSWORD="<generate>"
 REDIS_PASSWORD="<generate>"
 PRIVATE_API_SECRET="<generate>"
+SESSION_SECRET="<generate>"  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY="<generate>"
 ```
 

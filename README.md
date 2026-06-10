@@ -354,7 +354,8 @@ Set `SELECTED_DB` in `.env` (or `auth.env`):
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | no | `30` | Access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | no | `120` | Refresh token lifetime |
 | `REFRESH_TOKEN_COOKIE_EXPIRE_SECONDS` | no | `3600` | Refresh cookie max-age |
-| `TOKENS_ENCRYPTION_KEY` | yes | — | Key for `SessionMiddleware` cookie signing |
+| `SESSION_SECRET` | yes | — | Signing key for the `SessionMiddleware` cookie. Must be distinct from `TOKENS_ENCRYPTION_KEY` (key separation) so rotating the session key does not invalidate encrypted tokens. |
+| `TOKENS_ENCRYPTION_KEY` | yes | — | Fernet key encrypting external/refresh token payloads at rest in Redis |
 | `TOKEN_ISSUER` | if strict | — | `iss` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
 | `TOKEN_AUDIENCE` | if strict | — | `aud` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
 | `TOKEN_STRICT_VALIDATION` | no | `true` | Secure-by-default strict profile (`auth-sdk-m8 ≥ 1.0.0`): enforces `iss`/`aud` binding and pins the configured algorithm; the service fails closed at boot unless `TOKEN_ISSUER`/`TOKEN_AUDIENCE` are set. Set `false` to opt out (legacy/local), enforcing `iss`/`aud` only when configured. |

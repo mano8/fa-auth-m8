@@ -91,6 +91,7 @@ DB_PASSWORD="<generate>"
 REDIS_PASSWORD="<generate>"
 
 PRIVATE_API_SECRET="<generate>"     # for internal service-to-service calls
+SESSION_SECRET="<generate>"  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY="<generate>"  # encrypts refresh token payloads in Redis
 ```
 
@@ -198,6 +199,7 @@ To connect with a GUI client (pgAdmin, TablePlus, DBeaver), use `localhost:5432`
 | `FRONTEND_HOST` | `http://localhost:5173` | Added to CORS allowed origins |
 | `API_PREFIX` | `/user` | URL prefix for all auth routes |
 | `PRIVATE_API_SECRET` | — | Secret for `X-Internal-Token` header |
+| `SESSION_SECRET` | — | Signing key for the session cookie (distinct from `TOKENS_ENCRYPTION_KEY`) |
 | `TOKENS_ENCRYPTION_KEY` | — | Fernet key for encrypting refresh token payloads in Redis |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | `3600` | Refresh token lifetime (60 h) |

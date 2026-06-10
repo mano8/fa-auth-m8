@@ -38,6 +38,7 @@ _MINIMAL_SETTINGS: dict = {
     "FIRST_SUPERUSER": "admin@example.com",
     "FIRST_SUPERUSER_PASSWORD": "TestAdmin1@#!",
     "PRIVATE_API_SECRET": "Aa1-test-private-api-secret-32chars!!",
+    "SESSION_SECRET": "Aa1-test-session-secret-32chars-here!",
     "TOKENS_ENCRYPTION_KEY": "Aa1-test-encryption-key-32chars-here!",
     "TOKEN_STRICT_VALIDATION": False,
 }

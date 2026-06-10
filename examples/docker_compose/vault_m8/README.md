@@ -162,6 +162,7 @@ Open `auth.env` and replace every `changethis`:
 DB_USER=<same-as-AUTH_DB_USER-in-.env>
 REFRESH_SECRET_KEY=<64-char-random>
 PRIVATE_API_SECRET=<64-char-random>
+SESSION_SECRET=<64-char-random>  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY=<64-char-random>
 FIRST_SUPERUSER=admin@example.com
 FIRST_SUPERUSER_PASSWORD=<strong-password>
@@ -442,6 +443,7 @@ vault kv put secret/app \
   REDIS_PASSWORD=<redis-password> \
   REFRESH_SECRET_KEY=<value> \
   PRIVATE_API_SECRET=<value> \
+  SESSION_SECRET=<value>
   TOKENS_ENCRYPTION_KEY=<value>
 ```
 
@@ -527,6 +529,7 @@ Dev-mode Vault UI. Log in with `VAULT_DEV_TOKEN` from `.env`. Use it to inspect 
 | `ACCESS_PUBLIC_KEY_FILE` | auth.env | `/opt/keys/public.pem` |
 | `REFRESH_SECRET_KEY` | auth.env | HMAC secret for refresh tokens |
 | `PRIVATE_API_SECRET` | auth.env | Secret for `X-Internal-Token` headers |
+| `SESSION_SECRET` | auth.env | Signing key for the session cookie (distinct from `TOKENS_ENCRYPTION_KEY`) |
 | `TOKENS_ENCRYPTION_KEY` | auth.env | Fernet key for encrypting refresh token payloads |
 | `LOGIN_RATE_LIMIT_REQUESTS` | auth.env | Max login attempts per window per email (default: 5) |
 | `LOGIN_RATE_LIMIT_WINDOW_MINUTES` | auth.env | Login rate-limit window in minutes (default: 15) |

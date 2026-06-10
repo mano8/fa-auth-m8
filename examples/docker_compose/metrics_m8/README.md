@@ -93,6 +93,7 @@ Open `auth.env` and replace:
 
 ```ini
 PRIVATE_API_SECRET="<generate>"     # for internal service-to-service calls
+SESSION_SECRET="<generate>"  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY="<generate>"  # encrypts refresh token payloads at rest
 ```
 
@@ -227,6 +228,7 @@ histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
 | Variable | Notes |
 | --- | --- |
 | `PRIVATE_API_SECRET` | Secret for `X-Internal-Token` header (service-to-service calls) |
+| `SESSION_SECRET` | Signing key for the session cookie (distinct from `TOKENS_ENCRYPTION_KEY`) |
 | `TOKENS_ENCRYPTION_KEY` | Fernet key for encrypting refresh token payloads in Redis |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Default: 60 min |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | Default: 3600 min (60 h) |

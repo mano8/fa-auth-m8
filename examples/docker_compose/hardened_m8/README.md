@@ -122,6 +122,7 @@ DB_PASSWORD=<same-as-AUTH_DB_PASSWORD-in-.env>
 REDIS_PASSWORD=<same-as-REDIS_PASSWORD-in-.env>
 REFRESH_SECRET_KEY=<64-char-random>
 PRIVATE_API_SECRET=<64-char-random>
+SESSION_SECRET=<64-char-random>  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY=<64-char-random>
 FIRST_SUPERUSER=admin@example.com
 FIRST_SUPERUSER_PASSWORD=<strong-password>
