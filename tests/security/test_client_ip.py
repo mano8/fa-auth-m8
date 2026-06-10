@@ -1,10 +1,16 @@
 """Security regression: _client_ip() must read X-Forwarded-For from trusted proxy.
 
+Traefik *appends* the real peer to X-Forwarded-For, so the real client is the
+Nth entry counted from the right, where N == TRUSTED_PROXY_COUNT. Entries to the
+left are client-supplied and must never be trusted (F3 spoofing regression).
+
 Verifies that:
 - X-Forwarded-For single IP is returned directly
-- X-Forwarded-For chain returns only the leftmost (real client) IP
+- X-Forwarded-For chain returns the trusted-proxy entry (Nth from the right),
+  never the attacker-controlled leftmost entry
 - Fallback to request.client.host when header is absent
 - Fallback to "unknown" when both header and request.client are absent
+- Fallback when the chain has fewer entries than TRUSTED_PROXY_COUNT
 - Whitespace around IPs in the chain is stripped
 - Port suffixes are stripped before IP validation (IPv4:port and [IPv6]:port)
 - TRUSTED_PROXY_COUNT=0 bypasses XFF entirely
@@ -34,15 +40,42 @@ def test_xff_single_ip_returned():
         assert _client_ip(req) == "203.0.113.5"
 
 
-def test_xff_chain_returns_leftmost_ip():
-    """The leftmost IP in the chain is the original client; others are proxies."""
+def test_xff_chain_returns_trusted_proxy_entry():
+    """With one trusted proxy, the real client is the rightmost (appended) entry.
+
+    The leftmost entries are client-supplied and must NOT be returned — that was
+    the F3 spoofing bug.
+    """
     req = _make_request(xff="203.0.113.5, 10.0.0.1, 172.17.0.2")
+    with patch.object(login_mod.settings, "TRUSTED_PROXY_COUNT", 1):
+        assert _client_ip(req) == "172.17.0.2"
+
+
+def test_xff_spoofed_leftmost_entry_ignored():
+    """A forged leftmost entry must not be trusted; Traefik appends the real IP."""
+    req = _make_request(xff="1.2.3.4, 203.0.113.5", client_host="10.0.0.1")
     with patch.object(login_mod.settings, "TRUSTED_PROXY_COUNT", 1):
         assert _client_ip(req) == "203.0.113.5"
 
 
+def test_xff_multiple_trusted_proxies_counts_from_right():
+    """With N trusted proxies, select the Nth entry from the right."""
+    # forged | real client | proxy-1-seen ; two trusted hops in front.
+    req = _make_request(xff="9.9.9.9, 203.0.113.5, 172.17.0.2")
+    with patch.object(login_mod.settings, "TRUSTED_PROXY_COUNT", 2):
+        assert _client_ip(req) == "203.0.113.5"
+
+
+def test_xff_too_few_entries_falls_back():
+    """Chain shorter than TRUSTED_PROXY_COUNT is untrusted — fall back to peer."""
+    req = _make_request(xff="203.0.113.5", client_host="192.168.1.9")
+    with patch.object(login_mod.settings, "TRUSTED_PROXY_COUNT", 2):
+        assert _client_ip(req) == "192.168.1.9"
+
+
 def test_xff_chain_strips_whitespace():
-    req = _make_request(xff="  203.0.113.99  , 10.0.0.1")
+    """Whitespace around the selected (rightmost) entry is stripped."""
+    req = _make_request(xff="203.0.113.5,  203.0.113.99  ")
     with patch.object(login_mod.settings, "TRUSTED_PROXY_COUNT", 1):
         assert _client_ip(req) == "203.0.113.99"
 

@@ -47,7 +47,8 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
 
     # Number of trusted reverse-proxy hops in front of this service.
     # Used to select the real client IP from X-Forwarded-For by taking
-    # xff[-TRUSTED_PROXY_COUNT-1] (Nth from right). Must be >= 0.
+    # xff[-TRUSTED_PROXY_COUNT] (Nth entry from the right, 1-indexed, since
+    # Traefik appends the peer IP). Must be >= 0.
     # Set to 1 when a single Traefik instance sits in front.
     TRUSTED_PROXY_COUNT: int = 1
 

@@ -91,17 +91,27 @@ def _strip_port(raw: str) -> str:
 def _client_ip(request: Request) -> str:
     """Extract the real client IP from X-Forwarded-For.
 
-    When TRUSTED_PROXY_COUNT > 0, the leftmost entry in X-Forwarded-For is
-    the real client (Traefik prepends the true client IP before forwarding).
+    Traefik *appends* the IP of the peer it received the connection from, so
+    trusted entries accumulate on the right of X-Forwarded-For. The real client
+    is therefore the Nth entry counted from the right, where N is
+    TRUSTED_PROXY_COUNT (the number of trusted reverse-proxy hops in front of
+    this service). Everything to the left of that position is supplied by the
+    client and must never be trusted. This matches the contract documented in
+    core/config.py (xff[-TRUSTED_PROXY_COUNT]).
+
     When TRUSTED_PROXY_COUNT == 0, XFF is ignored entirely (no proxy in front).
-    Falls back to request.client.host on absence, garbage values, or no proxy.
+    Falls back to request.client.host on absence, too few entries, garbage
+    values, or no proxy.
     """
-    if settings.TRUSTED_PROXY_COUNT > 0:
+    count = settings.TRUSTED_PROXY_COUNT
+    if count > 0:
         xff = request.headers.get("x-forwarded-for")
         if xff:
-            ips = [p.strip() for p in xff.split(",")]
-            if ips:
-                candidate = _strip_port(ips[0])
+            ips = [p.strip() for p in xff.split(",") if p.strip()]
+            # Fewer hops than expected means the chain did not pass through the
+            # full trusted proxy path — don't trust it, fall back to the peer.
+            if len(ips) >= count:
+                candidate = _strip_port(ips[-count])
                 try:
                     ip_address(candidate)
                     return candidate
