@@ -95,6 +95,7 @@ Open `auth.env` and replace:
 PRIVATE_API_SECRET="<generate>"     # for internal service-to-service calls
 SESSION_SECRET="<generate>"  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY="<generate>"  # encrypts refresh token payloads at rest
+EVENT_SIGNING_KEY="<generate>"  # HMAC key for Redis event-bus signing (boot fails closed without it)
 ```
 
 `api.env` requires no changes for local development.
@@ -236,9 +237,14 @@ histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
 | `LOGIN_RATE_LIMIT_WINDOW_MINUTES` | Default: 15 — login rate-limit window in minutes |
 | `REFRESH_RATE_LIMIT_REQUESTS` | Default: 10 — max refresh rotations per window per user |
 | `REFRESH_RATE_LIMIT_WINDOW_MINUTES` | Default: 5 — refresh rate-limit window in minutes |
-| `TRUSTED_PROXY_COUNT` | `1` | Trusted proxy hops for real client IP extraction. Set to `0` if no proxy. |
+| `TRUSTED_PROXY_COUNT` | Default `1` — trusted proxy hops for real client IP extraction. Set to `0` if no proxy. |
 | `METRICS_ENABLED` | `true` — exposes `/user/metrics` for Prometheus to scrape |
 | `AUTH_SERVICE_ROLE` | `issuer` — this service signs tokens |
+| `TOKEN_ISSUER` | `iss` claim (`https://auth.example.com`); identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_AUDIENCE` | `aud` claim (`https://api.example.com`); identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_STRICT_VALIDATION` | Default `true` — secure-by-default: enforces exact `iss`/`aud` match; boot fails closed unless both are set. `false` only for single-service/local dev |
+| `EVENT_SIGNING_ENABLED` | Default `true` — secure-by-default: HMAC-signs Redis event-bus payloads. Boot fails closed unless `EVENT_SIGNING_KEY` is set |
+| `EVENT_SIGNING_KEY` | Shared HMAC secret for event signing; required when `EVENT_SIGNING_ENABLED=true` |
 
 ### `api.env` — consumer service only
 

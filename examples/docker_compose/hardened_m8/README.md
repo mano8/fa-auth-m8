@@ -124,6 +124,7 @@ REFRESH_SECRET_KEY=<64-char-random>
 PRIVATE_API_SECRET=<64-char-random>
 SESSION_SECRET=<64-char-random>  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY=<64-char-random>
+EVENT_SIGNING_KEY=<64-char-random>  # HMAC key for Redis event-bus signing (boot fails closed without it)
 FIRST_SUPERUSER=admin@example.com
 FIRST_SUPERUSER_PASSWORD=<strong-password>
 ```
@@ -246,6 +247,11 @@ Alert rules in `prometheus/alerts.yml` cover API key rate-limit ratios and flush
 | `ACCESS_REVOCATION_FAILURE_MODE` | `fail_closed` | Redis outage → tokens not accepted |
 | `TRUSTED_PROXY_COUNT` | `1` | Trusted proxy hops for real client IP extraction. Set to `0` if no proxy. |
 | `METRICS_ENABLED` | `true` | Exposes `/user/metrics` for Prometheus |
+| `TOKEN_ISSUER` | `https://auth.example.com` | `iss` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_AUDIENCE` | `https://api.example.com` | `aud` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_STRICT_VALIDATION` | `true` | Secure-by-default: enforces an exact `iss`/`aud` match and **boot fails closed** unless both are set |
+| `EVENT_SIGNING_ENABLED` | `true` | Secure-by-default: HMAC-signs Redis event-bus payloads. **Boot fails closed** unless `EVENT_SIGNING_KEY` is set |
+| `EVENT_SIGNING_KEY` | — | Shared HMAC secret for event signing; required when `EVENT_SIGNING_ENABLED=true` |
 
 ### `api.env` — consumer service
 

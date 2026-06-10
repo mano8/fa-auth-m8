@@ -56,10 +56,14 @@ TOKEN_MODE=stateful
 ACCESS_TOKEN_EXPIRE_MINUTES=60
 REFRESH_TOKEN_EXPIRE_MINUTES=3600
 
-# ── Token boundary claims (recommended for production) ────────────────────────
-# Without these, a token signed with the same key is valid in any environment.
-# Set both to enable issuer/audience enforcement in jwt.decode().
-# In production with STRICT_PRODUCTION_MODE=true these become required (startup fatal).
+# ── Token boundary claims ─────────────────────────────────────────────────────
+# auth-sdk-m8 >= 1.0.0 turns TOKEN_STRICT_VALIDATION on by default: the service
+# fails closed at boot unless both TOKEN_ISSUER and TOKEN_AUDIENCE are set, and
+# every validator enforces an exact iss/aud match. For local single-service dev
+# (no cross-service boundary) opt out with TOKEN_STRICT_VALIDATION=false.
+TOKEN_STRICT_VALIDATION=false
+# To mirror production instead, set TOKEN_STRICT_VALIDATION=true and provide
+# identical values here and in every consumer service:
 #TOKEN_ISSUER=https://auth.example.com
 #TOKEN_AUDIENCE=https://api.example.com
 
@@ -71,8 +75,20 @@ FIRST_SUPERUSER_PASSWORD="changethis"
 # Shared secret for inter-service calls to /private/* endpoints.
 PRIVATE_API_SECRET="changethis"
 
+# Dedicated signing key for the Starlette session cookie. Required (no default);
+# kept separate from TOKENS_ENCRYPTION_KEY so rotating one does not invalidate
+# the other.
+SESSION_SECRET="changethis"
+
 # Symmetric key used to encrypt Google OAuth tokens at rest.
 TOKENS_ENCRYPTION_KEY="changethis"
+
+# ── Event signing (Redis Pub/Sub) ─────────────────────────────────────────────
+# Secure-by-default (auth-sdk-m8 >= 1.0.0): event-bus payloads are HMAC-signed
+# and EVENT_SIGNING_ENABLED defaults to true, so the service fails closed at boot
+# unless EVENT_SIGNING_KEY is set. Set EVENT_SIGNING_ENABLED=false to opt out.
+EVENT_SIGNING_ENABLED=true
+EVENT_SIGNING_KEY="changethis"
 
 # ── Auth degradation policy (optional) ────────────────────────────────────────
 # Controls behaviour when Redis is unavailable. Defaults shown.

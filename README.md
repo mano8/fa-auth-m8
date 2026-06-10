@@ -86,7 +86,7 @@ Consumer services validate tokens locally (JWT signature check + optional Redis 
 
 ## Docker Compose Stacks
 
-Five ready-to-run stacks are provided under [`examples/docker_compose/`](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose). See the [stack selection guide](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose#which-stack-should-i-use) for help choosing.
+Six ready-to-run stacks are provided under [`examples/docker_compose/`](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose). See the [stack selection guide](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose#which-stack-should-i-use) for help choosing.
 
 | Stack | Database | Algorithm | Token mode | Observability | Notes |
 | ----- | -------- | --------- | ---------- | ------------- | ----- |
@@ -122,7 +122,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | Tag | Method | Path | Auth | Description |
 | --- | ------ | ---- | ---- | ----------- |
 | health | GET | `/health/` | — | Redis, database, effective token mode |
-| jwks | GET | `/.well-known/jwks.json` | — | JWKS endpoint (RS256/ES256 public key; `{"keys":[]}` for HS256) |
+| well-known | GET | `/.well-known/jwks.json` | — | JWKS endpoint (RS256/ES256 public key; `{"keys":[]}` for HS256) |
 | login | POST | `/login/access-token` | — | Email/password login — returns access token, sets refresh cookie |
 | login | POST | `/login/refresh-token/` | — | Refresh access token from HttpOnly cookie |
 | login | POST | `/login/logout/` | JWT | Revoke session, blacklist JTI, clear cookie |
@@ -275,7 +275,7 @@ docker pull tepochtli/fa-auth-m8:latest
 | Tag | Description |
 | --- | ----------- |
 | `latest` | Latest release from the `main` branch |
-| `x.y.z` (e.g. `0.8.2`) | Pinned release — recommended for production |
+| `x.y.z` (e.g. `0.9.5`) | Pinned release — recommended for production |
 
 ### Using the published image in a Compose stack
 
@@ -292,7 +292,7 @@ auth_user_service:
 
 # With this:
 auth_user_service:
-  image: tepochtli/fa-auth-m8:0.8.2   # pin to a specific release for production
+  image: tepochtli/fa-auth-m8:0.9.5   # pin to a specific release for production
 ```
 
 All env files, volumes, labels, and `depends_on` entries remain unchanged —
@@ -485,6 +485,25 @@ A startup warning is logged if the effective rate (requests ÷ window) exceeds 5
 | `METRICS_GROUPS` | no | `all` | Comma-separated groups: `all` \| `traffic` \| `performance` \| `reliability` \| `health` \| `auth` |
 | `SENTRY_DSN` | no | — | Sentry DSN for error tracking |
 
+### Response Security Headers
+
+`auth-sdk-m8 ≥ 1.1.0` adds a shared application-level hardening layer
+(`add_security_headers_middleware`) wired into the auth service — and into every
+`fastapi-m8` consumer via `create_app`. It emits HSTS, CSP, `X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff`, `Referrer-Policy`, and `Permissions-Policy` on **every**
+response (including error responses raised before the route handler). The layer is **gated on
+`ENVIRONMENT=production` or `STRICT_PRODUCTION_MODE=true`** — the same gate as docs hiding —
+so local/dev keeps Swagger/ReDoc and tooling unrestricted.
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `SECURITY_HEADERS_ENABLED` | `true` | Master switch. Set `false` to opt out even in production. |
+| `HSTS_MAX_AGE` | `31536000` | `Strict-Transport-Security` max-age in seconds. `0` disables the HSTS header (set when TLS is not terminated upstream). |
+| `HSTS_INCLUDE_SUBDOMAINS` | `true` | Append `includeSubDomains` to the HSTS header. |
+| `CONTENT_SECURITY_POLICY` | — | CSP value. Unset → tight API default (`default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`). Override for services that serve HTML in production. |
+| `REFERRER_POLICY` | `strict-origin-when-cross-origin` | `Referrer-Policy` header value. |
+| `PERMISSIONS_POLICY` | `accelerometer=(), camera=(), geolocation=(), …` | `Permissions-Policy` header value. |
+
 ### Deployment
 
 | Variable | Default | Description |
@@ -586,18 +605,33 @@ Requires a coordinated three-layer setup:
 2. **Uvicorn** — the startup script reads `TRUSTED_PROXY_IPS` (default `172.16.0.0/12`) and passes it via `--proxy-headers --forwarded-allow-ips`. Never use `*`.
 3. **Application** — `_client_ip()` reads the leftmost `X-Forwarded-For` value, which is trustworthy only because layers 1 and 2 have been configured. Set `TRUSTED_PROXY_COUNT=0` in `auth.env` to bypass XFF entirely (no proxy in front of FastAPI).
 
-### Content Security Policy (production only)
+### Content Security Policy and response headers (production only)
 
-Each example stack ships two Traefik configs in `traefik/`:
+Hardening headers are applied at two complementary layers:
 
-| File | Purpose |
-| ---- | ------- |
-| `dynamic_conf.yml` | Development — no CSP, Swagger UI works |
-| `production_dynamic_conf.yml` | Production — adds `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and enables HSTS. Replace `dynamic_conf.yml` with this file when deploying publicly. Update the `Host` rules to your FQDN. |
+1. **Application layer (default)** — `auth-sdk-m8 ≥ 1.1.0` emits CSP, HSTS, `X-Frame-Options`,
+   `X-Content-Type-Options`, `Referrer-Policy`, and `Permissions-Policy` from the app itself
+   whenever `ENVIRONMENT=production` or `STRICT_PRODUCTION_MODE=true`. See
+   [Response Security Headers](#response-security-headers) for the tunable settings. This works
+   regardless of the proxy in front and is the recommended baseline.
+2. **Edge layer (optional)** — each example stack also ships two Traefik configs in `traefik/`:
+
+   | File | Purpose |
+   | ---- | ------- |
+   | `dynamic_conf.yml` | Development — no CSP, Swagger UI works |
+   | `production_dynamic_conf.yml` | Production — adds `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and enables HSTS at the edge. Replace `dynamic_conf.yml` with this file when deploying publicly and update the `Host` rules to your FQDN. |
+
+To avoid duplicate headers, pick one layer as the source of truth: either keep the app-level
+layer (set `SECURITY_HEADERS_ENABLED=true`, default) and leave the dev Traefik config in place,
+or disable the app layer (`SECURITY_HEADERS_ENABLED=false`) and enforce headers at Traefik via
+`production_dynamic_conf.yml`. Verify with `curl -I` after deployment.
 
 ### HSTS (opt-in, public deployments only)
 
-`Strict-Transport-Security` is commented out in all `traefik/dynamic_conf.yml` files. It is enabled by default in `production_dynamic_conf.yml`. Only activate HSTS after confirming TLS is stable and the hostname will remain HTTPS-only for the full `stsSeconds` period.
+At the edge, `Strict-Transport-Security` is commented out in all `traefik/dynamic_conf.yml`
+files and enabled by default in `production_dynamic_conf.yml`. At the application layer it is
+controlled by `HSTS_MAX_AGE` (default 1 year; `0` disables it). Only activate HSTS after
+confirming TLS is stable and the hostname will remain HTTPS-only for the full max-age period.
 
 ---
 

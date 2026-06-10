@@ -93,6 +93,7 @@ REDIS_PASSWORD="<generate>"
 PRIVATE_API_SECRET="<generate>"     # for internal service-to-service calls
 SESSION_SECRET="<generate>"  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY="<generate>"  # encrypts refresh token payloads in Redis
+EVENT_SIGNING_KEY="<generate>"  # HMAC key for Redis event-bus signing (boot fails closed without it)
 ```
 
 `api.env` requires no changes for local development.
@@ -210,6 +211,11 @@ To connect with a GUI client (pgAdmin, TablePlus, DBeaver), use `localhost:5432`
 | `TRUSTED_PROXY_COUNT` | `1` | Trusted proxy hops for real client IP extraction. Set to `0` if no proxy. |
 | `METRICS_ENABLED` | `false` | Set to `true` to expose `/user/metrics` |
 | `AUTH_SERVICE_ROLE` | `issuer` | This service signs tokens |
+| `TOKEN_ISSUER` | `https://auth.example.com` | `iss` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_AUDIENCE` | `https://api.example.com` | `aud` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_STRICT_VALIDATION` | `true` | Secure-by-default: enforces an exact `iss`/`aud` match and **boot fails closed** unless both are set. Set `false` only for single-service/local dev |
+| `EVENT_SIGNING_ENABLED` | `true` | Secure-by-default: HMAC-signs Redis event-bus payloads. **Boot fails closed** unless `EVENT_SIGNING_KEY` is set. Set `false` to disable |
+| `EVENT_SIGNING_KEY` | — | Shared HMAC secret for event signing; required when `EVENT_SIGNING_ENABLED=true` |
 
 ### `api.env` — consumer service
 

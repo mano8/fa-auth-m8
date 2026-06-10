@@ -103,6 +103,7 @@ REDIS_PASSWORD="<generate>"
 PRIVATE_API_SECRET="<generate>"
 SESSION_SECRET="<generate>"  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY="<generate>"
+EVENT_SIGNING_KEY="<generate>"  # HMAC key for Redis event-bus signing (boot fails closed without it)
 ```
 
 Leave `ACCESS_KEY_ID=changethis_hex_kid` as-is — `init.sh` derives it automatically from the generated key fingerprint and writes the correct value.
@@ -208,7 +209,7 @@ In `hybrid` mode, access tokens remain valid for their full lifetime after logou
 | `ACCESS_PUBLIC_KEY_FILE` | `/opt/keys/public.pem` | Path inside the container |
 | `ACCESS_KEY_ID` | — | Stable `kid` written by `init.sh` |
 | `REFRESH_SECRET_KEY` | — | HMAC secret for refresh tokens |
-| `TOKEN_MODE` | `stateful` | `stateless` / `hybrid` / `stateful` |
+| `TOKEN_MODE` | `hybrid` | `stateless` / `hybrid` / `stateful` |
 | `AUTH_SERVICE_ROLE` | `issuer` | Signs tokens with the RSA private key |
 | `LOGIN_RATE_LIMIT_REQUESTS` | `5` | Max login attempts per window per email |
 | `LOGIN_RATE_LIMIT_WINDOW_MINUTES` | `15` | Login rate-limit window in minutes |
@@ -216,6 +217,11 @@ In `hybrid` mode, access tokens remain valid for their full lifetime after logou
 | `REFRESH_RATE_LIMIT_WINDOW_MINUTES` | `5` | Refresh rate-limit window in minutes |
 | `TRUSTED_PROXY_COUNT` | `1` | Trusted proxy hops for real client IP extraction. Set to `0` if no proxy. |
 | `METRICS_ENABLED` | `false` | Set to `true` to expose `/user/metrics` |
+| `TOKEN_ISSUER` | `https://auth.example.com` | `iss` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_AUDIENCE` | `https://api.example.com` | `aud` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_STRICT_VALIDATION` | `true` | Secure-by-default: enforces an exact `iss`/`aud` match and **boot fails closed** unless both are set. Set `false` only for single-service/local dev |
+| `EVENT_SIGNING_ENABLED` | `true` | Secure-by-default: HMAC-signs Redis event-bus payloads. **Boot fails closed** unless `EVENT_SIGNING_KEY` is set. Set `false` to disable |
+| `EVENT_SIGNING_KEY` | — | Shared HMAC secret for event signing; required when `EVENT_SIGNING_ENABLED=true` |
 
 ### `api.env` — consumer service
 

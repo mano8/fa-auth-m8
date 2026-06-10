@@ -1,6 +1,6 @@
 # Docker Compose Examples
 
-Five ready-to-run stacks, each targeting a distinct use case. Each runs the same two application services with different infrastructure and configuration.
+Six ready-to-run stacks, each targeting a distinct use case. Each runs the same two application services with different infrastructure and configuration.
 
 ---
 
@@ -133,6 +133,19 @@ Generate secrets with:
 ```sh
 python -c "import secrets; print(secrets.token_urlsafe(64))"
 ```
+
+### Secure-by-default boot requirements
+
+`auth-sdk-m8` ≥ 1.0.0 fails closed at startup unless these are set — every stack's
+`auth.env.example` already includes them, so don't delete them:
+
+- **`EVENT_SIGNING_KEY`** — `EVENT_SIGNING_ENABLED` defaults to `true`, so the service
+  refuses to boot without an HMAC key for Redis event-bus signing. Set
+  `EVENT_SIGNING_ENABLED=false` to opt out.
+- **`TOKEN_ISSUER` + `TOKEN_AUDIENCE`** — `TOKEN_STRICT_VALIDATION` defaults to `true`,
+  which enforces an exact `iss`/`aud` match and requires both values. Use identical
+  values in `auth.env` and every consumer's `api.env`. Set
+  `TOKEN_STRICT_VALIDATION=false` only for single-service/local dev.
 
 ---
 

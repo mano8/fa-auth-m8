@@ -164,6 +164,7 @@ REFRESH_SECRET_KEY=<64-char-random>
 PRIVATE_API_SECRET=<64-char-random>
 SESSION_SECRET=<64-char-random>  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY=<64-char-random>
+EVENT_SIGNING_KEY=<64-char-random>  # HMAC key for Redis event-bus signing — not Vault-injected, set it here
 FIRST_SUPERUSER=admin@example.com
 FIRST_SUPERUSER_PASSWORD=<strong-password>
 ```
@@ -531,6 +532,11 @@ Dev-mode Vault UI. Log in with `VAULT_DEV_TOKEN` from `.env`. Use it to inspect 
 | `PRIVATE_API_SECRET` | auth.env | Secret for `X-Internal-Token` headers |
 | `SESSION_SECRET` | auth.env | Signing key for the session cookie (distinct from `TOKENS_ENCRYPTION_KEY`) |
 | `TOKENS_ENCRYPTION_KEY` | auth.env | Fernet key for encrypting refresh token payloads |
+| `EVENT_SIGNING_ENABLED` | auth.env | Secure-by-default `true`; HMAC-signs Redis event-bus payloads. Boot fails closed unless `EVENT_SIGNING_KEY` is set |
+| `EVENT_SIGNING_KEY` | auth.env | HMAC secret for event signing. **Not** in `REQUIRE_UPDATE_FIELDS`, so Vault does not inject it — keep it in `auth.env` |
+| `TOKEN_ISSUER` | auth.env | `iss` claim (`https://auth.example.com`); identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_AUDIENCE` | auth.env | `aud` claim (`https://api.example.com`); identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_STRICT_VALIDATION` | auth.env | Secure-by-default `true`; enforces an exact `iss`/`aud` match and boot fails closed unless both are set |
 | `LOGIN_RATE_LIMIT_REQUESTS` | auth.env | Max login attempts per window per email (default: 5) |
 | `LOGIN_RATE_LIMIT_WINDOW_MINUTES` | auth.env | Login rate-limit window in minutes (default: 15) |
 | `REFRESH_RATE_LIMIT_REQUESTS` | auth.env | Max refresh rotations per window per user (default: 10) |
