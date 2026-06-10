@@ -136,9 +136,7 @@ def test_create_user_rejects_duplicate_email() -> None:
     body = PrivateUserCreate(
         email="dup@example.com", password="goodpassword", full_name="Dup"
     )
-    with patch(
-        "auth_user_service.routes.private.UserController"
-    ) as mock_ctrl:
+    with patch("auth_user_service.routes.private.UserController") as mock_ctrl:
         mock_ctrl.get_user_by_email.return_value = object()  # already exists
         with pytest.raises(HTTPException) as exc:
             create_user(user_in=body, session=session)
