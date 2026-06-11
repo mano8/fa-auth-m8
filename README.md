@@ -156,6 +156,8 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | dashboard | GET | `/dashboard/users/activity/current/` | JWT | Own activity stats (monthly) |
 | metrics | GET | `/metrics` | — | Prometheus metrics (`METRICS_ENABLED=true` only) |
 | private | POST | `/private/users/` | X-Internal-Token | Create user (inter-service, Docker network only) |
+| private | POST | `/private/v1/jti-status` | X-Internal-Token | Check whether an access-token JTI is revoked (inter-service) |
+| private | GET | `/private/v1/events/stream` | X-Internal-Token | SSE bridge of `session-revoked` / `user-deleted` events (inter-service) |
 
 Interactive docs at `{BACKEND_HOST}{API_PREFIX}/docs` when `SET_DOCS=true` **and** `ENVIRONMENT ≠ production`. In production docs are suppressed by default; set `SERVE_DOCS_IN_PRODUCTION=true` to explicitly enable them (emits a startup warning — use only for public/open-source APIs).
 
@@ -435,7 +437,24 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 | `EVENT_SIGNING_KEY` | if enabled | — | HMAC key used to sign event-bus payloads. Must satisfy the secret-key strength policy (32+ chars, mixed-case, digit, non-alphanumeric). **Never use the dev placeholder in production.** |
 | `EVENT_SIGNING_ACCEPT_UNSIGNED` | no | `false` | Transitional flag for rolling upgrades: when `true`, consumers accept signed or unsigned messages (still reject forged signatures). Flip back to `false` once every publisher signs. |
 
-> **Auth Redis is private to fa-auth-m8.** Consumer services check revocation via the HTTP private API (`POST /private/v1/jti-status`) — they never connect to the auth Redis directly. The event bus, when wired in a future wave, **must use a separate Redis instance**; consumers must never share the session/blacklist store.
+> **Auth Redis is private to fa-auth-m8.** Consumer services check revocation via the HTTP private API (`POST /private/v1/jti-status`) — they never connect to the auth Redis directly. Auth-state changes are pushed to consumers over the authenticated SSE bridge below (same private API, same trust channel), so there is **no shared broadcast medium and no second Redis** to wire.
+
+### Auth Event Stream (SSE bridge)
+
+fa-auth-m8 pushes its own auth-state changes to backend consumers over an authenticated **Server-Sent Events** stream on the private API: `GET /private/v1/events/stream` (gated by the same `X-Internal-Token` / `PRIVATE_API_SECRET` as `jti-status`). Consumers receive `session-revoked` and `user-deleted` events and evict locally cached token-validation state ahead of natural expiry.
+
+> **Accelerator, not authority.** Push is a best-effort latency optimisation. The JTI blacklist behind `POST /private/v1/jti-status` remains the revocation authority — a consumer that misses every event is still correct, just slower to converge. So stream loss is never fatal: the service keeps enforcing revocation over the HTTP authority path.
+
+Each event `data` frame is HMAC-signed with the shared `EVENT_SIGNING_KEY` (reused from Event Signing above — no separate key); consumers verify it before acting. Reconnecting consumers send `Last-Event-ID`: a still-buffered gap is replayed exactly, while an unresumable gap (fa-auth restarted, or the id evicted from the ring buffer) is signalled with an `event: gap` frame, after which the consumer flushes all cached validation state.
+
+| Variable | Required | Default | Description |
+| -------- | -------- | ------- | ----------- |
+| `EVENT_STREAM_ENABLED` | no | `true` | Master switch for the SSE bridge. When `false`, the endpoint returns 404 and emission is a fleet-wide no-op. |
+| `EVENT_STREAM_BUFFER_SIZE` | no | `256` | Ring-buffer depth (events retained for `Last-Event-ID` resume). |
+| `EVENT_STREAM_HEARTBEAT_SECONDS` | no | `15` | Heartbeat comment-frame interval. Keep below the consumer read timeout and any reverse-proxy idle timeout. |
+| `EVENT_STREAM_MAX_QUEUE` | no | `64` | Per-connection outbound queue depth before a slow consumer is disconnected (it reconnects and resumes/flushes). Never blocks the emitting request. |
+
+> **Reverse proxies:** SSE needs response buffering **disabled** so frames flush immediately. The endpoint sends `X-Accel-Buffering: no` (honoured by nginx); for other proxies, disable response buffering and set the idle/read timeout above `EVENT_STREAM_HEARTBEAT_SECONDS`.
 
 ### Auth Degradation Policy
 

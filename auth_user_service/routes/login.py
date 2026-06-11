@@ -323,7 +323,9 @@ def _revoke_access_jti(
             expires_at = datetime.now(timezone.utc) + timedelta(
                 minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
             )
-        SessionController.revoke_session_jti(jti, expires_at, redis)
+        SessionController.revoke_session_jti(
+            jti, expires_at, redis, user_id=payload.sub
+        )
         return jti, False
     except Exception:  # noqa: BLE001
         logger.exception("Could not blacklist access token JTI on logout.")

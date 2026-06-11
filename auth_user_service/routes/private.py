@@ -6,9 +6,10 @@ protected at the network level (Docker internal network) AND require
 the X-Internal-Token header to match PRIVATE_API_SECRET.
 """
 
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from auth_sdk_m8.utils.email import normalize_email
@@ -21,6 +22,7 @@ from auth_user_service.core.deps import (
 )
 from auth_user_service.core.security import SecurityHelper
 from auth_user_service.db_models.users import User, UserPublic
+from auth_user_service.events import get_hub
 from auth_user_service.services.users import UserController
 
 router = APIRouter(
@@ -118,4 +120,38 @@ async def check_jti_status(
 
     return JtiStatusResponse(
         active=not AccessTokenBlacklist(redis).is_revoked(body.jti)
+    )
+
+
+@router.get("/v1/events/stream", include_in_schema=False)
+async def event_stream(
+    last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID"),
+) -> StreamingResponse:
+    """Authenticated SSE stream of auth-state events (inter-service use only).
+
+    Emits ``session-revoked`` / ``user-deleted`` frames so consumers can evict
+    locally cached token-validation state ahead of natural expiry. Push is a
+    best-effort accelerator — the JTI blacklist (``/private/v1/jti-status``)
+    stays authoritative — so a consumer that never connects is still correct.
+
+    Auth: inherits the router-level ``verify_private_api_secret`` gate
+    (``X-Internal-Token``). Resume: pass ``Last-Event-ID`` to replay a buffered
+    gap; an unresumable gap is signalled with an ``event: gap`` frame after
+    which the consumer must flush its caches.
+    """
+    hub = get_hub()
+    if hub is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Event stream disabled",
+        )
+    return StreamingResponse(
+        hub.stream(last_event_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Disable proxy/buffering so frames flush immediately (nginx etc.).
+            "X-Accel-Buffering": "no",
+        },
     )

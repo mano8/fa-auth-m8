@@ -12,11 +12,13 @@ from typing import Optional
 from redis import Redis
 from collections.abc import Sequence
 from sqlmodel import Session, col, select, delete
+from auth_sdk_m8.schemas.user_events import SessionRevokedEvent
 from auth_user_service.core.config import settings
 from auth_user_service.db_models.users import User
 from auth_user_service.db_models.sessions import ClientSessionCreate, ClientSession
 from auth_user_service.core.client import RedisRefreshStore, RedisSessionManager
 from auth_user_service.core.deps import CurrentUser, get_redis_client
+from auth_user_service.events import EVENT_SESSION_REVOKED, emit
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +80,11 @@ class SessionController:
 
     @staticmethod
     def revoke_session_jti(
-        jti: str, expires_at: datetime, redis: Optional[Redis] = None
+        jti: str,
+        expires_at: datetime,
+        redis: Optional[Redis] = None,
+        *,
+        user_id: Optional[str] = None,
     ) -> None:
         """
         Blacklist a JWT identifier via Redis (manual revocation).
@@ -87,6 +93,9 @@ class SessionController:
             jti (str): JWT token identifier.
             expires_at (datetime): When the token would naturally expire.
             redis: Live Redis client, or None to fall back to get_redis_client().
+            user_id: Owner of the session. When supplied, a best-effort
+                ``session-revoked`` event is pushed so consumers can evict the
+                cached validation of this JTI ahead of expiry.
         """
         now = datetime.now(timezone.utc)
 
@@ -100,6 +109,11 @@ class SessionController:
         else:
             logger.warning(
                 "Not blacklisting JTI %s because TTL was %d seconds", jti, raw_ttl
+            )
+        if user_id is not None:
+            emit(
+                EVENT_SESSION_REVOKED,
+                SessionRevokedEvent(user_id=user_id, jti=jti).model_dump(),
             )
 
     @staticmethod
@@ -127,16 +141,25 @@ class SessionController:
         return RedisSessionManager(redis).is_blacklisted(jti)
 
     @staticmethod
-    def delete_session_by_jti(session: Session, jti: str) -> None:
+    def delete_session_by_jti(
+        session: Session, jti: str, *, user_id: Optional[str] = None
+    ) -> None:
         """Delete the DB session record for the given JTI.
 
         Args:
             session: SQLModel DB session.
             jti: JWT identifier of the session to remove.
+            user_id: Owner of the session. When supplied, a best-effort
+                ``session-revoked`` event is pushed for cache eviction.
         """
         stmt = delete(ClientSession).where(col(ClientSession.jwt_jti) == jti)
         session.exec(stmt)
         session.commit()
+        if user_id is not None:
+            emit(
+                EVENT_SESSION_REVOKED,
+                SessionRevokedEvent(user_id=user_id, jti=jti).model_dump(),
+            )
 
     @staticmethod
     def purge_expired_sessions(
@@ -224,4 +247,10 @@ class SessionController:
         stmt = delete(ClientSession).where(col(ClientSession.user_id) == user_id)
         result = session.exec(stmt)
         session.commit()
+        # jti=None signals "all of this user's sessions" — consumers flush every
+        # cached session for the user rather than a single JTI.
+        emit(
+            EVENT_SESSION_REVOKED,
+            SessionRevokedEvent(user_id=str(user_id), jti=None).model_dump(),
+        )
         return result.rowcount or 0

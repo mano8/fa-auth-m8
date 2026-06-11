@@ -69,6 +69,26 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     # than in the shared SDK so this hardening ships without an SDK release.
     LOGIN_IP_RATE_LIMIT_REQUESTS: int = Field(50, ge=1, le=100000)
 
+    # ── Auth event stream (fa-auth SSE bridge) ───────────────────────────────
+    # fa-auth bridges its own auth-state events (session revoked / user deleted)
+    # to backend consumers over an authenticated SSE stream on the existing
+    # private API. Push is a best-effort cache-eviction accelerator — the JTI
+    # blacklist (jti-status) remains the revocation authority — so a disabled or
+    # unreachable stream never changes correctness. Payloads are HMAC-signed with
+    # the shared EVENT_SIGNING_KEY (reused, already boot-required).
+    EVENT_STREAM_ENABLED: bool = True
+    # Ring-buffer depth for Last-Event-ID resume. A reconnecting consumer whose
+    # last id is still buffered replays exactly the missed events; once evicted
+    # the server signals an unresumable gap and the consumer flushes its caches.
+    EVENT_STREAM_BUFFER_SIZE: int = Field(256, ge=1, le=100000)
+    # Heartbeat comment frame interval (seconds). Keeps the connection alive
+    # through reverse proxies and lets a consumer detect a dead stream. Must be
+    # comfortably below the consumer read timeout.
+    EVENT_STREAM_HEARTBEAT_SECONDS: float = Field(15.0, gt=0, le=300)
+    # Per-connection outbound queue depth before a slow consumer is disconnected
+    # (it reconnects and resumes/flushes). Never blocks the emitting request.
+    EVENT_STREAM_MAX_QUEUE: int = Field(64, ge=1, le=100000)
+
     # API key rate limiting defaults (0 = disabled for that period)
     API_KEY_STRICT_RATE_LIMIT: bool = False
     API_KEY_DEFAULT_LIMIT_MINUTE: int = 60

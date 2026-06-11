@@ -21,7 +21,9 @@ from auth_user_service.db_models.users import (
     UserUpdate,
 )
 from auth_sdk_m8.controllers.base import BaseController
+from auth_sdk_m8.schemas.user_events import UserDeletedEvent
 from auth_user_service.core.exceptions import handle_route_exception
+from auth_user_service.events import EVENT_USER_DELETED, emit
 
 # pylint: disable=not-callable, broad-exception-caught
 
@@ -184,6 +186,9 @@ def delete_user(
         session.execute(statement)
         session.delete(user)
         session.commit()
+        # Best-effort push so consumers drop any cached state for the deleted
+        # user; the account is already gone from the DB regardless of delivery.
+        emit(EVENT_USER_DELETED, UserDeletedEvent(user_id=str(user_id)).model_dump())
         return Message(message="User deleted successfully")
     except Exception as ex:
         return handle_route_exception(ex=ex, session=session)
