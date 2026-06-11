@@ -243,8 +243,12 @@ histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
 | `TOKEN_ISSUER` | `iss` claim (`https://auth.example.com`); identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
 | `TOKEN_AUDIENCE` | `aud` claim (`https://api.example.com`); identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
 | `TOKEN_STRICT_VALIDATION` | Default `true` — secure-by-default: enforces exact `iss`/`aud` match; boot fails closed unless both are set. `false` only for single-service/local dev |
-| `EVENT_SIGNING_ENABLED` | Default `true` — secure-by-default: HMAC-signs Redis event-bus payloads. Boot fails closed unless `EVENT_SIGNING_KEY` is set |
+| `EVENT_SIGNING_ENABLED` | Default `true` — secure-by-default: HMAC-signs auth-event payloads (SSE bridge). Boot fails closed unless `EVENT_SIGNING_KEY` is set |
 | `EVENT_SIGNING_KEY` | Shared HMAC secret for event signing; required when `EVENT_SIGNING_ENABLED=true` |
+| `EVENT_STREAM_ENABLED` | Default `true` — master switch for the SSE bridge (`GET /private/v1/events/stream`). Set `false` to disable fleet-wide |
+| `EVENT_STREAM_BUFFER_SIZE` | Default `256` — ring-buffer depth for `Last-Event-ID` resume |
+| `EVENT_STREAM_HEARTBEAT_SECONDS` | Default `15` — heartbeat comment-frame interval; keep below the consumer read timeout and any reverse-proxy idle timeout |
+| `EVENT_STREAM_MAX_QUEUE` | Default `64` — per-connection outbound queue depth before a slow consumer is disconnected |
 
 ### `api.env` — consumer service only
 

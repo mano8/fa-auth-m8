@@ -691,6 +691,7 @@ Endpoints under `/user/private/` are for inter-service calls only:
 | ------ | ---- | ----------- |
 | POST | `/private/users/` | Create a user account (called by other microservices) |
 | POST | `/private/v1/jti-status` | Check whether a JTI is revoked (`stateful` mode only; fails-open when Redis unavailable) |
+| GET | `/private/v1/events/stream` | SSE bridge — pushes `session-revoked` / `user-deleted` events to consumers (best-effort accelerator; `jti-status` remains the revocation authority) |
 
 ---
 
@@ -766,7 +767,7 @@ or `AUTH_STRICT_MODE=true` to force all failure-mode controls closed. The issuer
 
 **Auth Redis is sensitive and fa-auth-only.** The session/JTI blacklist Redis instance is private to this service. Consumer services check revocation via the HTTP private API (`POST /private/v1/jti-status`) — they never connect to auth Redis directly. This boundary is already enforced architecturally (see [Revocation check](#revocation-check-stateful-mode) above).
 
-**When the event bus is wired (future wave)**, it MUST use a **separate** Redis instance. Consumers must never share the session/blacklist store with the event bus. The event bus is a best-effort accelerator; the revocation authority remains the HTTP private API.
+**The SSE bridge (`GET /private/v1/events/stream`) is live.** Consumers that opt in to low-latency cache eviction can connect to the stream using `AuthEventStreamClient` from `auth-sdk-m8 ≥ 1.2.0` — it reconnects with jitter, replays buffered events via `Last-Event-ID`, verifies each payload's HMAC signature, and calls `on_gap()` so the consumer can flush its local caches when the buffer is unresumable. The bridge is a best-effort accelerator; `POST /private/v1/jti-status` remains the revocation authority. Consumers that do not connect continue to work correctly.
 
 ---
 

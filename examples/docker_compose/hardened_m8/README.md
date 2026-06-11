@@ -250,8 +250,12 @@ Alert rules in `prometheus/alerts.yml` cover API key rate-limit ratios and flush
 | `TOKEN_ISSUER` | `https://auth.example.com` | `iss` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
 | `TOKEN_AUDIENCE` | `https://api.example.com` | `aud` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
 | `TOKEN_STRICT_VALIDATION` | `true` | Secure-by-default: enforces an exact `iss`/`aud` match and **boot fails closed** unless both are set |
-| `EVENT_SIGNING_ENABLED` | `true` | Secure-by-default: HMAC-signs Redis event-bus payloads. **Boot fails closed** unless `EVENT_SIGNING_KEY` is set |
+| `EVENT_SIGNING_ENABLED` | `true` | Secure-by-default: HMAC-signs auth-event payloads (SSE bridge). **Boot fails closed** unless `EVENT_SIGNING_KEY` is set |
 | `EVENT_SIGNING_KEY` | — | Shared HMAC secret for event signing; required when `EVENT_SIGNING_ENABLED=true` |
+| `EVENT_STREAM_ENABLED` | `true` | Master switch for the SSE bridge (`GET /private/v1/events/stream`). Set `false` to disable the endpoint fleet-wide |
+| `EVENT_STREAM_BUFFER_SIZE` | `256` | Ring-buffer depth for `Last-Event-ID` resume |
+| `EVENT_STREAM_HEARTBEAT_SECONDS` | `15` | Heartbeat comment-frame interval — keep below the consumer read timeout and any reverse-proxy idle timeout |
+| `EVENT_STREAM_MAX_QUEUE` | `64` | Per-connection outbound queue depth before a slow consumer is disconnected (it reconnects and resumes/flushes) |
 
 ### `api.env` — consumer service
 

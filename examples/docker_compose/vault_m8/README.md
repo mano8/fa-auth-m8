@@ -532,8 +532,12 @@ Dev-mode Vault UI. Log in with `VAULT_DEV_TOKEN` from `.env`. Use it to inspect 
 | `PRIVATE_API_SECRET` | auth.env | Secret for `X-Internal-Token` headers |
 | `SESSION_SECRET` | auth.env | Signing key for the session cookie (distinct from `TOKENS_ENCRYPTION_KEY`) |
 | `TOKENS_ENCRYPTION_KEY` | auth.env | Fernet key for encrypting refresh token payloads |
-| `EVENT_SIGNING_ENABLED` | auth.env | Secure-by-default `true`; HMAC-signs Redis event-bus payloads. Boot fails closed unless `EVENT_SIGNING_KEY` is set |
+| `EVENT_SIGNING_ENABLED` | auth.env | Secure-by-default `true`; HMAC-signs auth-event payloads (SSE bridge). Boot fails closed unless `EVENT_SIGNING_KEY` is set |
 | `EVENT_SIGNING_KEY` | auth.env | HMAC secret for event signing. **Not** in `REQUIRE_UPDATE_FIELDS`, so Vault does not inject it — keep it in `auth.env` |
+| `EVENT_STREAM_ENABLED` | auth.env | Default `true` — master switch for the SSE bridge (`GET /private/v1/events/stream`). Set `false` to disable fleet-wide |
+| `EVENT_STREAM_BUFFER_SIZE` | auth.env | Default `256` — ring-buffer depth for `Last-Event-ID` resume |
+| `EVENT_STREAM_HEARTBEAT_SECONDS` | auth.env | Default `15` — heartbeat comment-frame interval; keep below the consumer read timeout and any reverse-proxy idle timeout |
+| `EVENT_STREAM_MAX_QUEUE` | auth.env | Default `64` — per-connection outbound queue depth before a slow consumer is disconnected |
 | `TOKEN_ISSUER` | auth.env | `iss` claim (`https://auth.example.com`); identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
 | `TOKEN_AUDIENCE` | auth.env | `aud` claim (`https://api.example.com`); identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
 | `TOKEN_STRICT_VALIDATION` | auth.env | Secure-by-default `true`; enforces an exact `iss`/`aud` match and boot fails closed unless both are set |

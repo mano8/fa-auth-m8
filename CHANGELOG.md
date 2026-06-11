@@ -13,6 +13,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — 0.9.6
 
+### Added
+
+- **Auth-event SSE bridge (SB)** — `GET /private/v1/events/stream` on the private
+  router (same `X-Internal-Token` / `PRIVATE_API_SECRET` gate as `jti-status`,
+  `include_in_schema=False`). In-process asyncio event hub (`auth_user_service/events/hub.py`)
+  with a bounded ring buffer (`EVENT_STREAM_BUFFER_SIZE`, default 256), monotonic
+  `<boot-epoch>-<seq>` event ids, `Last-Event-ID` resume (gap → `event: gap` frame),
+  per-connection backpressure disconnect, and heartbeat comment frames every
+  `EVENT_STREAM_HEARTBEAT_SECONDS` (default 15 s). Hub started/stopped in `lifespan`.
+- **Event emission at four sites** (best-effort, never fails the operation):
+  `revoke_session_jti`, `revoke_all_user_sessions`, `delete_session_by_jti`, `delete_user`.
+  Payloads signed with the existing `EVENT_SIGNING_KEY` via `_signing.serialize`.
+- **Three new Prometheus metrics**: `auth_events_published_total{event_type}`,
+  `auth_event_stream_connections`, `auth_event_stream_disconnects_total{reason}`.
+- **`EVENT_STREAM_*` config knobs**: `EVENT_STREAM_ENABLED` (default `true`),
+  `EVENT_STREAM_BUFFER_SIZE`, `EVENT_STREAM_HEARTBEAT_SECONDS`, `EVENT_STREAM_MAX_QUEUE`.
+  Added to `auth_user_service/.env` and all six `auth.env.example` files.
+- **`auth-sdk-m8 ≥ 1.2.0`** bump in `requirements_base.txt` (SA shipped
+  `AuthEventStreamClient`, `SessionRevokedEvent`, and the forbidden-placeholder guard).
+
 ### Security
 
 - **Key separation via `SESSION_SECRET`** — the `SessionMiddleware` cookie is now
