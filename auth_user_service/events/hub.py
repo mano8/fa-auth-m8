@@ -111,7 +111,7 @@ class EventHub:
         self._max_queue = max_queue
         self._signing_key = signing_key
         self._subscribers: set[_Subscriber] = set()
-        self._epoch = str(int(time.time()))
+        self._epoch = str(time.time_ns())
         self._seq = 0
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 

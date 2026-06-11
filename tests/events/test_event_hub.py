@@ -294,6 +294,25 @@ class TestEmit:
         emit("session-revoked", {"a": 1})  # logged, never raised
 
 
+class TestEpochCollisionFix:
+    def test_epoch_uses_nanosecond_resolution(self, monkeypatch):
+        """Epoch comes from time.time_ns() — a sub-second value — so two hubs
+        started within the same wall-clock second produce distinct epochs and
+        prevent a reconnecting consumer from being silently judged resumable
+        after a process restart."""
+        monkeypatch.setattr(hubmod.time, "time_ns", lambda: 1_700_000_000_999_999_999)
+        hub = _make_hub()
+        assert hub._epoch == "1700000000999999999"
+
+    def test_two_instances_in_same_second_get_distinct_epochs(self, monkeypatch):
+        """Two hubs started within the same second get different epochs."""
+        ns_values = iter([1_700_000_000_000_000_001, 1_700_000_000_000_000_002])
+        monkeypatch.setattr(hubmod.time, "time_ns", lambda: next(ns_values))
+        h1 = _make_hub()
+        h2 = _make_hub()
+        assert h1._epoch != h2._epoch
+
+
 class TestInitHub:
     def _set(self, monkeypatch, **kwargs):
         from auth_user_service.core.config import settings
