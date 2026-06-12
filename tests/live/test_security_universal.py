@@ -862,9 +862,9 @@ class TestK_SecurityHeaders:
     """Category K — Response header hardening."""
 
     @pytest.fixture(scope="class")
-    def resp_headers(self) -> dict:
-        """Fetch a real response and return its headers."""
-        return dict(requests.get(f"{AUTH_BASE}/health/", timeout=TIMEOUT).headers)
+    def resp_headers(self):
+        """Fetch a real response and return its headers (case-insensitive)."""
+        return requests.get(f"{AUTH_BASE}/health/", timeout=TIMEOUT).headers
 
     def test_k01_x_content_type_options_nosniff(self, resp_headers: dict):
         val = resp_headers.get("x-content-type-options", "")

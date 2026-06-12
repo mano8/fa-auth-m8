@@ -305,10 +305,10 @@ app.add_middleware(
 if settings.METRICS_ENABLED:
     app.add_middleware(MetricsMiddleware)
 
-# Production/staging response-hardening headers (HSTS + CSP + Referrer/Permissions
-# policy). fa-auth builds its own FastAPI() app, so it wires the shared SDK layer
-# directly — same env-gated middleware consumer services get via create_app. A
-# no-op outside production (ENVIRONMENT=="production" or STRICT_PRODUCTION_MODE).
+# Response-hardening headers. fa-auth builds its own FastAPI() app so it wires the
+# shared SDK layer directly. X-Content-Type-Options + X-Frame-Options are always
+# applied (safe in every env). HSTS/CSP/Referrer/Permissions are production-only
+# (ENVIRONMENT=="production" or STRICT_PRODUCTION_MODE).
 add_security_headers_middleware(app, settings)
 
 app.include_router(api_router, prefix=settings.API_PREFIX)
