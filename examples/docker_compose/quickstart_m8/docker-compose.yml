@@ -57,16 +57,15 @@ services:
     ports:
       - "127.0.0.1:3306:3306"
     healthcheck:
-      test: ["CMD-SHELL", "MYSQL_PWD=$$MARIADB_ROOT_PASSWORD mariadb -u root -e 'SELECT 1'"]
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MARIADB_ROOT_PASSWORD mariadb -h 127.0.0.1 -u root -e 'SELECT 1'"]
       interval: 10s
       timeout: 5s
       retries: 10
-      # First boot only: on an empty volume the official entrypoint runs mariadb-install-db
-      # + the init-db.sh provisioning before the server accepts TCP connections, so this
-      # probe cannot pass until that completes. On a slow (e.g. Windows) bind mount under
-      # full-stack build load this can exceed the old 60s window and fail dependents. A long
-      # start_period covers the cold init; start_interval probes every 2s so warm restarts
-      # flip healthy immediately (start_period ends the moment a probe succeeds).
+      # -h 127.0.0.1 forces a TCP connection (not Unix socket) so the probe only passes
+      # once the TCP listener is accepting connections — critical on first boot where
+      # mariadb-install-db + init-db.sh run before TCP binds. start_period covers the
+      # cold init window on slow (e.g. Windows) bind mounts; start_interval probes every
+      # 2s so warm restarts flip healthy immediately.
       start_period: 180s
       start_interval: 2s
     restart: unless-stopped
