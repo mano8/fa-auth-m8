@@ -22,6 +22,7 @@ from auth_sdk_m8.schemas.auth import TokenSecret
 from auth_sdk_m8.schemas.base import ResponseMessage
 
 from auth_user_service.core.client import (
+    LoginIpRateLimiter,
     LoginRateLimiter,
     RedisRefreshStore,
     RefreshRateLimiter,
@@ -91,17 +92,27 @@ def _strip_port(raw: str) -> str:
 def _client_ip(request: Request) -> str:
     """Extract the real client IP from X-Forwarded-For.
 
-    When TRUSTED_PROXY_COUNT > 0, the leftmost entry in X-Forwarded-For is
-    the real client (Traefik prepends the true client IP before forwarding).
+    Traefik *appends* the IP of the peer it received the connection from, so
+    trusted entries accumulate on the right of X-Forwarded-For. The real client
+    is therefore the Nth entry counted from the right, where N is
+    TRUSTED_PROXY_COUNT (the number of trusted reverse-proxy hops in front of
+    this service). Everything to the left of that position is supplied by the
+    client and must never be trusted. This matches the contract documented in
+    core/config.py (xff[-TRUSTED_PROXY_COUNT]).
+
     When TRUSTED_PROXY_COUNT == 0, XFF is ignored entirely (no proxy in front).
-    Falls back to request.client.host on absence, garbage values, or no proxy.
+    Falls back to request.client.host on absence, too few entries, garbage
+    values, or no proxy.
     """
-    if settings.TRUSTED_PROXY_COUNT > 0:
+    count = settings.TRUSTED_PROXY_COUNT
+    if count > 0:
         xff = request.headers.get("x-forwarded-for")
         if xff:
-            ips = [p.strip() for p in xff.split(",")]
-            if ips:
-                candidate = _strip_port(ips[0])
+            ips = [p.strip() for p in xff.split(",") if p.strip()]
+            # Fewer hops than expected means the chain did not pass through the
+            # full trusted proxy path — don't trust it, fall back to the peer.
+            if len(ips) >= count:
+                candidate = _strip_port(ips[-count])
                 try:
                     ip_address(candidate)
                     return candidate
@@ -115,12 +126,23 @@ def _enforce_login_rate_limit(
 ) -> None:
     """Check and enforce the login rate limit. Raises 429 or 503 as appropriate."""
     if redis is not None:
-        limiter = LoginRateLimiter(
+        window = settings.LOGIN_RATE_LIMIT_WINDOW_MINUTES * 60
+        email_limiter = LoginRateLimiter(
             redis,
             settings.LOGIN_RATE_LIMIT_REQUESTS,
-            settings.LOGIN_RATE_LIMIT_WINDOW_MINUTES * 60,
+            window,
         )
-        if not limiter.is_allowed(email):
+        ip_limiter = LoginIpRateLimiter(
+            redis,
+            settings.LOGIN_IP_RATE_LIMIT_REQUESTS,
+            window,
+        )
+        # Evaluate both windows unconditionally so each counter advances even
+        # when the other is already over limit — a username-rotating spray must
+        # still accrue against the per-IP cap.
+        email_ok = email_limiter.is_allowed(email)
+        ip_ok = ip_limiter.is_allowed(ip)
+        if not (email_ok and ip_ok):
             if _m and _m.login_attempts_total:
                 _m.login_attempts_total.labels(result="rate_limited").inc()
             logger.warning("event=login.rate_limited ip=%s ts=%s", ip, _now_iso())
@@ -301,7 +323,9 @@ def _revoke_access_jti(
             expires_at = datetime.now(timezone.utc) + timedelta(
                 minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
             )
-        SessionController.revoke_session_jti(jti, expires_at, redis)
+        SessionController.revoke_session_jti(
+            jti, expires_at, redis, user_id=payload.sub
+        )
         return jti, False
     except Exception:  # noqa: BLE001
         logger.exception("Could not blacklist access token JTI on logout.")

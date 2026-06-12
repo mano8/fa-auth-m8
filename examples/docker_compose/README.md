@@ -1,6 +1,6 @@
 # Docker Compose Examples
 
-Five ready-to-run stacks, each targeting a distinct use case. Each runs the same two application services with different infrastructure and configuration.
+Six ready-to-run stacks, each targeting a distinct use case. Each runs the same two application services with different infrastructure and configuration.
 
 ---
 
@@ -23,11 +23,11 @@ Five ready-to-run stacks, each targeting a distinct use case. Each runs the same
 | Stack | Database | Algorithm | Token mode | Secrets | Monitoring | Hardening | Best for |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | [quickstart_m8](quickstart_m8/) | MariaDB | HS256 | `stateful` | env file | — | — | **Start here** — fastest onboarding |
-| [postgres_m8](postgres_m8/) | PostgreSQL 16 | HS256 | `stateful` | env file | — | — | PostgreSQL projects |
+| [postgres_m8](postgres_m8/) | PostgreSQL 18 | HS256 | `stateful` | env file | — | — | PostgreSQL projects |
 | [rs256_m8](rs256_m8/) | MariaDB | RS256 | `hybrid` | env file | — | — | Asymmetric signing + JWKS |
-| [metrics_m8](metrics_m8/) | PostgreSQL 16 | HS256 | `stateful` | env file | Prometheus + Grafana | — | Metrics dashboards |
-| [hardened_m8](hardened_m8/) | PostgreSQL 16 | RS256 | `stateful` | env file | Prometheus + Grafana | container + network | Hardened posture without Vault |
-| [vault_m8](vault_m8/) | PostgreSQL 16 | RS256 | `stateful` | **HashiCorp Vault** | Prometheus + Grafana | container + network | Hardened + secrets manager |
+| [metrics_m8](metrics_m8/) | PostgreSQL 18 | HS256 | `stateful` | env file | Prometheus + Grafana | — | Metrics dashboards |
+| [hardened_m8](hardened_m8/) | PostgreSQL 18 | RS256 | `stateful` | env file | Prometheus + Grafana | container + network | Hardened posture without Vault |
+| [vault_m8](vault_m8/) | PostgreSQL 18 | RS256 | `stateful` | **HashiCorp Vault** | Prometheus + Grafana | container + network | Hardened + secrets manager |
 
 **Decision guide:**
 
@@ -59,7 +59,7 @@ auth_user_service :8000            fastapi_full :8000
           ┌───────┴────────┐
           ▼                ▼
         m8_db          redis_cache
-   (MariaDB / PG)      (Redis 7.4)
+   (MariaDB / PG)      (Redis 8.8)
 
 (metrics_m8, hardened_m8, and vault_m8 also include Prometheus + Grafana)
 ```
@@ -134,6 +134,19 @@ Generate secrets with:
 python -c "import secrets; print(secrets.token_urlsafe(64))"
 ```
 
+### Secure-by-default boot requirements
+
+`auth-sdk-m8` ≥ 1.0.0 fails closed at startup unless these are set — every stack's
+`auth.env.example` already includes them, so don't delete them:
+
+- **`EVENT_SIGNING_KEY`** — `EVENT_SIGNING_ENABLED` defaults to `true`, so the service
+  refuses to boot without an HMAC key for Redis event-bus signing. Set
+  `EVENT_SIGNING_ENABLED=false` to opt out.
+- **`TOKEN_ISSUER` + `TOKEN_AUDIENCE`** — `TOKEN_STRICT_VALIDATION` defaults to `true`,
+  which enforces an exact `iss`/`aud` match and requires both values. Use identical
+  values in `auth.env` and every consumer's `api.env`. Set
+  `TOKEN_STRICT_VALIDATION=false` only for single-service/local dev.
+
 ---
 
 ## Database isolation
@@ -192,8 +205,8 @@ Migrations run automatically every time the containers start. If you switch stac
 
 | Port | Bound to | What |
 | --- | --- | --- |
-| `8000` | `0.0.0.0` | Traefik HTTP — public |
-| `4430` | `0.0.0.0` | Traefik HTTPS — public |
+| `8000` | `0.0.0.0` | Traefik HTTP — published on all interfaces (redirects to HTTPS) |
+| `4430` | `0.0.0.0` | Traefik HTTPS — published on all interfaces, but the `/user` + `/fastapi` routers are `Host(`localhost`)`-gated, so non-localhost requests get `404` by default. To serve them on the LAN, drop the `Host(`localhost`)` prefix in `traefik/dynamic_conf.yml` (see the router comments). |
 | `9000` | `127.0.0.1` | API services entry (override with `API_BIND_IP` in auth.env) |
 | `8080` | `127.0.0.1` | Traefik dashboard |
 | `3306` / `5432` | `127.0.0.1` | Database |

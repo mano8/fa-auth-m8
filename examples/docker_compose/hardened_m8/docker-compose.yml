@@ -24,7 +24,7 @@ services:
     restart: "no"
 
   traefik:
-    image: traefik:v3.3
+    image: traefik:v3.7.5
     ports:
       - "8000:80"
       - "4430:443/tcp"
@@ -44,9 +44,9 @@ services:
       - app_net
 
   m8_db:
-    image: postgres:16-alpine
+    image: postgres:18.4-alpine
     volumes:
-      - ./db_data:/var/lib/postgresql/data
+      - ./db_data:/var/lib/postgresql
       - ../shared/db_init:/docker-entrypoint-initdb.d:ro
     env_file:
       - ./.env                          # exposes all .env vars so init-db.sh can discover DB triplets
@@ -61,13 +61,21 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      # First boot only: the official entrypoint runs initdb + the init-db.sh
+      # provisioning on the Unix socket with TCP disabled, so pg_isready over
+      # 127.0.0.1 cannot pass until that completes. On a slow (e.g. Windows)
+      # bind mount under full-stack build load this can exceed 80s, tripping the
+      # old 30s window and failing dependents. A long start_period covers the
+      # cold init; start_interval probes every 2s so warm restarts flip healthy
+      # immediately (start_period ends the moment a probe succeeds).
+      start_period: 180s
+      start_interval: 2s
     restart: unless-stopped
     networks:
       - data_net
 
   redis_cache:
-    image: redis:7.4-alpine
+    image: redis:8.8.0-alpine
     volumes:
       - ./redis/redis_data:/data
     ports:
@@ -93,7 +101,7 @@ services:
       - data_net
 
   prometheus:
-    image: ubuntu/prometheus:3.11-24.04_stable
+    image: ubuntu/prometheus:3.11-26.04_stable
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/data:/prometheus
@@ -209,6 +217,18 @@ networks:
   app_net:
     driver: bridge
     name: hardened_m8_app_net   # explicit name so Traefik's network: setting can reference it
+    # Pinned, deterministic subnet so the bridge gateway IP is stable and the
+    # allowlists in traefik/dynamic_conf.yml can trust it. 172.16.0.0/16 is RFC1918
+    # private space Docker allocates per-bridge on ANY host, independent of the
+    # machine's own LAN — portable, NOT tied to this machine. Host->published-port
+    # traffic is SNATed to the gateway (172.16.0.1), trusted as "localhost" by the
+    # dashboard allowlist; sibling containers keep 172.16.0.x and are NOT trusted.
+    # If 172.16.0.0/16 is already in use on a host (e.g. a corporate VPN), change
+    # both lines below and the matching CIDRs in traefik/dynamic_conf.yml.
+    ipam:
+      config:
+        - subnet: 172.16.0.0/16
+          gateway: 172.16.0.1
   data_net:
     driver: bridge
-    internal: true
+    internal: true   # no gateway — DB/Redis are unreachable from app_net or the host

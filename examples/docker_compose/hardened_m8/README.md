@@ -1,6 +1,6 @@
 # hardened_m8
 
-**PostgreSQL 16** + **RS256 asymmetric token signing** + **stateful** token mode + **Prometheus & Grafana** observability + **container hardening** + **network segmentation**.
+**PostgreSQL 18** + **RS256 asymmetric token signing** + **stateful** token mode + **Prometheus & Grafana** observability + **container hardening** + **network segmentation**.
 
 `auth_user_service` runs from the published Docker Hub image (`tepochtli/fa-auth-m8:latest`). Secrets live in env files — no Vault required.
 
@@ -39,7 +39,7 @@ Browser / Frontend
        └──► /fastapi/*   → fastapi_full :8000    (RS256 consumer via JWKS)
 
   app_net ─── Traefik + auth + fastapi + Prometheus + Grafana
-  data_net ── m8_db (PostgreSQL 16) + redis_cache (Redis 7.4)  [internal: true]
+  data_net ── m8_db (PostgreSQL 18) + redis_cache (Redis 8.8)  [internal: true]
 
   Auth and fastapi services sit on both networks.
   Traefik sits on app_net only — cannot reach DB or Redis directly.
@@ -85,10 +85,10 @@ Auth degradation settings in `auth.env`:
 
 | Service | Image | Accessible at |
 | --- | --- | --- |
-| traefik | traefik:v3.3 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `:8080` (dashboard) |
-| m8_db | postgres:16-alpine | `127.0.0.1:5432` |
-| redis_cache | redis:7.4-alpine | `127.0.0.1:6379` |
-| prometheus | ubuntu/prometheus:3.11-24.04_stable | `127.0.0.1:9090` |
+| traefik | traefik:v3.7.5 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `127.0.0.1:8080` (dashboard) |
+| m8_db | postgres:18.4-alpine | `127.0.0.1:5432` |
+| redis_cache | redis:8.8.0-alpine | `127.0.0.1:6379` |
+| prometheus | ubuntu/prometheus:3.11-26.04_stable | `127.0.0.1:9090` |
 | grafana | grafana/grafana:13.1.0 | `127.0.0.1:3000` |
 | auth_user_service | [tepochtli/fa-auth-m8:latest](https://hub.docker.com/r/tepochtli/fa-auth-m8) | via Traefik at `/user` |
 | fastapi_full | local build | via Traefik at `/fastapi` |
@@ -122,7 +122,9 @@ DB_PASSWORD=<same-as-AUTH_DB_PASSWORD-in-.env>
 REDIS_PASSWORD=<same-as-REDIS_PASSWORD-in-.env>
 REFRESH_SECRET_KEY=<64-char-random>
 PRIVATE_API_SECRET=<64-char-random>
+SESSION_SECRET=<64-char-random>  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY=<64-char-random>
+EVENT_SIGNING_KEY=<64-char-random>  # HMAC key for auth event stream signing (boot fails closed without it)
 FIRST_SUPERUSER=admin@example.com
 FIRST_SUPERUSER_PASSWORD=<strong-password>
 ```
@@ -245,6 +247,15 @@ Alert rules in `prometheus/alerts.yml` cover API key rate-limit ratios and flush
 | `ACCESS_REVOCATION_FAILURE_MODE` | `fail_closed` | Redis outage → tokens not accepted |
 | `TRUSTED_PROXY_COUNT` | `1` | Trusted proxy hops for real client IP extraction. Set to `0` if no proxy. |
 | `METRICS_ENABLED` | `true` | Exposes `/user/metrics` for Prometheus |
+| `TOKEN_ISSUER` | `https://auth.example.com` | `iss` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_AUDIENCE` | `https://api.example.com` | `aud` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_STRICT_VALIDATION` | `true` | Secure-by-default: enforces an exact `iss`/`aud` match and **boot fails closed** unless both are set |
+| `EVENT_SIGNING_ENABLED` | `true` | Secure-by-default: HMAC-signs auth-event payloads (SSE bridge). **Boot fails closed** unless `EVENT_SIGNING_KEY` is set |
+| `EVENT_SIGNING_KEY` | — | Shared HMAC secret for event signing; required when `EVENT_SIGNING_ENABLED=true` |
+| `EVENT_STREAM_ENABLED` | `true` | Master switch for the SSE bridge (`GET /private/v1/events/stream`). Set `false` to disable the endpoint fleet-wide |
+| `EVENT_STREAM_BUFFER_SIZE` | `256` | Ring-buffer depth for `Last-Event-ID` resume |
+| `EVENT_STREAM_HEARTBEAT_SECONDS` | `15` | Heartbeat comment-frame interval — keep below the consumer read timeout and any reverse-proxy idle timeout |
+| `EVENT_STREAM_MAX_QUEUE` | `64` | Per-connection outbound queue depth before a slow consumer is disconnected (it reconnects and resumes/flushes) |
 
 ### `api.env` — consumer service
 
@@ -253,6 +264,7 @@ Alert rules in `prometheus/alerts.yml` cover API key rate-limit ratios and flush
 | `AUTH_SERVICE_ROLE` | `consumer` — verifies tokens via JWKS, does not sign them |
 | `JWKS_URI` | `http://auth_user_service:8000/user/.well-known/jwks.json` |
 | `JWKS_CACHE_TTL_SECONDS` | `300` — how long to cache the public key before re-fetching |
+| `REVOCATION_CACHE_TTL_SECONDS` | `30` — seconds to cache positive JTI-validation results; event stream evicts early. Set `0` to disable caching (default) |
 
 ---
 
@@ -352,8 +364,7 @@ curl http://localhost:9000/user/health/
 
 When deploying publicly, replace `traefik/dynamic_conf.yml` with `traefik/production_dynamic_conf.yml`. The production config:
 
-- Adds `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` to all API routes.
-- Enables `Strict-Transport-Security` (HSTS). Only use after TLS is stable with a trusted certificate.
+- Ships `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and `Strict-Transport-Security` (HSTS) **commented out** in `security-headers-prod` — both are opt-in. Uncomment only after TLS is stable with a trusted certificate (and confirm the CSP does not break your frontend/docs). HSTS stays off by default because, once sent, browsers refuse plain HTTP to the host for the full `stsSeconds` even after you disable it.
 - Dev `dynamic_conf.yml` has no CSP so Swagger UI works during development.
 
 Also update the `Host` rules in the production config to match your actual FQDN.

@@ -1,5 +1,20 @@
 # dynamic_conf.yml — Development
 tls:
+  # options.default is applied automatically to every router that does not name
+  # an explicit tls.options, so all HTTPS routes inherit this hardened baseline.
+  options:
+    default:
+      minVersion: VersionTLS12        # reject SSLv3/TLS1.0/1.1
+      cipherSuites:                    # strong AEAD suites only (TLS 1.2; TLS 1.3 suites are fixed)
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+      curvePreferences:
+        - X25519
+        - CurveP256
   stores:
     default:
       defaultCertificate:
@@ -11,10 +26,12 @@ tls:
 http:
 
   routers:
-    # Dashboard — localhost only, IP-restricted
+    # Dashboard — localhost only: served on the built-in 'traefik' entrypoint
+    # (127.0.0.1:8080), Host-pinned and IP-restricted, over TLS.
+    # api.insecure is false, so this router is the ONLY way to reach api@internal.
     traefik-dashboard:
       entryPoints:
-        - websecure
+        - traefik
       rule: "Host(`localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
       service: api@internal
       middlewares:
@@ -32,6 +49,14 @@ http:
     auth-public-router:
       entryPoints:
         - websecure
+      # LOCALHOST-ONLY by default: Host(`localhost`) limits this route to the Docker
+      # host, so /user is NOT reachable from the LAN out of the box.
+      # ── TO EXPOSE /user ON THE LAN ───────────────────────────────────────────
+      # Delete the `Host(`localhost`) && ` prefix from the rule below. The route
+      # then matches any hostname/IP on this stack's LAN-published HTTPS port.
+      # ─────────────────────────────────────────────────────────────────────────
+      # The path exclusions are the SECURITY CONTRACT and MUST stay regardless —
+      # /user/health|metrics|private are never public on ANY host.
       rule: "Host(`localhost`) && PathPrefix(`/user`) && !(PathPrefix(`/user/health`) || PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
       service: auth-service
       middlewares:
@@ -53,6 +78,9 @@ http:
     fastapi-public-router:
       entryPoints:
         - websecure
+      # LOCALHOST-ONLY by default: Host(`localhost`) limits this route to the Docker
+      # host, so /fastapi is NOT reachable from the LAN out of the box.
+      # TO EXPOSE /fastapi ON THE LAN: delete the `Host(`localhost`) && ` prefix below.
       rule: "Host(`localhost`) && PathPrefix(`/fastapi`)"
       service: fastapi-service
       middlewares:
@@ -82,20 +110,21 @@ http:
   middlewares:
     ip-allowlist:
       IPAllowList:
-        # Only allow dashboard from the Docker host itself
+        # Dashboard: localhost only. The host reaches the loopback-published :8080 via
+        # the bridge gateway (SNAT), so only the gateway + loopback are trusted. Sibling
+        # containers (172.16.0.x, x>1) and anything on the host's LAN are NOT allowed.
         sourceRange:
           - "127.0.0.1/32"
-          - "172.16.0.0/12"   # Docker default bridge networks
-          - "192.168.0.0/16"  # Docker Desktop / Compose auto-assigned networks
+          - "172.16.0.1/32"   # this stack's pinned bridge gateway == the Docker host
           - "::1/128"
 
     internal-only:
       IPAllowList:
-        # Restrict health/metrics to localhost and Docker bridge networks
+        # Internal routes (health/metrics/private): host + sibling containers in this
+        # stack's pinned subnet only — never the host's LAN.
         sourceRange:
           - "127.0.0.1/32"
-          - "172.16.0.0/12"   # Docker default bridge networks
-          - "192.168.0.0/16"  # Docker Desktop / Compose auto-assigned networks
+          - "172.16.0.0/16"   # this stack's pinned Docker network (host + sibling containers)
           - "::1/128"
 
     security-headers:

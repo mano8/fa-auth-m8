@@ -18,8 +18,11 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from auth_user_service.routes import api_router
 from auth_user_service.core.config import settings
+from auth_user_service.events import get_hub, init_hub
+from auth_user_service.events import metrics as _event_metrics
 from auth_sdk_m8.observability import metrics as _metrics
 from auth_sdk_m8.observability.middleware import MetricsMiddleware
+from auth_sdk_m8.security.headers import add_security_headers_middleware
 
 _logger = logging.getLogger(__name__)
 
@@ -28,6 +31,10 @@ _FLUSH_INTERVAL_SECONDS = 60
 _metrics.setup(
     enabled=settings.METRICS_ENABLED,
     groups_str=settings.METRICS_GROUPS,
+    api_prefix=settings.API_PREFIX,
+)
+_event_metrics.setup(
+    enabled=settings.METRICS_ENABLED,
     api_prefix=settings.API_PREFIX,
 )
 
@@ -179,9 +186,18 @@ def _startup_checks() -> None:
 async def lifespan(app: FastAPI):
     _startup_checks()
     flush_task = asyncio.create_task(_last_used_at_flush_loop())
+    # Auth event-stream bridge: build the hub and bind the running loop so sync
+    # route handlers can publish thread-safely. None when EVENT_STREAM_ENABLED
+    # is false — emission then no-ops fleet-wide.
+    hub = init_hub()
+    if hub is not None:
+        hub.bind_loop(asyncio.get_running_loop())
     try:
         yield
     finally:
+        hub = get_hub()
+        if hub is not None:
+            hub.close()
         flush_task.cancel()
         try:
             await asyncio.wait_for(asyncio.shield(flush_task), timeout=6.0)
@@ -281,13 +297,23 @@ app.add_middleware(
 
 app.add_middleware(
     SessionMiddleware,
-    secret_key=settings.TOKENS_ENCRYPTION_KEY.get_secret_value(),
+    secret_key=settings.SESSION_SECRET.get_secret_value(),
     max_age=3600,
     https_only=settings.SESSION_COOKIE_SECURE,
 )
 
 if settings.METRICS_ENABLED:
     app.add_middleware(MetricsMiddleware)
+
+# Response-hardening headers (auth-sdk-m8 >= 1.2.1, three tiers). fa-auth builds its
+# own FastAPI() app so it wires the shared SDK layer directly:
+#   1. Always-on: X-Content-Type-Options + X-Frame-Options (safe in every env).
+#   2. Production-gated: Referrer-Policy + Permissions-Policy
+#      (ENVIRONMENT=="production" or STRICT_PRODUCTION_MODE).
+#   3. Express opt-in only, never on local: HSTS (HSTS_ENABLED) and CSP
+#      (CONTENT_SECURITY_POLICY_ENABLED). Browser-persisted and hard to reverse, so
+#      both default False and are decoupled from the production gate.
+add_security_headers_middleware(app, settings)
 
 app.include_router(api_router, prefix=settings.API_PREFIX)
 

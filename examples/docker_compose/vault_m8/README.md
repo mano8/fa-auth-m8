@@ -1,6 +1,6 @@
 # vault_m8
 
-**PostgreSQL 16** + **RS256 asymmetric token signing** + **HashiCorp Vault** secret injection + **stateful** token mode + **Prometheus & Grafana** observability.
+**PostgreSQL 18** + **RS256 asymmetric token signing** + **HashiCorp Vault** secret injection + **stateful** token mode + **Prometheus & Grafana** observability.
 
 The auth service's database password and Redis password are stored in HashiCorp Vault and injected at startup via the `VaultProvider` in `auth-sdk-m8`. `auth.env` intentionally omits these two fields — the auth service never reads them from a file.
 
@@ -51,7 +51,7 @@ Even with Vault, the shared `.env` file still contains plaintext secrets:
 
 | Secret in `.env` | Why it is there | How to eliminate it in production |
 | --- | --- | --- |
-| `DB_PASSWORD` (Postgres superuser) | Required by the `postgres:16-alpine` container on first boot | Pre-provision the DB outside compose; inject via CI/CD variable |
+| `DB_PASSWORD` (Postgres superuser) | Required by the `postgres:18.4-alpine` container on first boot | Pre-provision the DB outside compose; inject via CI/CD variable |
 | `AUTH_DB_PASSWORD` | Used by `vault_init` to write the secret to Vault | Inject via CI/CD or a secrets bootstrap pipeline |
 | `REDIS_PASSWORD` | Used by `vault_init` to write the secret to Vault | Same as above |
 | `VAULT_DEV_TOKEN` | Required to authenticate to Vault dev mode | Replace with Docker secret or AppRole — never in `.env` |
@@ -98,7 +98,7 @@ Browser / Frontend
                 │
        ┌────────┴──────────────────────────┐
        ▼                                   ▼
-  m8_db (PostgreSQL 16)          redis_cache (Redis 7.4)
+  m8_db (PostgreSQL 18)          redis_cache (Redis 8.8)
        │                                   │
   vault (HashiCorp Vault 1.17, dev mode)
        └── vault_init (one-shot secret loader)
@@ -124,12 +124,12 @@ auth_user_service reads secret/data/app → injects into CommonSettings
 
 | Service | Image | Accessible at |
 | --- | --- | --- |
-| traefik | traefik:v3.3 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `:8080` (dashboard) |
+| traefik | traefik:v3.7.5 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `127.0.0.1:8080` (dashboard) |
 | vault | hashicorp/vault:1.17 | `127.0.0.1:8200` (UI + API) |
 | vault_init | hashicorp/vault:1.17 | one-shot init, no port |
-| m8_db | postgres:16-alpine | `127.0.0.1:5432` |
-| redis_cache | redis:7.4-alpine | `127.0.0.1:6379` |
-| prometheus | ubuntu/prometheus:3.11-24.04_stable | `127.0.0.1:9090` |
+| m8_db | postgres:18.4-alpine | `127.0.0.1:5432` |
+| redis_cache | redis:8.8.0-alpine | `127.0.0.1:6379` |
+| prometheus | ubuntu/prometheus:3.11-26.04_stable | `127.0.0.1:9090` |
 | grafana | grafana/grafana:13.1.0 | `127.0.0.1:3000` |
 | auth_user_service | [tepochtli/fa-auth-m8:latest](https://hub.docker.com/r/tepochtli/fa-auth-m8) | via Traefik at `/user` |
 | fastapi_full | local build | via Traefik at `/fastapi` |
@@ -162,7 +162,9 @@ Open `auth.env` and replace every `changethis`:
 DB_USER=<same-as-AUTH_DB_USER-in-.env>
 REFRESH_SECRET_KEY=<64-char-random>
 PRIVATE_API_SECRET=<64-char-random>
+SESSION_SECRET=<64-char-random>  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY=<64-char-random>
+EVENT_SIGNING_KEY=<64-char-random>  # HMAC key for auth event stream signing — not Vault-injected, set it here
 FIRST_SUPERUSER=admin@example.com
 FIRST_SUPERUSER_PASSWORD=<strong-password>
 ```
@@ -442,6 +444,7 @@ vault kv put secret/app \
   REDIS_PASSWORD=<redis-password> \
   REFRESH_SECRET_KEY=<value> \
   PRIVATE_API_SECRET=<value> \
+  SESSION_SECRET=<value>
   TOKENS_ENCRYPTION_KEY=<value>
 ```
 
@@ -527,7 +530,17 @@ Dev-mode Vault UI. Log in with `VAULT_DEV_TOKEN` from `.env`. Use it to inspect 
 | `ACCESS_PUBLIC_KEY_FILE` | auth.env | `/opt/keys/public.pem` |
 | `REFRESH_SECRET_KEY` | auth.env | HMAC secret for refresh tokens |
 | `PRIVATE_API_SECRET` | auth.env | Secret for `X-Internal-Token` headers |
+| `SESSION_SECRET` | auth.env | Signing key for the session cookie (distinct from `TOKENS_ENCRYPTION_KEY`) |
 | `TOKENS_ENCRYPTION_KEY` | auth.env | Fernet key for encrypting refresh token payloads |
+| `EVENT_SIGNING_ENABLED` | auth.env | Secure-by-default `true`; HMAC-signs auth-event payloads (SSE bridge). Boot fails closed unless `EVENT_SIGNING_KEY` is set |
+| `EVENT_SIGNING_KEY` | auth.env | HMAC secret for event signing. **Not** in `REQUIRE_UPDATE_FIELDS`, so Vault does not inject it — keep it in `auth.env` |
+| `EVENT_STREAM_ENABLED` | auth.env | Default `true` — master switch for the SSE bridge (`GET /private/v1/events/stream`). Set `false` to disable fleet-wide |
+| `EVENT_STREAM_BUFFER_SIZE` | auth.env | Default `256` — ring-buffer depth for `Last-Event-ID` resume |
+| `EVENT_STREAM_HEARTBEAT_SECONDS` | auth.env | Default `15` — heartbeat comment-frame interval; keep below the consumer read timeout and any reverse-proxy idle timeout |
+| `EVENT_STREAM_MAX_QUEUE` | auth.env | Default `64` — per-connection outbound queue depth before a slow consumer is disconnected |
+| `TOKEN_ISSUER` | auth.env | `iss` claim (`https://auth.example.com`); identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_AUDIENCE` | auth.env | `aud` claim (`https://api.example.com`); identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_STRICT_VALIDATION` | auth.env | Secure-by-default `true`; enforces an exact `iss`/`aud` match and boot fails closed unless both are set |
 | `LOGIN_RATE_LIMIT_REQUESTS` | auth.env | Max login attempts per window per email (default: 5) |
 | `LOGIN_RATE_LIMIT_WINDOW_MINUTES` | auth.env | Login rate-limit window in minutes (default: 15) |
 | `REFRESH_RATE_LIMIT_REQUESTS` | auth.env | Max refresh rotations per window per user (default: 10) |
@@ -541,6 +554,7 @@ Dev-mode Vault UI. Log in with `VAULT_DEV_TOKEN` from `.env`. Use it to inspect 
 | `AUTH_SERVICE_ROLE` | `consumer` — verifies tokens via JWKS |
 | `JWKS_URI` | `http://auth_user_service:8000/user/.well-known/jwks.json` |
 | `DB_USER/DB_PASSWORD` | API service DB credentials — from api.env directly (no Vault) |
+| `REVOCATION_CACHE_TTL_SECONDS` | `30` — seconds to cache positive JTI-validation results; event stream evicts early. Set `0` to disable caching (default) |
 
 ---
 
@@ -628,8 +642,7 @@ curl http://localhost:9000/user/health/
 
 When deploying publicly, replace `traefik/dynamic_conf.yml` with `traefik/production_dynamic_conf.yml`. The production config:
 
-- Adds `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` to all API routes.
-- Enables `Strict-Transport-Security` (HSTS). Only use after TLS is stable with a trusted certificate.
+- Ships `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and `Strict-Transport-Security` (HSTS) **commented out** in `security-headers-prod` — both are opt-in. Uncomment only after TLS is stable with a trusted certificate (and confirm the CSP does not break your frontend/docs). HSTS stays off by default because, once sent, browsers refuse plain HTTP to the host for the full `stsSeconds` even after you disable it.
 - Dev `dynamic_conf.yml` has no CSP so Swagger UI works during development.
 
 Also update the `Host` rules in the production config to match your actual FQDN.

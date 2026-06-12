@@ -42,7 +42,7 @@ Browser / Frontend
                 │
        ┌────────┴────────┐
        ▼                 ▼
-  m8_db (MariaDB 12)  redis_cache (Redis 7.4)
+  m8_db (MariaDB 12)  redis_cache (Redis 8.8)
 ```
 
 The auth service holds the **private key** and issues signed tokens. The fastapi service holds **no key** — it verifies tokens by fetching the public key from the JWKS endpoint.
@@ -53,9 +53,9 @@ The auth service holds the **private key** and issues signed tokens. The fastapi
 
 | Service | Image | Accessible at |
 | --- | --- | --- |
-| traefik | traefik:v3.3 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `:8080` (dashboard) |
-| m8_db | mariadb:12-ubi | `127.0.0.1:3306` |
-| redis_cache | redis:7.4-alpine | `127.0.0.1:6379` |
+| traefik | traefik:v3.7.5 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `127.0.0.1:8080` (dashboard) |
+| m8_db | mariadb:12.3.2-ubi | `127.0.0.1:3306` |
+| redis_cache | redis:8.8.0-alpine | `127.0.0.1:6379` |
 | auth_user_service | local build | via Traefik at `/user` |
 | fastapi_full | local build | via Traefik at `/fastapi` |
 
@@ -101,7 +101,9 @@ DB_PASSWORD="<generate>"
 DB_ROOT_PASSWORD="<generate>"
 REDIS_PASSWORD="<generate>"
 PRIVATE_API_SECRET="<generate>"
+SESSION_SECRET="<generate>"  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY="<generate>"
+EVENT_SIGNING_KEY="<generate>"  # HMAC key for auth event stream signing (boot fails closed without it)
 ```
 
 Leave `ACCESS_KEY_ID=changethis_hex_kid` as-is — `init.sh` derives it automatically from the generated key fingerprint and writes the correct value.
@@ -207,7 +209,7 @@ In `hybrid` mode, access tokens remain valid for their full lifetime after logou
 | `ACCESS_PUBLIC_KEY_FILE` | `/opt/keys/public.pem` | Path inside the container |
 | `ACCESS_KEY_ID` | — | Stable `kid` written by `init.sh` |
 | `REFRESH_SECRET_KEY` | — | HMAC secret for refresh tokens |
-| `TOKEN_MODE` | `stateful` | `stateless` / `hybrid` / `stateful` |
+| `TOKEN_MODE` | `hybrid` | `stateless` / `hybrid` / `stateful` |
 | `AUTH_SERVICE_ROLE` | `issuer` | Signs tokens with the RSA private key |
 | `LOGIN_RATE_LIMIT_REQUESTS` | `5` | Max login attempts per window per email |
 | `LOGIN_RATE_LIMIT_WINDOW_MINUTES` | `15` | Login rate-limit window in minutes |
@@ -215,6 +217,15 @@ In `hybrid` mode, access tokens remain valid for their full lifetime after logou
 | `REFRESH_RATE_LIMIT_WINDOW_MINUTES` | `5` | Refresh rate-limit window in minutes |
 | `TRUSTED_PROXY_COUNT` | `1` | Trusted proxy hops for real client IP extraction. Set to `0` if no proxy. |
 | `METRICS_ENABLED` | `false` | Set to `true` to expose `/user/metrics` |
+| `TOKEN_ISSUER` | `https://auth.example.com` | `iss` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_AUDIENCE` | `https://api.example.com` | `aud` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_STRICT_VALIDATION` | `true` | Secure-by-default: enforces an exact `iss`/`aud` match and **boot fails closed** unless both are set. Set `false` only for single-service/local dev |
+| `EVENT_SIGNING_ENABLED` | `true` | Secure-by-default: HMAC-signs auth-event payloads (SSE bridge). **Boot fails closed** unless `EVENT_SIGNING_KEY` is set. Set `false` to disable |
+| `EVENT_SIGNING_KEY` | — | Shared HMAC secret for event signing; required when `EVENT_SIGNING_ENABLED=true` |
+| `EVENT_STREAM_ENABLED` | `true` | Master switch for the SSE bridge (`GET /private/v1/events/stream`). Set `false` to disable the endpoint fleet-wide |
+| `EVENT_STREAM_BUFFER_SIZE` | `256` | Ring-buffer depth for `Last-Event-ID` resume |
+| `EVENT_STREAM_HEARTBEAT_SECONDS` | `15` | Heartbeat comment-frame interval — keep below the consumer read timeout and any reverse-proxy idle timeout |
+| `EVENT_STREAM_MAX_QUEUE` | `64` | Per-connection outbound queue depth before a slow consumer is disconnected (it reconnects and resumes/flushes) |
 
 ### `api.env` — consumer service
 
@@ -327,8 +338,7 @@ curl http://localhost:9000/user/.well-known/jwks.json
 
 When deploying publicly, replace `traefik/dynamic_conf.yml` with `traefik/production_dynamic_conf.yml`. The production config:
 
-- Adds `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` to all API routes.
-- Enables `Strict-Transport-Security` (HSTS). Only use after TLS is stable with a trusted certificate.
+- Ships `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and `Strict-Transport-Security` (HSTS) **commented out** in `security-headers-prod` — both are opt-in. Uncomment only after TLS is stable with a trusted certificate (and confirm the CSP does not break your frontend/docs). HSTS stays off by default because, once sent, browsers refuse plain HTTP to the host for the full `stsSeconds` even after you disable it.
 - Dev `dynamic_conf.yml` has no CSP so Swagger UI works during development.
 
 Also update the `Host` rules in the production config to match your actual FQDN.

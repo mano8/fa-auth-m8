@@ -6,10 +6,13 @@ protected at the network level (Docker internal network) AND require
 the X-Internal-Token header to match PRIVATE_API_SECRET.
 """
 
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel, EmailStr, Field
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from auth_sdk_m8.utils.email import normalize_email
 
 from auth_user_service.core.config import settings
 from auth_user_service.core.deps import (
@@ -19,6 +22,8 @@ from auth_user_service.core.deps import (
 )
 from auth_user_service.core.security import SecurityHelper
 from auth_user_service.db_models.users import User, UserPublic
+from auth_user_service.events import get_hub
+from auth_user_service.services.users import UserController
 
 router = APIRouter(
     tags=["private"],
@@ -43,23 +48,48 @@ class PrivateUserCreate(BaseModel):
     """Private Create user"""
 
     email: EmailStr
-    password: str
+    # Mirror the public registration password policy (UserRegister): an
+    # internal caller must not be able to seat a user with a sub-policy
+    # password just because it holds PRIVATE_API_SECRET.
+    password: str = Field(min_length=8, max_length=128)
     full_name: str
     is_verified: bool = False
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _normalise_email(cls, v: str) -> str:
+        """Lowercase/strip so the duplicate check and stored value match the
+        public path's normalisation."""
+        return normalize_email(v)
 
 
 @router.post("/users/", response_model=UserPublic)
 def create_user(user_in: PrivateUserCreate, session: SessionDep) -> Any:
     """
     Create a new user (internal service call only).
+
+    Network isolation + PRIVATE_API_SECRET gate *who* may call this, but they
+    do not validate the payload. We still enforce the same invariants as the
+    public registration path — defence in depth so a compromised or buggy
+    internal caller cannot create duplicate-email or weak-password accounts —
+    and we honour the accepted ``is_verified`` flag (mapped to
+    ``email_verified``) instead of silently dropping it.
     """
+    existing = UserController.get_user_by_email(session=session, email=user_in.email)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail="The user with this email already exists in the system.",
+        )
     user = User(
         email=user_in.email,
         full_name=user_in.full_name,
+        email_verified=user_in.is_verified,
         hashed_password=SecurityHelper.get_password_hash(user_in.password),
     )
     session.add(user)
     session.commit()
+    session.refresh(user)
     return user
 
 
@@ -90,4 +120,38 @@ async def check_jti_status(
 
     return JtiStatusResponse(
         active=not AccessTokenBlacklist(redis).is_revoked(body.jti)
+    )
+
+
+@router.get("/v1/events/stream", include_in_schema=False)
+async def event_stream(
+    last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID"),
+) -> StreamingResponse:
+    """Authenticated SSE stream of auth-state events (inter-service use only).
+
+    Emits ``session-revoked`` / ``user-deleted`` frames so consumers can evict
+    locally cached token-validation state ahead of natural expiry. Push is a
+    best-effort accelerator — the JTI blacklist (``/private/v1/jti-status``)
+    stays authoritative — so a consumer that never connects is still correct.
+
+    Auth: inherits the router-level ``verify_private_api_secret`` gate
+    (``X-Internal-Token``). Resume: pass ``Last-Event-ID`` to replay a buffered
+    gap; an unresumable gap is signalled with an ``event: gap`` frame after
+    which the consumer must flush its caches.
+    """
+    hub = get_hub()
+    if hub is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Event stream disabled",
+        )
+    return StreamingResponse(
+        hub.stream(last_event_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Disable proxy/buffering so frames flush immediately (nginx etc.).
+            "X-Accel-Buffering": "no",
+        },
     )

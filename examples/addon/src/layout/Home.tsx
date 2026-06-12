@@ -7,6 +7,7 @@
 
 import { useState } from 'preact/hooks';
 import { getApiUrl } from '../utils/utils';
+import { t } from '../utils/i18n';
 import { useAuth } from '../hooks/useAuth';
 import { Button } from '../components/ui/Button';
 import type { UserProfile } from '../types/shared_types';
@@ -54,14 +55,14 @@ export function Home() {
       <UserInfo user={user} />
 
       {tokenType === 'apikey' && (
-        <p class="text-xs text-amber-600 dark:text-amber-400">Signed in with API Key</p>
+        <p class="text-xs text-amber-600 dark:text-amber-400">{t('signedInWithApiKey')}</p>
       )}
 
       <div class="flex gap-2">
         <Button onClick={handleTestApi} disabled={loading} class="flex-1">
-          {loading ? 'Testing…' : 'Test API'}
+          {loading ? t('testing') : t('testApi')}
         </Button>
-        <Button variant="outline" onClick={logout}>Logout</Button>
+        <Button variant="outline" onClick={logout}>{t('logout')}</Button>
       </div>
 
       {result && (

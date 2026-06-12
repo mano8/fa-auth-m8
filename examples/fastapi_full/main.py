@@ -19,6 +19,7 @@ from fastapi_m8 import (
 from .app.main import api_router as domain_router
 from .core.config import settings
 from .core.deps import auth, engine
+from .core.events import make_lifespan_extras
 
 
 async def check_db() -> HealthCheckResult:
@@ -51,5 +52,9 @@ app = create_app(
     service_name=settings.PROJECT_NAME,
     service_version="1.0.0",
     health=HealthConfig(checks=[check_db]),
-    lifecycle=AppLifecycle(auth_deps=auth, db_engine=engine),
+    lifecycle=AppLifecycle(
+        auth_deps=auth,
+        db_engine=engine,
+        lifespan_extras=make_lifespan_extras(settings, auth),
+    ),
 )

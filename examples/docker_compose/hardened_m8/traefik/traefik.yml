@@ -1,10 +1,16 @@
 # traefik.yml — Development
+global:
+  checkNewVersion: false      # no outbound version-check call on startup
+  sendAnonymousUsage: false   # no telemetry phone-home
+
 log:
   level: WARN
 
 api:
   dashboard: true
-  insecure: true    # safe — port 8080 is bound to 127.0.0.1 in docker-compose
+  insecure: false   # no unauthenticated API on :8080 — dashboard is served only
+                    # through the secured file-router (traefik-dashboard) on the
+                    # loopback-bound 'dashboard' entrypoint below
 
 ping: {}
 
@@ -27,6 +33,22 @@ entryPoints:
   web:
     address: ":80"
     http:
+      # v3.7 hardening: reject requests whose path contains these encoded
+      # characters instead of forwarding them. Permissive defaults (true) let
+      # Traefik and the backend decode paths differently — a "split-view" that
+      # can bypass path-based routing/auth. Setting them false is Traefik's
+      # documented recommendation; the auth/fastapi backends use plain REST
+      # paths so nothing legitimate breaks. NOTE: the "encoded characters" WARN
+      # Traefik logs once at startup is an unconditional v3.7 migration notice
+      # and is NOT suppressed by these options (fires with true or false alike).
+      encodedCharacters:
+        allowEncodedSlash: false
+        allowEncodedBackSlash: false
+        allowEncodedNullCharacter: false
+        allowEncodedSemicolon: false
+        allowEncodedPercent: false
+        allowEncodedQuestionMark: false
+        allowEncodedHash: false
       redirections:
         entryPoint:
           to: websecure
@@ -35,6 +57,17 @@ entryPoints:
   websecure:
     address: ":443"
     http3: {}            # HTTP/3 / QUIC — requires UDP port mapping (see docker-compose.yml)
+    http:
+      # Intentionally false (path hardening). The startup "encoded characters"
+      # WARN is an unconditional v3.7 migration notice — see the 'web' note above.
+      encodedCharacters:
+        allowEncodedSlash: false
+        allowEncodedBackSlash: false
+        allowEncodedNullCharacter: false
+        allowEncodedSemicolon: false
+        allowEncodedPercent: false
+        allowEncodedQuestionMark: false
+        allowEncodedHash: false
     forwardedHeaders:
       trustedIPs:
         - "127.0.0.1/32"
@@ -42,6 +75,17 @@ entryPoints:
         - "::1/128"
   api:
     address: ":9000"     # Internal service-to-service entryPoint — TCP only, no HTTP/3
+    http:
+      # Intentionally false (path hardening). The startup "encoded characters"
+      # WARN is an unconditional v3.7 migration notice — see the 'web' note above.
+      encodedCharacters:
+        allowEncodedSlash: false
+        allowEncodedBackSlash: false
+        allowEncodedNullCharacter: false
+        allowEncodedSemicolon: false
+        allowEncodedPercent: false
+        allowEncodedQuestionMark: false
+        allowEncodedHash: false
     forwardedHeaders:
       trustedIPs:
         - "127.0.0.1/32"
@@ -49,3 +93,7 @@ entryPoints:
         - "::1/128"
   metrics:
     address: ":8082"     # Prometheus scrapes traefik:8082 — internal only, not host-exposed
+  # NOTE: the built-in 'traefik' entrypoint (:8080, created here by ping) hosts the
+  # dashboard. It is bound to 127.0.0.1:8080 in docker-compose (loopback only) and the
+  # dashboard is exposed through the secured traefik-dashboard file-router (TLS +
+  # Host(localhost) + ip-allowlist), since api.insecure is off.

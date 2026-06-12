@@ -38,7 +38,7 @@ Browser / Frontend
                 │
        ┌────────┴────────┐
        ▼                 ▼
-  m8_db (MariaDB 12)  redis_cache (Redis 7.4)
+  m8_db (MariaDB 12)  redis_cache (Redis 8.8)
 ```
 
 Traefik is the single entry point. Both services run on the internal `m8_app_network` bridge and are not reachable directly from the host.
@@ -49,9 +49,9 @@ Traefik is the single entry point. Both services run on the internal `m8_app_net
 
 | Service | Image | Accessible at |
 | --- | --- | --- |
-| traefik | traefik:v3.3 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `:8080` (dashboard) |
-| m8_db | mariadb:12-ubi | `127.0.0.1:3306` |
-| redis_cache | redis:7.4-alpine | `127.0.0.1:6379` |
+| traefik | traefik:v3.7.5 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `127.0.0.1:8080` (dashboard) |
+| m8_db | mariadb:12.3.2-ubi | `127.0.0.1:3306` |
+| redis_cache | redis:8.8.0-alpine | `127.0.0.1:6379` |
 | auth_user_service | local build | via Traefik at `/user` |
 | fastapi_full | local build | via Traefik at `/fastapi` |
 
@@ -91,7 +91,9 @@ DB_ROOT_PASSWORD="<generate>"
 REDIS_PASSWORD="<generate>"
 
 PRIVATE_API_SECRET="<generate>"     # for internal service-to-service calls
+SESSION_SECRET="<generate>"  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY="<generate>"  # encrypts refresh token payloads in Redis
+EVENT_SIGNING_KEY="<generate>"  # HMAC key for auth event stream signing (boot fails closed without it)
 ```
 
 `api.env` requires no changes for local development.
@@ -180,6 +182,7 @@ All requests go through Traefik. Use port `9000` (HTTP) during development:
 | `FRONTEND_HOST` | `http://localhost:5173` | Added to CORS allowed origins |
 | `API_PREFIX` | `/user` | URL prefix for all auth routes |
 | `PRIVATE_API_SECRET` | — | Secret for `X-Internal-Token` header |
+| `SESSION_SECRET` | — | Signing key for the session cookie (distinct from `TOKENS_ENCRYPTION_KEY`) |
 | `TOKENS_ENCRYPTION_KEY` | — | Fernet key for encrypting refresh token payloads in Redis |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | `3600` | Refresh token lifetime (60 h) |
@@ -190,6 +193,15 @@ All requests go through Traefik. Use port `9000` (HTTP) during development:
 | `TRUSTED_PROXY_COUNT` | `1` | Trusted reverse-proxy hops in front. Used to extract real client IP from `X-Forwarded-For`. Set to `0` if no proxy. |
 | `METRICS_ENABLED` | `false` | Set to `true` to expose `/user/metrics` |
 | `AUTH_SERVICE_ROLE` | `issuer` | This service signs tokens |
+| `TOKEN_ISSUER` | `https://auth.example.com` | `iss` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_AUDIENCE` | `https://api.example.com` | `aud` claim; must be identical in every consumer. Required when `TOKEN_STRICT_VALIDATION=true` |
+| `TOKEN_STRICT_VALIDATION` | `true` | Secure-by-default: enforces an exact `iss`/`aud` match and **boot fails closed** unless both are set. Set `false` only for single-service/local dev |
+| `EVENT_SIGNING_ENABLED` | `true` | Secure-by-default: HMAC-signs auth-event payloads (SSE bridge). **Boot fails closed** unless `EVENT_SIGNING_KEY` is set. Set `false` to disable |
+| `EVENT_SIGNING_KEY` | — | Shared HMAC secret for event signing; required when `EVENT_SIGNING_ENABLED=true` |
+| `EVENT_STREAM_ENABLED` | `true` | Master switch for the SSE bridge (`GET /private/v1/events/stream`). Set `false` to disable the endpoint fleet-wide |
+| `EVENT_STREAM_BUFFER_SIZE` | `256` | Ring-buffer depth for `Last-Event-ID` resume |
+| `EVENT_STREAM_HEARTBEAT_SECONDS` | `15` | Heartbeat comment-frame interval — keep below the consumer read timeout and any reverse-proxy idle timeout |
+| `EVENT_STREAM_MAX_QUEUE` | `64` | Per-connection outbound queue depth before a slow consumer is disconnected (it reconnects and resumes/flushes) |
 
 ### `api.env` — consumer service
 
@@ -197,6 +209,7 @@ All requests go through Traefik. Use port `9000` (HTTP) during development:
 | --- | --- |
 | `AUTH_SERVICE_ROLE` | `consumer` — verifies tokens, does not sign them |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Should match auth service value |
+| `REVOCATION_CACHE_TTL_SECONDS` | `30` — seconds to cache positive JTI-validation results; event stream evicts early. Set `0` to disable caching (default) |
 
 ---
 
@@ -295,8 +308,7 @@ curl http://localhost:9000/user/health/
 
 When deploying publicly, replace `traefik/dynamic_conf.yml` with `traefik/production_dynamic_conf.yml`. The production config:
 
-- Adds `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` to all API routes.
-- Enables `Strict-Transport-Security` (HSTS). Only use after TLS is stable with a trusted certificate.
+- Ships `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and `Strict-Transport-Security` (HSTS) **commented out** in `security-headers-prod` — both are opt-in. Uncomment only after TLS is stable with a trusted certificate (and confirm the CSP does not break your frontend/docs). HSTS stays off by default because, once sent, browsers refuse plain HTTP to the host for the full `stsSeconds` even after you disable it.
 - Dev `dynamic_conf.yml` has no CSP so Swagger UI works during development.
 
 Also update the `Host` rules in the production config to match your actual FQDN.

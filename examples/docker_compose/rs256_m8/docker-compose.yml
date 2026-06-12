@@ -24,7 +24,7 @@ services:
     restart: "no"
 
   traefik:
-    image: traefik:v3.3
+    image: traefik:v3.7.5
     ports:
       - "8000:80"
       - "4430:443/tcp"
@@ -44,7 +44,7 @@ services:
       - m8_app_network
 
   m8_db:
-    image: mariadb:12-ubi
+    image: mariadb:12.3.2-ubi
     volumes:
       - ./db_data:/var/lib/mysql
       - ../shared/db_init:/docker-entrypoint-initdb.d:ro
@@ -57,17 +57,23 @@ services:
     ports:
       - "127.0.0.1:3306:3306"
     healthcheck:
-      test: ["CMD-SHELL", "MYSQL_PWD=$$MARIADB_ROOT_PASSWORD mariadb -u root -e 'SELECT 1'"]
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MARIADB_ROOT_PASSWORD mariadb -h 127.0.0.1 -u root -e 'SELECT 1'"]
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 60s
+      # -h 127.0.0.1 forces a TCP connection (not Unix socket) so the probe only passes
+      # once the TCP listener is accepting connections — critical on first boot where
+      # mariadb-install-db + init-db.sh run before TCP binds. start_period covers the
+      # cold init window on slow (e.g. Windows) bind mounts; start_interval probes every
+      # 2s so warm restarts flip healthy immediately.
+      start_period: 180s
+      start_interval: 2s
     restart: unless-stopped
     networks:
       - m8_app_network
 
   redis_cache:
-    image: redis:7.4-alpine
+    image: redis:8.8.0-alpine
     volumes:
       - ./redis/redis_data:/data
     ports:
@@ -150,3 +156,17 @@ services:
 networks:
   m8_app_network:
     driver: bridge
+    # Pinned, deterministic subnet so the bridge gateway IP is stable and the
+    # allowlists in traefik/dynamic_conf.yml can trust it. 172.16.0.0/16 is RFC1918
+    # private space that Docker allocates per-bridge on ANY host, independent of the
+    # machine's own LAN — this pin is portable, NOT tied to this machine. Host ->
+    # published-port traffic is SNATed to the gateway (172.16.0.1), which the
+    # dashboard allowlist trusts as "localhost"; sibling containers keep their own
+    # 172.16.0.x addresses and are NOT trusted there.
+    # If 172.16.0.0/16 is already in use on a given host (e.g. a corporate VPN),
+    # change both lines below to another free RFC1918 block and update the matching
+    # CIDRs (gateway + subnet) in traefik/dynamic_conf.yml.
+    ipam:
+      config:
+        - subnet: 172.16.0.0/16
+          gateway: 172.16.0.1

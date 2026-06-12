@@ -8,6 +8,7 @@
 
 import { useState } from 'preact/hooks';
 import { getApiUrl } from '../utils/utils';
+import { t } from '../utils/i18n';
 import { storeAuthData, decodeJwtPayload } from '../context/AuthContext';
 import type { UserProfile } from '../types/shared_types';
 import { Button } from './ui/Button';
@@ -24,14 +25,14 @@ export function LoginForm() {
   return (
     <div class="p-4 min-w-[340px]">
       <div class="flex gap-2 mb-4">
-        {(['oauth', 'password', 'apikey'] as Tab[]).map((t) => (
+        {(['oauth', 'password', 'apikey'] as Tab[]).map((tabId) => (
           <button
-            key={t}
+            key={tabId}
             type="button"
-            class={`px-3 py-1 rounded text-sm font-medium border ${tab === t ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}
-            onClick={() => { setTab(t); setError(''); }}
+            class={`px-3 py-1 rounded text-sm font-medium border ${tab === tabId ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}
+            onClick={() => { setTab(tabId); setError(''); }}
           >
-            {t === 'oauth' ? 'OAuth' : t === 'password' ? 'Password' : 'API Key'}
+            {tabId === 'oauth' ? t('oauth') : tabId === 'password' ? t('password') : t('apiKey')}
           </button>
         ))}
       </div>
@@ -91,13 +92,13 @@ function OAuthTab({ onError, loading, setLoading }: TabProps) {
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        onError((body as { detail?: string }).detail ?? 'OAuth unavailable.');
+        onError((body as { detail?: string }).detail ?? t('oauthUnavailable'));
         return;
       }
       const { url } = (await res.json()) as { url: string };
       chrome.tabs.create({ url });
     } catch {
-      onError('Failed to start OAuth. Check backend connectivity.');
+      onError(t('startOAuthFailed'));
     } finally {
       setLoading(false);
     }
@@ -106,10 +107,10 @@ function OAuthTab({ onError, loading, setLoading }: TabProps) {
   return (
     <div class="flex flex-col gap-3">
       <p class="text-sm text-muted-foreground">
-        Sign in via Google. A browser tab will open for consent, then close automatically.
+        {t('googleOAuthDescription')}
       </p>
       <Button onClick={handleOAuth} disabled={loading}>
-        {loading ? 'Opening…' : 'Sign in with OAuth'}
+        {loading ? t('opening') : t('signInWithOAuth')}
       </Button>
     </div>
   );
@@ -133,7 +134,7 @@ function PasswordTab({ onError, loading, setLoading }: TabProps) {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        onError((data as { detail?: string }).detail ?? 'Invalid credentials.');
+        onError((data as { detail?: string }).detail ?? t('invalidCredentials'));
         return;
       }
       const data = await res.json() as { access_token: string };
@@ -146,7 +147,7 @@ function PasswordTab({ onError, loading, setLoading }: TabProps) {
         typeof sub !== 'string' || !sub ||
         typeof exp !== 'number' || !Number.isFinite(exp)
       ) {
-        onError('Sign-in failed: token could not be read.');
+        onError(t('signInFailedUnreadableToken'));
         return;
       }
 
@@ -157,7 +158,7 @@ function PasswordTab({ onError, loading, setLoading }: TabProps) {
       };
       await storeAuthData(data.access_token, exp * 1000, user, 'bearer');
     } catch {
-      onError('Login failed. Check backend connectivity.');
+      onError(t('loginFailed'));
     } finally {
       setLoading(false);
     }
@@ -166,7 +167,7 @@ function PasswordTab({ onError, loading, setLoading }: TabProps) {
   return (
     <form onSubmit={handleSubmit} class="flex flex-col gap-3">
       <div>
-        <Label for="email">Email</Label>
+        <Label for="email">{t('email')}</Label>
         <Input
           id="email"
           type="email"
@@ -177,7 +178,7 @@ function PasswordTab({ onError, loading, setLoading }: TabProps) {
         />
       </div>
       <div>
-        <Label for="password">Password</Label>
+        <Label for="password">{t('password')}</Label>
         <Input
           id="password"
           type="password"
@@ -187,7 +188,7 @@ function PasswordTab({ onError, loading, setLoading }: TabProps) {
           autocomplete="current-password"
         />
       </div>
-      <Button type="submit" disabled={loading}>{loading ? 'Signing in…' : 'Sign in'}</Button>
+      <Button type="submit" disabled={loading}>{loading ? t('signingIn') : t('signIn')}</Button>
     </form>
   );
 }
@@ -205,7 +206,7 @@ function ApiKeyTab({ onError, loading, setLoading }: TabProps) {
         headers: { 'X-API-Key': apiKey },
       });
       if (!res.ok) {
-        onError('Invalid or expired API key.');
+        onError(t('invalidApiKey'));
         return;
       }
       const data = await res.json() as { expires_at?: string };
@@ -217,7 +218,7 @@ function ApiKeyTab({ onError, loading, setLoading }: TabProps) {
       const user: UserProfile = { name: '', email: '', avatar: '' };
       await storeAuthData(apiKey, expiresAt, user, 'apikey');
     } catch {
-      onError('Verification failed. Check backend connectivity.');
+      onError(t('verificationFailed'));
     } finally {
       setLoading(false);
     }
@@ -226,12 +227,10 @@ function ApiKeyTab({ onError, loading, setLoading }: TabProps) {
   return (
     <form onSubmit={handleSubmit} class="flex flex-col gap-3">
       <p class="text-xs text-amber-600 dark:text-amber-400 border border-amber-400 rounded p-2">
-        ⚠ API keys are long-lived credentials stored in chrome.storage.local.
-        Prefer OAuth or password for interactive use. Use API keys only from
-        secured automation environments.
+        {t('apiKeyWarning')}
       </p>
       <div>
-        <Label for="apikey">API Key</Label>
+        <Label for="apikey">{t('apiKey')}</Label>
         <Input
           id="apikey"
           type="password"
@@ -239,10 +238,10 @@ function ApiKeyTab({ onError, loading, setLoading }: TabProps) {
           onInput={(e) => setApiKey((e.target as HTMLInputElement).value)}
           required
           autocomplete="off"
-          placeholder="paste your API key"
+          placeholder={t('pasteApiKey')}
         />
       </div>
-      <Button type="submit" disabled={loading}>{loading ? 'Verifying…' : 'Use API Key'}</Button>
+      <Button type="submit" disabled={loading}>{loading ? t('verifying') : t('useApiKey')}</Button>
     </form>
   );
 }

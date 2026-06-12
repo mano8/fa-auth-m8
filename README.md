@@ -86,7 +86,7 @@ Consumer services validate tokens locally (JWT signature check + optional Redis 
 
 ## Docker Compose Stacks
 
-Five ready-to-run stacks are provided under [`examples/docker_compose/`](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose). See the [stack selection guide](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose#which-stack-should-i-use) for help choosing.
+Six ready-to-run stacks are provided under [`examples/docker_compose/`](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose). See the [stack selection guide](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose#which-stack-should-i-use) for help choosing.
 
 | Stack | Database | Algorithm | Token mode | Observability | Notes |
 | ----- | -------- | --------- | ---------- | ------------- | ----- |
@@ -122,7 +122,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | Tag | Method | Path | Auth | Description |
 | --- | ------ | ---- | ---- | ----------- |
 | health | GET | `/health/` | — | Redis, database, effective token mode |
-| jwks | GET | `/.well-known/jwks.json` | — | JWKS endpoint (RS256/ES256 public key; `{"keys":[]}` for HS256) |
+| well-known | GET | `/.well-known/jwks.json` | — | JWKS endpoint (RS256/ES256 public key; `{"keys":[]}` for HS256) |
 | login | POST | `/login/access-token` | — | Email/password login — returns access token, sets refresh cookie |
 | login | POST | `/login/refresh-token/` | — | Refresh access token from HttpOnly cookie |
 | login | POST | `/login/logout/` | JWT | Revoke session, blacklist JTI, clear cookie |
@@ -156,6 +156,8 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | dashboard | GET | `/dashboard/users/activity/current/` | JWT | Own activity stats (monthly) |
 | metrics | GET | `/metrics` | — | Prometheus metrics (`METRICS_ENABLED=true` only) |
 | private | POST | `/private/users/` | X-Internal-Token | Create user (inter-service, Docker network only) |
+| private | POST | `/private/v1/jti-status` | X-Internal-Token | Check whether an access-token JTI is revoked (inter-service) |
+| private | GET | `/private/v1/events/stream` | X-Internal-Token | SSE bridge of `session-revoked` / `user-deleted` events (inter-service) |
 
 Interactive docs at `{BACKEND_HOST}{API_PREFIX}/docs` when `SET_DOCS=true` **and** `ENVIRONMENT ≠ production`. In production docs are suppressed by default; set `SERVE_DOCS_IN_PRODUCTION=true` to explicitly enable them (emits a startup warning — use only for public/open-source APIs).
 
@@ -275,7 +277,7 @@ docker pull tepochtli/fa-auth-m8:latest
 | Tag | Description |
 | --- | ----------- |
 | `latest` | Latest release from the `main` branch |
-| `x.y.z` (e.g. `0.8.2`) | Pinned release — recommended for production |
+| `x.y.z` (e.g. `0.9.5`) | Pinned release — recommended for production |
 
 ### Using the published image in a Compose stack
 
@@ -292,7 +294,7 @@ auth_user_service:
 
 # With this:
 auth_user_service:
-  image: tepochtli/fa-auth-m8:0.8.2   # pin to a specific release for production
+  image: tepochtli/fa-auth-m8:0.9.5   # pin to a specific release for production
 ```
 
 All env files, volumes, labels, and `depends_on` entries remain unchanged —
@@ -354,7 +356,8 @@ Set `SELECTED_DB` in `.env` (or `auth.env`):
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | no | `30` | Access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | no | `120` | Refresh token lifetime |
 | `REFRESH_TOKEN_COOKIE_EXPIRE_SECONDS` | no | `3600` | Refresh cookie max-age |
-| `TOKENS_ENCRYPTION_KEY` | yes | — | Key for `SessionMiddleware` cookie signing |
+| `SESSION_SECRET` | yes | — | Signing key for the `SessionMiddleware` cookie. Must be distinct from `TOKENS_ENCRYPTION_KEY` (key separation) so rotating the session key does not invalidate encrypted tokens. |
+| `TOKENS_ENCRYPTION_KEY` | yes | — | Fernet key encrypting external/refresh token payloads at rest in Redis |
 | `TOKEN_ISSUER` | if strict | — | `iss` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
 | `TOKEN_AUDIENCE` | if strict | — | `aud` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
 | `TOKEN_STRICT_VALIDATION` | no | `true` | Secure-by-default strict profile (`auth-sdk-m8 ≥ 1.0.0`): enforces `iss`/`aud` binding and pins the configured algorithm; the service fails closed at boot unless `TOKEN_ISSUER`/`TOKEN_AUDIENCE` are set. Set `false` to opt out (legacy/local), enforcing `iss`/`aud` only when configured. |
@@ -434,7 +437,24 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 | `EVENT_SIGNING_KEY` | if enabled | — | HMAC key used to sign event-bus payloads. Must satisfy the secret-key strength policy (32+ chars, mixed-case, digit, non-alphanumeric). **Never use the dev placeholder in production.** |
 | `EVENT_SIGNING_ACCEPT_UNSIGNED` | no | `false` | Transitional flag for rolling upgrades: when `true`, consumers accept signed or unsigned messages (still reject forged signatures). Flip back to `false` once every publisher signs. |
 
-> **Auth Redis is private to fa-auth-m8.** Consumer services check revocation via the HTTP private API (`POST /private/v1/jti-status`) — they never connect to the auth Redis directly. The event bus, when wired in a future wave, **must use a separate Redis instance**; consumers must never share the session/blacklist store.
+> **Auth Redis is private to fa-auth-m8.** Consumer services check revocation via the HTTP private API (`POST /private/v1/jti-status`) — they never connect to the auth Redis directly. Auth-state changes are pushed to consumers over the authenticated SSE bridge below (same private API, same trust channel), so there is **no shared broadcast medium and no second Redis** to wire.
+
+### Auth Event Stream (SSE bridge)
+
+fa-auth-m8 pushes its own auth-state changes to backend consumers over an authenticated **Server-Sent Events** stream on the private API: `GET /private/v1/events/stream` (gated by the same `X-Internal-Token` / `PRIVATE_API_SECRET` as `jti-status`). Consumers receive `session-revoked` and `user-deleted` events and evict locally cached token-validation state ahead of natural expiry.
+
+> **Accelerator, not authority.** Push is a best-effort latency optimisation. The JTI blacklist behind `POST /private/v1/jti-status` remains the revocation authority — a consumer that misses every event is still correct, just slower to converge. So stream loss is never fatal: the service keeps enforcing revocation over the HTTP authority path.
+
+Each event `data` frame is HMAC-signed with the shared `EVENT_SIGNING_KEY` (reused from Event Signing above — no separate key); consumers verify it before acting. Reconnecting consumers send `Last-Event-ID`: a still-buffered gap is replayed exactly, while an unresumable gap (fa-auth restarted, or the id evicted from the ring buffer) is signalled with an `event: gap` frame, after which the consumer flushes all cached validation state.
+
+| Variable | Required | Default | Description |
+| -------- | -------- | ------- | ----------- |
+| `EVENT_STREAM_ENABLED` | no | `true` | Master switch for the SSE bridge. When `false`, the endpoint returns 404 and emission is a fleet-wide no-op. |
+| `EVENT_STREAM_BUFFER_SIZE` | no | `256` | Ring-buffer depth (events retained for `Last-Event-ID` resume). |
+| `EVENT_STREAM_HEARTBEAT_SECONDS` | no | `15` | Heartbeat comment-frame interval. Keep below the consumer read timeout and any reverse-proxy idle timeout. |
+| `EVENT_STREAM_MAX_QUEUE` | no | `64` | Per-connection outbound queue depth before a slow consumer is disconnected (it reconnects and resumes/flushes). Never blocks the emitting request. |
+
+> **Reverse proxies:** SSE needs response buffering **disabled** so frames flush immediately. The endpoint sends `X-Accel-Buffering: no` (honoured by nginx); for other proxies, disable response buffering and set the idle/read timeout above `EVENT_STREAM_HEARTBEAT_SECONDS`.
 
 ### Auth Degradation Policy
 
@@ -483,6 +503,41 @@ A startup warning is logged if the effective rate (requests ÷ window) exceeds 5
 | `METRICS_ENABLED` | no | `false` | Expose `GET /metrics` Prometheus endpoint |
 | `METRICS_GROUPS` | no | `all` | Comma-separated groups: `all` \| `traffic` \| `performance` \| `reliability` \| `health` \| `auth` |
 | `SENTRY_DSN` | no | — | Sentry DSN for error tracking |
+
+### Response Security Headers
+
+`auth-sdk-m8 ≥ 1.2.1` adds a shared application-level hardening layer
+(`add_security_headers_middleware`) wired into the auth service — and into every
+`fastapi-m8` consumer via `create_app`. Headers are applied on **every** response
+(including error responses raised before the route handler) in **three tiers**:
+
+| Tier | Headers | When applied |
+| ---- | ------- | ------------ |
+| **Always-on** | `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` | Every environment (whenever `SECURITY_HEADERS_ENABLED`). Safe for Swagger/ReDoc/HMR. |
+| **Production-gated** | `Referrer-Policy`, `Permissions-Policy` | `ENVIRONMENT=production` or `STRICT_PRODUCTION_MODE=true` — the same gate as docs hiding. |
+| **Express opt-in** | `Strict-Transport-Security` (HSTS), `Content-Security-Policy` (CSP) | Only when `HSTS_ENABLED` / `CONTENT_SECURITY_POLICY_ENABLED` — **never on `local`**, even if opted in. |
+
+HSTS and CSP are **browser-persisted and hard to reverse** (enabling HSTS on a host
+writes a long-lived HTTPS-only record — on `localhost` it force-upgrades every local
+service to HTTPS), so they are **off by default**, decoupled from the production gate,
+and hard-blocked on `local`. A TLS-terminated `staging` stack can opt in without
+masquerading as production.
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `SECURITY_HEADERS_ENABLED` | `true` | Master switch. Set `false` to suppress every tier, even in production. |
+| `HSTS_ENABLED` | `false` | Express opt-in for `Strict-Transport-Security`. Never emitted on `local`. |
+| `HSTS_MAX_AGE` | `31536000` | HSTS max-age in seconds. `0` also disables the header. Only applies when `HSTS_ENABLED`. |
+| `HSTS_INCLUDE_SUBDOMAINS` | `true` | Append `includeSubDomains` to the HSTS header. |
+| `CONTENT_SECURITY_POLICY_ENABLED` | `false` | Express opt-in for `Content-Security-Policy`. Never emitted on `local`. |
+| `CONTENT_SECURITY_POLICY` | — | CSP value used when enabled. Unset → tight API default (`default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`). Override for services that serve HTML. |
+| `REFERRER_POLICY` | `strict-origin-when-cross-origin` | `Referrer-Policy` header value (production-gated tier). |
+| `PERMISSIONS_POLICY` | `accelerometer=(), camera=(), geolocation=(), …` | `Permissions-Policy` header value (production-gated tier). |
+
+> **Behaviour change (auth-sdk-m8 1.2.1 / fastapi-m8 1.5.0):** HSTS and CSP were
+> emitted automatically under the production gate in earlier releases. They are now
+> **off until explicitly enabled** via `HSTS_ENABLED=true` /
+> `CONTENT_SECURITY_POLICY_ENABLED=true`.
 
 ### Deployment
 
@@ -585,18 +640,36 @@ Requires a coordinated three-layer setup:
 2. **Uvicorn** — the startup script reads `TRUSTED_PROXY_IPS` (default `172.16.0.0/12`) and passes it via `--proxy-headers --forwarded-allow-ips`. Never use `*`.
 3. **Application** — `_client_ip()` reads the leftmost `X-Forwarded-For` value, which is trustworthy only because layers 1 and 2 have been configured. Set `TRUSTED_PROXY_COUNT=0` in `auth.env` to bypass XFF entirely (no proxy in front of FastAPI).
 
-### Content Security Policy (production only)
+### Content Security Policy and response headers (production only)
 
-Each example stack ships two Traefik configs in `traefik/`:
+Hardening headers are applied at two complementary layers:
 
-| File | Purpose |
-| ---- | ------- |
-| `dynamic_conf.yml` | Development — no CSP, Swagger UI works |
-| `production_dynamic_conf.yml` | Production — adds `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and enables HSTS. Replace `dynamic_conf.yml` with this file when deploying publicly. Update the `Host` rules to your FQDN. |
+1. **Application layer (default)** — `auth-sdk-m8 ≥ 1.2.1` emits `X-Frame-Options` and
+   `X-Content-Type-Options` in every environment, adds `Referrer-Policy` and
+   `Permissions-Policy` whenever `ENVIRONMENT=production` or `STRICT_PRODUCTION_MODE=true`,
+   and emits CSP/HSTS only when explicitly opted in (`CONTENT_SECURITY_POLICY_ENABLED` /
+   `HSTS_ENABLED`, never on `local`). See
+   [Response Security Headers](#response-security-headers) for the tiers and tunable settings.
+   This works regardless of the proxy in front and is the recommended baseline.
+2. **Edge layer (optional)** — each example stack also ships two Traefik configs in `traefik/`:
+
+   | File | Purpose |
+   | ---- | ------- |
+   | `dynamic_conf.yml` | Development — no CSP, Swagger UI works |
+   | `production_dynamic_conf.yml` | Production — adds `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and enables HSTS at the edge. Replace `dynamic_conf.yml` with this file when deploying publicly and update the `Host` rules to your FQDN. |
+
+To avoid duplicate headers, pick one layer as the source of truth: either keep the app-level
+layer (set `SECURITY_HEADERS_ENABLED=true`, default) and leave the dev Traefik config in place,
+or disable the app layer (`SECURITY_HEADERS_ENABLED=false`) and enforce headers at Traefik via
+`production_dynamic_conf.yml`. Verify with `curl -I` after deployment.
 
 ### HSTS (opt-in, public deployments only)
 
-`Strict-Transport-Security` is commented out in all `traefik/dynamic_conf.yml` files. It is enabled by default in `production_dynamic_conf.yml`. Only activate HSTS after confirming TLS is stable and the hostname will remain HTTPS-only for the full `stsSeconds` period.
+At the edge, `Strict-Transport-Security` is commented out in all `traefik/dynamic_conf.yml`
+files and enabled by default in `production_dynamic_conf.yml`. At the application layer it is
+**off by default** and emitted only when `HSTS_ENABLED=true` (and `HSTS_MAX_AGE > 0`); it is
+never emitted on a `local` stack even when enabled. Only activate HSTS after confirming TLS is
+stable and the hostname will remain HTTPS-only for the full max-age period.
 
 ---
 
@@ -637,6 +710,7 @@ Endpoints under `/user/private/` are for inter-service calls only:
 | ------ | ---- | ----------- |
 | POST | `/private/users/` | Create a user account (called by other microservices) |
 | POST | `/private/v1/jti-status` | Check whether a JTI is revoked (`stateful` mode only; fails-open when Redis unavailable) |
+| GET | `/private/v1/events/stream` | SSE bridge — pushes `session-revoked` / `user-deleted` events to consumers (best-effort accelerator; `jti-status` remains the revocation authority) |
 
 ---
 
@@ -712,7 +786,7 @@ or `AUTH_STRICT_MODE=true` to force all failure-mode controls closed. The issuer
 
 **Auth Redis is sensitive and fa-auth-only.** The session/JTI blacklist Redis instance is private to this service. Consumer services check revocation via the HTTP private API (`POST /private/v1/jti-status`) — they never connect to auth Redis directly. This boundary is already enforced architecturally (see [Revocation check](#revocation-check-stateful-mode) above).
 
-**When the event bus is wired (future wave)**, it MUST use a **separate** Redis instance. Consumers must never share the session/blacklist store with the event bus. The event bus is a best-effort accelerator; the revocation authority remains the HTTP private API.
+**The SSE bridge (`GET /private/v1/events/stream`) is live.** Consumers that opt in to low-latency cache eviction can connect to the stream using `AuthEventStreamClient` from `auth-sdk-m8 ≥ 1.2.0` — it reconnects with jitter, replays buffered events via `Last-Event-ID`, verifies each payload's HMAC signature, and calls `on_gap()` so the consumer can flush its local caches when the buffer is unresumable. The bridge is a best-effort accelerator; `POST /private/v1/jti-status` remains the revocation authority. Consumers that do not connect continue to work correctly.
 
 ---
 
