@@ -1,6 +1,6 @@
 # postgres_m8
 
-**PostgreSQL 16** + **HS256** symmetric tokens + **stateful** token mode. No monitoring services.
+**PostgreSQL 18** + **HS256** symmetric tokens + **stateful** token mode. No monitoring services.
 
 **Choose this when:** your project targets PostgreSQL and you want the auth service to match your production database engine.
 
@@ -39,7 +39,7 @@ Browser / Frontend
                 │
        ┌────────┴────────┐
        ▼                 ▼
-  m8_db (PostgreSQL 16)  redis_cache (Redis 7.4)
+  m8_db (PostgreSQL 18)  redis_cache (Redis 8.8)
 ```
 
 Traefik is the single entry point. Both services run on the internal `m8_app_network` bridge and are not reachable directly from the host.
@@ -50,9 +50,9 @@ Traefik is the single entry point. Both services run on the internal `m8_app_net
 
 | Service | Image | Accessible at |
 | --- | --- | --- |
-| traefik | traefik:v3.3 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `:8080` (dashboard) |
-| m8_db | postgres:16-alpine | `127.0.0.1:5432` |
-| redis_cache | redis:7.4-alpine | `127.0.0.1:6379` |
+| traefik | traefik:v3.7.5 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `127.0.0.1:8080` (dashboard) |
+| m8_db | postgres:18.4-alpine | `127.0.0.1:5432` |
+| redis_cache | redis:8.8.0-alpine | `127.0.0.1:6379` |
 | auth_user_service | local build | via Traefik at `/user` |
 | fastapi_full | local build | via Traefik at `/fastapi` |
 
@@ -93,7 +93,7 @@ REDIS_PASSWORD="<generate>"
 PRIVATE_API_SECRET="<generate>"     # for internal service-to-service calls
 SESSION_SECRET="<generate>"  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY="<generate>"  # encrypts refresh token payloads in Redis
-EVENT_SIGNING_KEY="<generate>"  # HMAC key for Redis event-bus signing (boot fails closed without it)
+EVENT_SIGNING_KEY="<generate>"  # HMAC key for auth event stream signing (boot fails closed without it)
 ```
 
 `api.env` requires no changes for local development.
@@ -227,6 +227,7 @@ To connect with a GUI client (pgAdmin, TablePlus, DBeaver), use `localhost:5432`
 | --- | --- |
 | `AUTH_SERVICE_ROLE` | `consumer` — verifies tokens, does not sign them |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Should match auth service value |
+| `REVOCATION_CACHE_TTL_SECONDS` | `30` — seconds to cache positive JTI-validation results; event stream evicts early. Set `0` to disable caching (default) |
 
 ---
 
@@ -319,8 +320,7 @@ curl http://localhost:9000/user/health/
 
 When deploying publicly, replace `traefik/dynamic_conf.yml` with `traefik/production_dynamic_conf.yml`. The production config:
 
-- Adds `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` to all API routes.
-- Enables `Strict-Transport-Security` (HSTS). Only use after TLS is stable with a trusted certificate.
+- Ships `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and `Strict-Transport-Security` (HSTS) **commented out** in `security-headers-prod` — both are opt-in. Uncomment only after TLS is stable with a trusted certificate (and confirm the CSP does not break your frontend/docs). HSTS stays off by default because, once sent, browsers refuse plain HTTP to the host for the full `stsSeconds` even after you disable it.
 - Dev `dynamic_conf.yml` has no CSP so Swagger UI works during development.
 
 Also update the `Host` rules in the production config to match your actual FQDN.

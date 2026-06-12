@@ -1,6 +1,6 @@
 # metrics_m8
 
-**PostgreSQL 16** + **HS256** symmetric tokens + **stateful** token mode + **Prometheus & Grafana** observability. Designed for validating the complete stateful auth flow and exploring metrics.
+**PostgreSQL 18** + **HS256** symmetric tokens + **stateful** token mode + **Prometheus & Grafana** observability. Designed for validating the complete stateful auth flow and exploring metrics.
 
 **Choose this when:** you want to watch what happens in Redis and the database during login/logout cycles, or need to develop against a metrics dashboard.
 
@@ -37,7 +37,7 @@ Browser / Frontend
                 │
        ┌────────┴────────┐
        ▼                 ▼
-  m8_db (PostgreSQL 16)  redis_cache (Redis 7.4)
+  m8_db (PostgreSQL 18)  redis_cache (Redis 8.8)
                          │
                    (access token blacklist
                     + refresh token store)
@@ -53,10 +53,10 @@ Browser / Frontend
 
 | Service | Image | Accessible at |
 | --- | --- | --- |
-| traefik | traefik:v3.3 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `:8080` (dashboard) |
-| m8_db | postgres:16-alpine | `127.0.0.1:5432` |
-| redis_cache | redis:7.4-alpine | `127.0.0.1:6379` |
-| prometheus | ubuntu/prometheus:3.11-24.04_stable | `127.0.0.1:9090` |
+| traefik | traefik:v3.7.5 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `127.0.0.1:8080` (dashboard) |
+| m8_db | postgres:18.4-alpine | `127.0.0.1:5432` |
+| redis_cache | redis:8.8.0-alpine | `127.0.0.1:6379` |
+| prometheus | ubuntu/prometheus:3.11-26.04_stable | `127.0.0.1:9090` |
 | grafana | grafana/grafana:13.1.0-25530058790 | `127.0.0.1:3000` |
 | auth_user_service | local build | via Traefik at `/user` |
 | fastapi_full | local build | via Traefik at `/fastapi` |
@@ -95,7 +95,7 @@ Open `auth.env` and replace:
 PRIVATE_API_SECRET="<generate>"     # for internal service-to-service calls
 SESSION_SECRET="<generate>"  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY="<generate>"  # encrypts refresh token payloads at rest
-EVENT_SIGNING_KEY="<generate>"  # HMAC key for Redis event-bus signing (boot fails closed without it)
+EVENT_SIGNING_KEY="<generate>"  # HMAC key for auth event stream signing (boot fails closed without it)
 ```
 
 `api.env` requires no changes for local development.
@@ -199,7 +199,7 @@ histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
 | Port | Bound to | Purpose |
 | --- | --- | --- |
 | `8000` | `0.0.0.0` | Traefik HTTP |
-| `4430` | `0.0.0.0` | Traefik HTTPS |
+| `4430` | `0.0.0.0` | Traefik HTTPS — published on all interfaces, but the `/user` and `/fastapi` routers are `Host(`localhost`)`-gated, so non-localhost requests get `404` by default. To serve them on the LAN, drop the `Host(`localhost`)` prefix in `traefik/dynamic_conf.yml` (see the router comments). |
 | `9000` | `127.0.0.1` | API services entry (set `API_BIND_IP` in `.env` to expose on LAN) |
 | `8080` | `127.0.0.1` | Traefik dashboard |
 | `5432` | `127.0.0.1` | PostgreSQL |
@@ -256,6 +256,7 @@ histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
 | --- | --- |
 | `AUTH_SERVICE_ROLE` | `consumer` — verifies tokens, does not sign them |
 | `METRICS_ENABLED` | `true` — exposes `/fastapi/metrics` |
+| `REVOCATION_CACHE_TTL_SECONDS` | `30` — seconds to cache positive JTI-validation results; event stream evicts early. Set `0` to disable caching (default) |
 
 ---
 
@@ -339,8 +340,7 @@ bash init.sh --reset-db
 
 When deploying publicly, replace `traefik/dynamic_conf.yml` with `traefik/production_dynamic_conf.yml`. The production config:
 
-- Adds `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` to all API routes.
-- Enables `Strict-Transport-Security` (HSTS). Only use after TLS is stable with a trusted certificate.
+- Ships `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and `Strict-Transport-Security` (HSTS) **commented out** in `security-headers-prod` — both are opt-in. Uncomment only after TLS is stable with a trusted certificate (and confirm the CSP does not break your frontend/docs). HSTS stays off by default because, once sent, browsers refuse plain HTTP to the host for the full `stsSeconds` even after you disable it.
 - Dev `dynamic_conf.yml` has no CSP so Swagger UI works during development.
 
 Also update the `Host` rules in the production config to match your actual FQDN.

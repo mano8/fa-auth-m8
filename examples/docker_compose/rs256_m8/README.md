@@ -42,7 +42,7 @@ Browser / Frontend
                 │
        ┌────────┴────────┐
        ▼                 ▼
-  m8_db (MariaDB 12)  redis_cache (Redis 7.4)
+  m8_db (MariaDB 12)  redis_cache (Redis 8.8)
 ```
 
 The auth service holds the **private key** and issues signed tokens. The fastapi service holds **no key** — it verifies tokens by fetching the public key from the JWKS endpoint.
@@ -53,9 +53,9 @@ The auth service holds the **private key** and issues signed tokens. The fastapi
 
 | Service | Image | Accessible at |
 | --- | --- | --- |
-| traefik | traefik:v3.3 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `:8080` (dashboard) |
-| m8_db | mariadb:12-ubi | `127.0.0.1:3306` |
-| redis_cache | redis:7.4-alpine | `127.0.0.1:6379` |
+| traefik | traefik:v3.7.5 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `127.0.0.1:8080` (dashboard) |
+| m8_db | mariadb:12.3.2-ubi | `127.0.0.1:3306` |
+| redis_cache | redis:8.8.0-alpine | `127.0.0.1:6379` |
 | auth_user_service | local build | via Traefik at `/user` |
 | fastapi_full | local build | via Traefik at `/fastapi` |
 
@@ -103,7 +103,7 @@ REDIS_PASSWORD="<generate>"
 PRIVATE_API_SECRET="<generate>"
 SESSION_SECRET="<generate>"  # session-cookie signing key, separate from TOKENS_ENCRYPTION_KEY
 TOKENS_ENCRYPTION_KEY="<generate>"
-EVENT_SIGNING_KEY="<generate>"  # HMAC key for Redis event-bus signing (boot fails closed without it)
+EVENT_SIGNING_KEY="<generate>"  # HMAC key for auth event stream signing (boot fails closed without it)
 ```
 
 Leave `ACCESS_KEY_ID=changethis_hex_kid` as-is — `init.sh` derives it automatically from the generated key fingerprint and writes the correct value.
@@ -338,8 +338,7 @@ curl http://localhost:9000/user/.well-known/jwks.json
 
 When deploying publicly, replace `traefik/dynamic_conf.yml` with `traefik/production_dynamic_conf.yml`. The production config:
 
-- Adds `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` to all API routes.
-- Enables `Strict-Transport-Security` (HSTS). Only use after TLS is stable with a trusted certificate.
+- Ships `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and `Strict-Transport-Security` (HSTS) **commented out** in `security-headers-prod` — both are opt-in. Uncomment only after TLS is stable with a trusted certificate (and confirm the CSP does not break your frontend/docs). HSTS stays off by default because, once sent, browsers refuse plain HTTP to the host for the full `stsSeconds` even after you disable it.
 - Dev `dynamic_conf.yml` has no CSP so Swagger UI works during development.
 
 Also update the `Host` rules in the production config to match your actual FQDN.
