@@ -1,8 +1,8 @@
 """Initial auth migration
 
-Revision ID: cc461922c78c
+Revision ID: 8b6c756dbb2e
 Revises: 
-Create Date: 2026-05-17 18:17:22.840483
+Create Date: 2026-06-12 11:45:41.101838
 
 """
 from typing import Sequence, Union
@@ -13,7 +13,7 @@ import sqlmodel
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'cc461922c78c'
+revision: str = '8b6c756dbb2e'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -38,7 +38,9 @@ def upgrade() -> None:
     sa.Column('telegram_id', sqlmodel.sql.sqltypes.AutoString(length=256), nullable=True),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('oauth_user_id'),
-    sa.UniqueConstraint('telegram_id')
+    sa.UniqueConstraint('telegram_id'),
+    mysql_charset='utf8mb4',
+    mysql_engine='InnoDB'
     )
     op.create_index(op.f('ix_auth_user_email'), 'auth_user', ['email'], unique=True)
     op.create_index(op.f('ix_auth_user_id'), 'auth_user', ['id'], unique=False)
@@ -54,7 +56,9 @@ def upgrade() -> None:
     sa.Column('last_used_at', sa.DateTime(), nullable=True),
     sa.ForeignKeyConstraint(['user_id'], ['auth_user.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('key_hash')
+    sa.UniqueConstraint('key_hash'),
+    mysql_charset='utf8mb4',
+    mysql_engine='InnoDB'
     )
     op.create_index(op.f('ix_auth_api_key_id'), 'auth_api_key', ['id'], unique=False)
     op.create_index(op.f('ix_auth_api_key_user_id'), 'auth_api_key', ['user_id'], unique=False)
@@ -73,7 +77,9 @@ def upgrade() -> None:
     sa.Column('id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('user_id', sa.Uuid(), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['auth_user.id'], ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('id'),
+    mysql_charset='utf8mb4',
+    mysql_engine='InnoDB'
     )
     op.create_index(op.f('ix_auth_client_session_id'), 'auth_client_session', ['id'], unique=False)
     op.create_index(op.f('ix_auth_client_session_user_id'), 'auth_client_session', ['user_id'], unique=False)
@@ -88,7 +94,9 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['user_id'], ['auth_user.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('api_key_id', 'period', name='uq_ratelimit_api_key_period'),
-    sa.UniqueConstraint('user_id', 'period', name='uq_ratelimit_user_period')
+    sa.UniqueConstraint('user_id', 'period', name='uq_ratelimit_user_period'),
+    mysql_charset='utf8mb4',
+    mysql_engine='InnoDB'
     )
     op.create_index(op.f('ix_auth_rate_limit_api_key_id'), 'auth_rate_limit', ['api_key_id'], unique=False)
     op.create_index(op.f('ix_auth_rate_limit_user_id'), 'auth_rate_limit', ['user_id'], unique=False)
