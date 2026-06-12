@@ -506,22 +506,38 @@ A startup warning is logged if the effective rate (requests ÷ window) exceeds 5
 
 ### Response Security Headers
 
-`auth-sdk-m8 ≥ 1.1.0` adds a shared application-level hardening layer
+`auth-sdk-m8 ≥ 1.2.1` adds a shared application-level hardening layer
 (`add_security_headers_middleware`) wired into the auth service — and into every
-`fastapi-m8` consumer via `create_app`. It emits HSTS, CSP, `X-Frame-Options: DENY`,
-`X-Content-Type-Options: nosniff`, `Referrer-Policy`, and `Permissions-Policy` on **every**
-response (including error responses raised before the route handler). The layer is **gated on
-`ENVIRONMENT=production` or `STRICT_PRODUCTION_MODE=true`** — the same gate as docs hiding —
-so local/dev keeps Swagger/ReDoc and tooling unrestricted.
+`fastapi-m8` consumer via `create_app`. Headers are applied on **every** response
+(including error responses raised before the route handler) in **three tiers**:
+
+| Tier | Headers | When applied |
+| ---- | ------- | ------------ |
+| **Always-on** | `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` | Every environment (whenever `SECURITY_HEADERS_ENABLED`). Safe for Swagger/ReDoc/HMR. |
+| **Production-gated** | `Referrer-Policy`, `Permissions-Policy` | `ENVIRONMENT=production` or `STRICT_PRODUCTION_MODE=true` — the same gate as docs hiding. |
+| **Express opt-in** | `Strict-Transport-Security` (HSTS), `Content-Security-Policy` (CSP) | Only when `HSTS_ENABLED` / `CONTENT_SECURITY_POLICY_ENABLED` — **never on `local`**, even if opted in. |
+
+HSTS and CSP are **browser-persisted and hard to reverse** (enabling HSTS on a host
+writes a long-lived HTTPS-only record — on `localhost` it force-upgrades every local
+service to HTTPS), so they are **off by default**, decoupled from the production gate,
+and hard-blocked on `local`. A TLS-terminated `staging` stack can opt in without
+masquerading as production.
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
-| `SECURITY_HEADERS_ENABLED` | `true` | Master switch. Set `false` to opt out even in production. |
-| `HSTS_MAX_AGE` | `31536000` | `Strict-Transport-Security` max-age in seconds. `0` disables the HSTS header (set when TLS is not terminated upstream). |
+| `SECURITY_HEADERS_ENABLED` | `true` | Master switch. Set `false` to suppress every tier, even in production. |
+| `HSTS_ENABLED` | `false` | Express opt-in for `Strict-Transport-Security`. Never emitted on `local`. |
+| `HSTS_MAX_AGE` | `31536000` | HSTS max-age in seconds. `0` also disables the header. Only applies when `HSTS_ENABLED`. |
 | `HSTS_INCLUDE_SUBDOMAINS` | `true` | Append `includeSubDomains` to the HSTS header. |
-| `CONTENT_SECURITY_POLICY` | — | CSP value. Unset → tight API default (`default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`). Override for services that serve HTML in production. |
-| `REFERRER_POLICY` | `strict-origin-when-cross-origin` | `Referrer-Policy` header value. |
-| `PERMISSIONS_POLICY` | `accelerometer=(), camera=(), geolocation=(), …` | `Permissions-Policy` header value. |
+| `CONTENT_SECURITY_POLICY_ENABLED` | `false` | Express opt-in for `Content-Security-Policy`. Never emitted on `local`. |
+| `CONTENT_SECURITY_POLICY` | — | CSP value used when enabled. Unset → tight API default (`default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`). Override for services that serve HTML. |
+| `REFERRER_POLICY` | `strict-origin-when-cross-origin` | `Referrer-Policy` header value (production-gated tier). |
+| `PERMISSIONS_POLICY` | `accelerometer=(), camera=(), geolocation=(), …` | `Permissions-Policy` header value (production-gated tier). |
+
+> **Behaviour change (auth-sdk-m8 1.2.1 / fastapi-m8 1.5.0):** HSTS and CSP were
+> emitted automatically under the production gate in earlier releases. They are now
+> **off until explicitly enabled** via `HSTS_ENABLED=true` /
+> `CONTENT_SECURITY_POLICY_ENABLED=true`.
 
 ### Deployment
 
@@ -628,11 +644,13 @@ Requires a coordinated three-layer setup:
 
 Hardening headers are applied at two complementary layers:
 
-1. **Application layer (default)** — `auth-sdk-m8 ≥ 1.1.0` emits CSP, HSTS, `X-Frame-Options`,
-   `X-Content-Type-Options`, `Referrer-Policy`, and `Permissions-Policy` from the app itself
-   whenever `ENVIRONMENT=production` or `STRICT_PRODUCTION_MODE=true`. See
-   [Response Security Headers](#response-security-headers) for the tunable settings. This works
-   regardless of the proxy in front and is the recommended baseline.
+1. **Application layer (default)** — `auth-sdk-m8 ≥ 1.2.1` emits `X-Frame-Options` and
+   `X-Content-Type-Options` in every environment, adds `Referrer-Policy` and
+   `Permissions-Policy` whenever `ENVIRONMENT=production` or `STRICT_PRODUCTION_MODE=true`,
+   and emits CSP/HSTS only when explicitly opted in (`CONTENT_SECURITY_POLICY_ENABLED` /
+   `HSTS_ENABLED`, never on `local`). See
+   [Response Security Headers](#response-security-headers) for the tiers and tunable settings.
+   This works regardless of the proxy in front and is the recommended baseline.
 2. **Edge layer (optional)** — each example stack also ships two Traefik configs in `traefik/`:
 
    | File | Purpose |
@@ -649,8 +667,9 @@ or disable the app layer (`SECURITY_HEADERS_ENABLED=false`) and enforce headers 
 
 At the edge, `Strict-Transport-Security` is commented out in all `traefik/dynamic_conf.yml`
 files and enabled by default in `production_dynamic_conf.yml`. At the application layer it is
-controlled by `HSTS_MAX_AGE` (default 1 year; `0` disables it). Only activate HSTS after
-confirming TLS is stable and the hostname will remain HTTPS-only for the full max-age period.
+**off by default** and emitted only when `HSTS_ENABLED=true` (and `HSTS_MAX_AGE > 0`); it is
+never emitted on a `local` stack even when enabled. Only activate HSTS after confirming TLS is
+stable and the hostname will remain HTTPS-only for the full max-age period.
 
 ---
 

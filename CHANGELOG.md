@@ -39,15 +39,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   signed with a dedicated `SESSION_SECRET`, distinct from `TOKENS_ENCRYPTION_KEY`.
   Rotating the session key no longer invalidates Fernet-encrypted tokens at rest.
   Required at boot.
-- **Application-level response hardening wired in (N2)** —
-  `auth_sdk_m8.security.headers.add_security_headers_middleware` (auth-sdk-m8 ≥ 1.1.0)
-  is attached in `main.py`. In production/staging (`ENVIRONMENT=production` or
-  `STRICT_PRODUCTION_MODE`) every response — including errors raised before the route
-  handler — carries HSTS, CSP, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
-  `Referrer-Policy`, and `Permissions-Policy`. No-op in local/dev so Swagger/ReDoc keep
-  working. Tunable via `SECURITY_HEADERS_ENABLED`, `HSTS_MAX_AGE`,
-  `HSTS_INCLUDE_SUBDOMAINS`, `CONTENT_SECURITY_POLICY`, `REFERRER_POLICY`,
-  `PERMISSIONS_POLICY`.
+- **Application-level response hardening wired in (N2), tiered model** —
+  `auth_sdk_m8.security.headers.add_security_headers_middleware` (auth-sdk-m8 ≥ 1.2.1,
+  pin bumped in `requirements_base.txt`) is attached in `main.py` and now applies headers
+  in three tiers on every response (including errors raised before the route handler):
+  (1) always-on `X-Content-Type-Options: nosniff` + `X-Frame-Options: DENY`; (2) production
+  gate (`ENVIRONMENT=production` or `STRICT_PRODUCTION_MODE`) adds `Referrer-Policy` +
+  `Permissions-Policy`; (3) **express opt-in** `Strict-Transport-Security` (HSTS) and
+  `Content-Security-Policy` (CSP) via `HSTS_ENABLED` / `CONTENT_SECURITY_POLICY_ENABLED`
+  (both default `false`) — decoupled from the production gate and **never** emitted on a
+  `local` stack even when opted in. No-op overall in local/dev so Swagger/ReDoc keep working.
+  Tunable via `SECURITY_HEADERS_ENABLED`, `HSTS_ENABLED`, `HSTS_MAX_AGE`,
+  `HSTS_INCLUDE_SUBDOMAINS`, `CONTENT_SECURITY_POLICY_ENABLED`, `CONTENT_SECURITY_POLICY`,
+  `REFERRER_POLICY`, `PERMISSIONS_POLICY`.
+  **Behaviour change:** HSTS and CSP were previously emitted automatically under the
+  production gate; they are now off until explicitly enabled. The opt-in knobs are
+  documented (commented, default-off) in the `auth.env.example` / `api.env.example` and
+  `fastapi_full` example env templates.
 
 ### CI
 
