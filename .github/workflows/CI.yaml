@@ -186,7 +186,6 @@ jobs:
           load: true
           tags: fa-auth-m8:ci-scan
           cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Trivy image scan (CRITICAL/HIGH CVEs — blocks PR on findings)
         uses: aquasecurity/trivy-action@bfa4b33a029b9aa80ddb784b45574c30e072c59e # master
