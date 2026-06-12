@@ -9,6 +9,23 @@
 # HSTS WARNING: once enabled, browsers refuse plain HTTP to this host for
 # stsSeconds. Only enable after TLS is stable and trusted.
 tls:
+  # options.default is applied automatically to every router that does not name
+  # an explicit tls.options. Production raises the floor to TLS 1.3 — drop
+  # minVersion to VersionTLS12 (with the cipherSuites below) only if you must
+  # support older clients.
+  options:
+    default:
+      minVersion: VersionTLS13
+      cipherSuites:                    # only consulted for TLS 1.2 fallback; TLS 1.3 suites are fixed
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+      curvePreferences:
+        - X25519
+        - CurveP256
   stores:
     default:
       defaultCertificate:
@@ -20,10 +37,12 @@ tls:
 http:
 
   routers:
-    # Dashboard — localhost only, IP-restricted
+    # Dashboard — localhost only: served on the built-in 'traefik' entrypoint
+    # (127.0.0.1:8080), Host-pinned and IP-restricted, over TLS.
+    # api.insecure is false, so this router is the ONLY way to reach api@internal.
     traefik-dashboard:
       entryPoints:
-        - websecure
+        - traefik
       rule: "Host(`localhost`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
       service: api@internal
       middlewares:
@@ -35,7 +54,12 @@ http:
     auth-public-router:
       entryPoints:
         - websecure
-      rule: "Host(`localhost`) && PathPrefix(`/user`) && !(PathPrefix(`/user/health`) || PathPrefix(`/user/metrics`))"
+      # LOCALHOST-ONLY by default. PRODUCTION: replace `localhost` with your public
+      # FQDN (e.g. Host(`auth.example.com`)) to serve real traffic, or delete the
+      # `Host(...) && ` prefix to match any hostname/IP.
+      # The path exclusions are the SECURITY CONTRACT and MUST stay regardless —
+      # /user/health|metrics|private are never publicly routable.
+      rule: "Host(`localhost`) && PathPrefix(`/user`) && !(PathPrefix(`/user/health`) || PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
       service: auth-service
       middlewares:
         - security-headers-prod
@@ -56,6 +80,8 @@ http:
     fastapi-public-router:
       entryPoints:
         - websecure
+      # LOCALHOST-ONLY by default. PRODUCTION: replace `localhost` with your public
+      # FQDN, or delete the `Host(...) && ` prefix to match any hostname/IP.
       rule: "Host(`localhost`) && PathPrefix(`/fastapi`)"
       service: fastapi-service
       middlewares:
@@ -85,18 +111,19 @@ http:
   middlewares:
     ip-allowlist:
       IPAllowList:
+        # Dashboard: localhost only (bridge gateway == host via SNAT). Sibling
+        # containers and the LAN are not trusted. PRODUCTION: replace the gateway
+        # below with your real management CIDR, or front the dashboard with auth.
         sourceRange:
           - "127.0.0.1/32"
-          - "172.16.0.0/12"
-          - "192.168.0.0/16"
+          - "172.16.0.1/32"
           - "::1/128"
 
     internal-only:
       IPAllowList:
         sourceRange:
           - "127.0.0.1/32"
-          - "172.16.0.0/12"
-          - "192.168.0.0/16"
+          - "172.16.0.0/16"
           - "::1/128"
 
     security-headers-prod:
@@ -107,10 +134,10 @@ http:
         referrerPolicy: "strict-origin-when-cross-origin"
         # HSTS: enable only after TLS is stable with a trusted certificate.
         # Once set, browsers enforce HTTPS for stsSeconds even if you later disable it.
-        stsSeconds: 63072000         # 2 years
-        stsIncludeSubdomains: true
-        stsPreload: false            # set true only after submitting to HSTS preload list
-        customResponseHeaders:
-          Content-Security-Policy: "default-src 'none'; frame-ancestors 'none'"
-          X-Robots-Tag: "noindex,nofollow"
-          Server: ""
+        #stsSeconds: 63072000         # 2 years
+        #stsIncludeSubdomains: true
+        #stsPreload: false            # set true only after submitting to HSTS preload list
+        #customResponseHeaders:
+        #  Content-Security-Policy: "default-src 'none'; frame-ancestors 'none'"
+        #  X-Robots-Tag: "noindex,nofollow"
+        #  Server: ""
