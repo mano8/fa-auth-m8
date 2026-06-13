@@ -230,6 +230,76 @@ class TestCreateAuthTokens:
 
         uuid.UUID(jti)  # raises ValueError if not a valid UUID
 
+    def test_tenant_id_claim_present_when_user_has_tenant(self):
+        user = MagicMock()
+        user.id = str(uuid.uuid4())
+        user.full_name = "User"
+        user.email = "u@example.com"
+        user.avatar = None
+        user.is_active = True
+        user.email_verified = True
+        user.is_superuser = False
+        user.role = "user"
+        tenant = uuid.uuid4()
+        user.tenant_id = tenant
+
+        captured = {}
+
+        def _capture(*, data, **_kwargs):
+            captured["data"] = data
+            return ("acc_tok", str(uuid.uuid4()))
+
+        with (
+            patch.object(
+                _auth_module.SecurityHelper,
+                "create_access_token",
+                side_effect=_capture,
+            ),
+            patch.object(
+                _auth_module.SecurityHelper,
+                "create_refresh_token",
+                return_value=("ref_tok", str(uuid.uuid4())),
+            ),
+        ):
+            AuthController.create_auth_tokens(user=user)
+
+        # The string claim flows into TokenAccessData (model_dump encodes it verbatim).
+        assert captured["data"].tenant_id == str(tenant)
+
+    def test_tenant_id_claim_none_when_user_has_no_tenant(self):
+        user = MagicMock()
+        user.id = str(uuid.uuid4())
+        user.full_name = "User"
+        user.email = "u@example.com"
+        user.avatar = None
+        user.is_active = True
+        user.email_verified = True
+        user.is_superuser = False
+        user.role = "user"
+        user.tenant_id = None
+
+        captured = {}
+
+        def _capture(*, data, **_kwargs):
+            captured["data"] = data
+            return ("acc_tok", str(uuid.uuid4()))
+
+        with (
+            patch.object(
+                _auth_module.SecurityHelper,
+                "create_access_token",
+                side_effect=_capture,
+            ),
+            patch.object(
+                _auth_module.SecurityHelper,
+                "create_refresh_token",
+                return_value=("ref_tok", str(uuid.uuid4())),
+            ),
+        ):
+            AuthController.create_auth_tokens(user=user)
+
+        assert captured["data"].tenant_id is None
+
     def test_rs256_missing_private_key_raises(self):
         user = MagicMock()
         user.id = str(uuid.uuid4())
