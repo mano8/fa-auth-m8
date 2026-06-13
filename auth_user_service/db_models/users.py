@@ -381,6 +381,11 @@ class User(UserBase, table=True):
         max_length=256,
         description="Telegram user ID",
     )
+    tenant_id: Optional[uuid.UUID] = Field(
+        default=None,
+        index=True,
+        description="Tenant the user belongs to (nullable; set out-of-band)",
+    )
     api_keys: List["ApiKey"] = Relationship(
         back_populates="user",
     )

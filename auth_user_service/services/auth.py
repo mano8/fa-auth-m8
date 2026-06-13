@@ -192,6 +192,7 @@ class AuthController:
                 email_verified=user.email_verified,
                 is_superuser=user.is_superuser,
                 role=user.role,
+                tenant_id=str(user.tenant_id) if user.tenant_id else None,
             ),
             expires_delta=access_token_expires,
             secrets=access_signing_secret,
