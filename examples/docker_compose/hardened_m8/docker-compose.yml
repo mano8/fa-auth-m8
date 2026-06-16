@@ -116,7 +116,7 @@ services:
     depends_on:
       - prometheus
     env_file:
-      - ./grafana/.env
+      - ./grafana/config.monitoring
     volumes:
       - ./grafana/data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
@@ -127,7 +127,7 @@ services:
     restart: unless-stopped
 
   auth_user_service:
-    image: tepochtli/fa-auth-m8:0.9.8
+    image: tepochtli/fa-auth-m8:latest
     security_opt:
       - no-new-privileges:true
     cap_drop:
