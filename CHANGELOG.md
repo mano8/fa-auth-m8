@@ -11,6 +11,27 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.9.8] — 2026-06-16 · Standard `/meta` + `/ping` routes (issuer)
+
+> **Requires `auth-sdk-m8 >= 1.4.0`** — uses `mount_service_meta` + `ServiceMeta`.
+
+### Added
+
+- **`GET {API_PREFIX}/meta`** (e.g. `/user/meta`) — static, cacheable service
+  identity (`service`/`version`/`api_version`/`contract`) read by clients pre-auth
+  to assert compatibility; satisfies `@fa-m8/astro-auth-m8`'s
+  `assertFaAuthM8Compatibility`. The issuer mounts the shared auth-sdk-m8 routes
+  directly (it builds its own app, not via `fastapi_m8.create_app`).
+- **`GET /ping`** — prefix-independent, dependency-free liveness (`{"status": "ok"}`).
+- `auth_user_service/core/service_meta.py` — `build_service_meta()` plus the
+  contract constants (`fa-auth-m8`, contract `0.9`, range `>=0.9.8 <0.10.0` — the
+  lower bound is the first release that exposes the discovery routes), kept in
+  sync with the astro plugin. Service version tracks `__version__`.
+
+Both routes are kept **separate from the dependency-aware `/health`** (readiness).
+
+---
+
 ## [0.9.7] — 2026-06-13 · `tenant_id` token claim
 
 ### Added
