@@ -20,9 +20,11 @@ from auth_user_service.routes import api_router
 from auth_user_service.core.config import settings
 from auth_user_service.events import get_hub, init_hub
 from auth_user_service.events import metrics as _event_metrics
+from auth_sdk_m8.controllers.meta import mount_service_meta
 from auth_sdk_m8.observability import metrics as _metrics
 from auth_sdk_m8.observability.middleware import MetricsMiddleware
 from auth_sdk_m8.security.headers import add_security_headers_middleware
+from auth_user_service.core.service_meta import build_service_meta
 
 _logger = logging.getLogger(__name__)
 
@@ -316,6 +318,12 @@ if settings.METRICS_ENABLED:
 add_security_headers_middleware(app, settings)
 
 app.include_router(api_router, prefix=settings.API_PREFIX)
+
+# Standard service triad (auth-sdk-m8 >= 1.4.0): the issuer mounts the shared
+# /meta + /ping routes directly (it doesn't use fastapi_m8.create_app). /meta is
+# served at {API_PREFIX}/meta for client compat checks; /ping is prefix-
+# independent liveness. Both are kept separate from the dependency-aware /health.
+mount_service_meta(app, build_service_meta(), prefix=settings.API_PREFIX)
 
 if settings.METRICS_ENABLED:
 
