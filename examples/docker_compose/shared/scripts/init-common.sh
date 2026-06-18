@@ -45,23 +45,18 @@ if [[ ${#_copied[@]} -gt 0 ]]; then
     echo ""
 fi
 
-# --- Enforce chmod 600 on secret-bearing runtime env files ---
+# --- Enforce chmod 600 on all runtime env files and private keys ---
 _perm_enforced=()
-for _sf in .env auth.env api.env grafana.env test.env; do
-    [[ -f "$_sf" ]] || continue
+while IFS= read -r _sf; do
     _mode="$(stat -c '%a' "$_sf" 2>/dev/null || echo "???")"
     if [[ "$_mode" != "600" ]]; then
         chmod 600 "$_sf"
         _perm_enforced+=("$_sf (was ${_mode})")
     fi
-done
-if [[ -f "keys/private.pem" ]]; then
-    _mode="$(stat -c '%a' "keys/private.pem" 2>/dev/null || echo "???")"
-    if [[ "$_mode" != "600" ]]; then
-        chmod 600 "keys/private.pem"
-        _perm_enforced+=("keys/private.pem (was ${_mode})")
-    fi
-fi
+done < <(
+    find . -maxdepth 1 -type f -name '*.env' ! -name '*.example' ! -name '*.prod_example' | sort
+    find . -maxdepth 2 -type f \( -path './keys/private.*' \) | sort
+)
 if [[ ${#_perm_enforced[@]} -gt 0 ]]; then
     echo ""
     echo "NOTE: enforced chmod 600 on secret files (fixed permissive modes):"
