@@ -71,6 +71,13 @@ Applied to `auth_user_service` and `fastapi_full`:
 | `PYTHONDONTWRITEBYTECODE` | `1` | Prevents Python writing `.pyc` to read-only paths |
 | `deploy.resources.limits` | `1 CPU`, `512 MB` | Prevents resource exhaustion |
 
+Traefik posture:
+
+| Option | Value | Effect |
+| --- | --- | --- |
+| Routing provider | file only (`traefik/dynamic_conf.yml`) | No Docker provider, so `/var/run/docker.sock` is never mounted — the Docker API is equivalent to host root |
+| Backend discovery | Docker DNS by container name | Routers/services are declared statically; backends resolve as `http://auth_user_service:8000` over `app_net` |
+
 Auth degradation settings in `auth.env`:
 
 | Setting | Value | Effect |

@@ -48,6 +48,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Security
 
 - Removed a hardcoded Grafana admin password from version control.
+- **Removed the Docker socket from the hardened example** (plan item 0.3). The
+  `hardened_m8` Traefik service no longer mounts `/var/run/docker.sock`, and the
+  Docker provider is dropped from `traefik/traefik.yml` in favour of the file
+  provider only. Mounting the socket — even read-only — exposes the Docker API,
+  which is equivalent to host root. Routing was already declared statically in
+  `traefik/dynamic_conf.yml` (backends resolved by container-name DNS over
+  `app_net`), so the vestigial `traefik.enable` labels on `auth_user_service` and
+  `fastapi_full` were removed too. Public routes are unchanged. Dev examples keep
+  the Docker provider.
 
 ---
 
