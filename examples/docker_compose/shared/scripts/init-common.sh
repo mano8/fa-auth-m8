@@ -73,6 +73,9 @@ if [[ -d "./db_data" ]]; then
     echo "NOTE: db_data/ exists — init-db.sh will NOT re-run (reset with: bash init.sh --reset-db)"
 fi
 
+# --- Deployment security preflight ---
+bash "${COMMON_DIR}/preflight-security.sh" "."
+
 # --- Crypto lifecycle ---
 run_init() {
     local script="$1" rotate="$2"

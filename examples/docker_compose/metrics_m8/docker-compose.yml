@@ -116,7 +116,7 @@ services:
     depends_on:
       - prometheus
     env_file:
-      - ./grafana/config.monitoring
+      - ./grafana.env
     volumes:
       - ./grafana/data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning

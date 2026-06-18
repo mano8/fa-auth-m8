@@ -9,7 +9,7 @@ This module provides Redis-backed utilities for:
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Final, Optional
+from typing import Final, Optional, cast
 
 from redis import Redis
 
@@ -174,7 +174,7 @@ class OAuthSessionStore:
 
     def get(self, state: str) -> Optional[str]:
         """Read session without consuming — used for CSRF validation."""
-        result = self.client.get(self.PREFIX + state)
+        result = cast(Optional[str | bytes], self.client.get(self.PREFIX + state))
         if isinstance(result, bytes):
             return result.decode("utf-8")
         return result
@@ -205,7 +205,7 @@ class AuthCodeStore:
 
     def pop(self, code: str) -> Optional[str]:
         """Atomically retrieve and delete — prevents replay under concurrent requests."""
-        result = self.client.getdel(self.PREFIX + code)
+        result = cast(Optional[str | bytes], self.client.getdel(self.PREFIX + code))
         if isinstance(result, bytes):
             return result.decode("utf-8")
         return result
@@ -246,7 +246,7 @@ class LoginRateLimiter:
         Sets the expiry on the first attempt so the window is self-cleaning.
         """
         key = self._key(identifier)
-        count = self.client.incr(key)
+        count = cast(int, self.client.incr(key))
         if count == 1:
             self.client.expire(key, self.window_seconds)
         return count <= self.max_requests
@@ -295,7 +295,7 @@ class LoginIpRateLimiter:
     def is_allowed(self, ip: str) -> bool:
         """Increment the per-IP counter and return True if still within limit."""
         key = self._key(ip)
-        count = self.client.incr(key)
+        count = cast(int, self.client.incr(key))
         if count == 1:
             self.client.expire(key, self.window_seconds)
         return count <= self.max_requests
@@ -333,7 +333,7 @@ class RefreshRateLimiter:
         the request rate, not just reject bad tokens.
         """
         key = self._key(user_id)
-        count = self.client.incr(key)
+        count = cast(int, self.client.incr(key))
         if count == 1:
             self.client.expire(key, self.window_seconds)
         return count <= self.max_requests
@@ -367,7 +367,7 @@ class ExchangeRateLimiter:
     def is_allowed(self, ip: str) -> bool:
         """Increment attempt counter and return True if still within limit."""
         key = self._key(ip)
-        count = self.client.incr(key)
+        count = cast(int, self.client.incr(key))
         if count == 1:
             self.client.expire(key, self.window_seconds)
         return count <= self.max_requests
