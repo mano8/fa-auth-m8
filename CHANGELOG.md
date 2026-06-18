@@ -11,6 +11,46 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Deployment security preflight** (`examples/docker_compose/shared/scripts/preflight-security.sh`)
+  — a fail-closed gate run from `init-common.sh` before the crypto lifecycle. It
+  scans a stack's env and compose files and blocks startup on leftover
+  `changethis` placeholders, empty passwords, reused high-value secrets, default
+  Vault/Grafana credentials, public `API_BIND_IP` in production, docs flags
+  enabled in production, and `:latest` image tags in hardened/production stacks.
+  Risky security flags (`EVENT_SIGNING_ENABLED`, `TOKEN_STRICT_VALIDATION`,
+  `ACCESS_REVOCATION_FAILURE_MODE`) warn outside strict mode and hard-fail under
+  `STRICT_PRODUCTION_MODE`. Fully covered by adversarial unit tests
+  (`tests/security/test_preflight_security.py`).
+- Per-stack `test.env.example` describing the `security-tests-m8` live
+  configuration, a shared `shared_live_tests` harness (pytest config, conftest,
+  full-security suite, README), and the shared Alembic migration set used to
+  bring a hardened stack up for live runs.
+- `grafana.env.example` placeholder per stack.
+
+### Changed
+
+- Grafana admin credentials moved out of the committed
+  `grafana/config.monitoring` into a gitignored `grafana.env` loaded via
+  `env_file`. Pinned the `fa-auth-m8` image to `0.9.8` (was `:latest`) in the
+  hardened and vault example stacks.
+- Lowered the `redis` requirement floor to `>=5.3.1` to match the tested
+  runtime; no security advisory requires the 8.x line.
+
+### Fixed
+
+- Typed the redis sync client responses (`get`/`getdel`/`incr`) in
+  `auth_user_service/core/client.py` so `mypy auth_user_service` is clean.
+
+### Security
+
+- Removed a hardcoded Grafana admin password from version control.
+
+---
+
 ## [0.9.8] — 2026-06-16 · Standard `/meta` + `/ping` routes (issuer)
 
 > **Requires `auth-sdk-m8 >= 1.4.0`** — uses `mount_service_meta` + `ServiceMeta`.
