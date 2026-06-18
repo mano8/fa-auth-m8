@@ -1,8 +1,11 @@
 
+.env
+*.env
 db_data/*
 postgres_data/*
 db/*
 redis/*
+keys/
 traefik/certs/*.pem
 traefik/certs/*.crt
 traefik/certs/*.key
