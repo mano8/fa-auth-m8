@@ -33,11 +33,7 @@ _COMPOSE_FILES = [
 def _image_entries(path) -> list[tuple[str, str]]:
     """Return (service_name, image) pairs that declare an `image:` key."""
     services = load_compose(path)["services"]
-    return [
-        (name, svc["image"])
-        for name, svc in services.items()
-        if "image" in svc
-    ]
+    return [(name, svc["image"]) for name, svc in services.items() if "image" in svc]
 
 
 @pytest.mark.parametrize("compose_path", _COMPOSE_FILES)
