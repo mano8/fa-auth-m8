@@ -159,6 +159,28 @@ def test_preflight_rejects_public_api_bind_in_production(
     assert "API_BIND_IP=0.0.0.0 is blocked in production" in result.stdout
 
 
+def test_preflight_allows_public_api_bind_with_break_glass(
+    tmp_path: Path,
+) -> None:
+    root_env = (
+        production_root_env().replace("API_BIND_IP=127.0.0.1", "API_BIND_IP=0.0.0.0")
+        + "\nALLOW_PUBLIC_API_BIND=true"
+    )
+    write_stack(
+        tmp_path,
+        root_env=root_env,
+        auth_env=production_auth_env(),
+        api_env=production_api_env(),
+    )
+
+    result = run_preflight(tmp_path)
+
+    assert result.returncode == 0, (
+        "ALLOW_PUBLIC_API_BIND=true must suppress the API_BIND_IP=0.0.0.0 block"
+    )
+    assert "API_BIND_IP=0.0.0.0 is blocked in production" not in result.stdout
+
+
 def test_preflight_rejects_latest_images_for_hardened_or_production(
     tmp_path: Path,
 ) -> None:
