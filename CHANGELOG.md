@@ -15,6 +15,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Image-pin policy enforced in hardened/production compose** (plan item 4.1) — bare
+  `alpine` image (no version tag) replaced with `alpine:3.22` across all six compose
+  example stacks (`hardened_m8`, `metrics_m8`, `postgres_m8`, `quickstart_m8`, `rs256_m8`,
+  `vault_dev_m8`). Static policy tests added in
+  `tests/security/test_image_pins.py` (4 tests) assert that every image in the
+  `hardened_m8` base and production overlay declares an explicit version tag (no bare
+  images) and does not use the mutable `:latest` tag. Services using `build:` are
+  excluded. All previously pinned third-party images (`traefik:v3.7.5`,
+  `postgres:18.4-alpine`, `redis:8.8.0-alpine`, `ubuntu/prometheus:3.11-26.04_stable`,
+  `grafana/grafana:13.1.0-25530058790`, `tepochtli/fa-auth-m8:0.9.8`) continue to pass
+  the new assertions. 717 tests, 100% cov, ruff + mypy + bandit green.
+
 - **Vault example renamed and constrained** (plan item 2.3) — `vault_m8` renamed to
   `vault_dev_m8` to make the ephemeral, dev-mode-only nature explicit in the directory
   name. Preflight now hard-fails when either `VAULT_DEV_TOKEN` is present in an env

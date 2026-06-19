@@ -1,4 +1,6 @@
-# vault_m8
+# vault_dev_m8
+
+> **Dev/learning only.** Vault runs in ephemeral dev mode with a root token. See [`vault_prod_template/`](../vault_prod_template/) for the production-Vault reference (server mode, scoped app token, no root token in env).
 
 **PostgreSQL 18** + **RS256 asymmetric token signing** + **HashiCorp Vault** secret injection + **stateful** token mode + **Prometheus & Grafana** observability.
 

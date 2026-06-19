@@ -3,7 +3,7 @@ services:
   # Traefik waits for this before starting. Skipped automatically when certs already exist.
   # For browser-trusted certs: install mkcert, then run: bash init.sh --rotate-certs
   cert-init:
-    image: alpine
+    image: alpine:3.22
     volumes:
       - ./traefik/certs:/certs
     command:
