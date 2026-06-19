@@ -108,7 +108,9 @@ def test_required_service_secret_sourced_from_file(
 
     s = _make_without("SESSION_SECRET")
 
-    assert s.SESSION_SECRET.get_secret_value() == "Aa1-session-secret-from-file-32chars!"
+    assert (
+        s.SESSION_SECRET.get_secret_value() == "Aa1-session-secret-from-file-32chars!"
+    )
 
 
 def test_private_api_secret_sourced_from_file(
