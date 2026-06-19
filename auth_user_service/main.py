@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.exc import OperationalError as SQLAlchemyOperationalError
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from auth_user_service.routes import api_router
 from auth_user_service.core.config import settings
@@ -317,6 +318,20 @@ if settings.METRICS_ENABLED:
 #      (CONTENT_SECURITY_POLICY_ENABLED). Browser-persisted and hard to reverse, so
 #      both default False and are decoupled from the production gate.
 add_security_headers_middleware(app, settings)
+
+# TrustedHostMiddleware — outermost layer (added last so it wraps everything).
+# When ALLOWED_HOSTS is unset the middleware is skipped and any Host is accepted
+# (suitable for a fully-internal deployment where Traefik is the sole ingress).
+# In non-production, ``testserver`` is auto-injected so HTTPX test clients work
+# without explicitly listing it.  In production (ENVIRONMENT=production or
+# STRICT_PRODUCTION_MODE=true), only the explicitly listed FQDNs are accepted —
+# matching the production overlay's Traefik FQDN host rules for defence-in-depth.
+if settings.ALLOWED_HOSTS:
+    _allowed_hosts = list(settings.ALLOWED_HOSTS)
+    _is_prod = settings.ENVIRONMENT == "production" or settings.STRICT_PRODUCTION_MODE
+    if not _is_prod and "testserver" not in _allowed_hosts:
+        _allowed_hosts = [*_allowed_hosts, "testserver"]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
 
 app.include_router(api_router, prefix=settings.API_PREFIX)
 
