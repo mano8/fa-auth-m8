@@ -51,6 +51,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Runtime secrets can be sourced from mounted files** (plan item 6.1). The
+  service `Settings` inherits the Docker/K8s `<FIELD>_FILE` convention from
+  `auth_sdk_m8.core.config.CommonSettings` — no service-side code is added. For
+  any field `FOO` (service-declared like `PRIVATE_API_SECRET`, `SESSION_SECRET`,
+  `TOKENS_ENCRYPTION_KEY`, `METRICS_SCRAPE_CREDENTIAL`, or inherited like
+  `DB_PASSWORD`/`EVENT_SIGNING_KEY`), setting `FOO_FILE` to a readable path makes
+  the file's stripped contents the value of `FOO`, outranking a plaintext
+  `.env`/env value (init kwargs still win) and failing closed if the path is
+  missing. This is the mechanism the production overlay (item 2.1) uses to mount
+  secrets under `/run/secrets/*` instead of inlining them. The inheritance is
+  locked in at the service layer by `tests/security/test_config_file_secrets.py`
+  (8 tests across both MRO origins; precedence, fail-closed, and `SecretStr`
+  masking asserted). Full secret-manager migration + rotation playbooks (6.2)
+  remain P3.
 - **Proxy-independent app-layer protection for `/health` and `/metrics`** (plan
   item 1.4). The deep `{API_PREFIX}/health/` route now answers a shallow
   `{"status": ...}` to every caller and reveals the full infrastructure detail

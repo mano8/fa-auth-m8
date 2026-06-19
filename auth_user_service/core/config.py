@@ -15,7 +15,16 @@ from auth_sdk_m8.observability.settings import ObservabilitySettingsMixin
 
 
 class Settings(ObservabilitySettingsMixin, CommonSettings):
-    """Settings for the auth_user_service: adds only new fields."""
+    """Settings for the auth_user_service: adds only new fields.
+
+    Secret sourcing (the Docker/K8s ``<FIELD>_FILE`` convention) is inherited
+    from :class:`auth_sdk_m8.core.config.CommonSettings` — this service does not
+    re-implement it. For any field ``FOO`` (service-declared *or* inherited), if
+    ``FOO_FILE`` points at a readable file its stripped contents become the value
+    of ``FOO``, outranking a plaintext ``.env``/env value (init kwargs still win).
+    The production overlay relies on this to mount runtime secrets under
+    ``/run/secrets/*`` instead of inlining them. Locked in by
+    ``tests/security/test_config_file_secrets.py`` (plan item 6.1)."""
 
     # Override env file directory if necessary
     ENV_FILE_DIR = Path(__file__).resolve().parent
