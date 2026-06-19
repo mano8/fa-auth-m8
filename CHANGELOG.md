@@ -30,6 +30,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   full-security suite, README), and the shared Alembic migration set used to
   bring a hardened stack up for live runs.
 - `grafana.env.example` placeholder per stack.
+- `METRICS_SCRAPE_CREDENTIAL` setting (optional `SecretStr`, default unset) on the
+  service `Settings`, registered as a masked `secret_fields` entry and documented
+  (commented) in the metrics-enabled `auth.env.example` stacks (`hardened_m8`,
+  `metrics_m8`). Drives the optional `/metrics` scrape guard (plan item 1.4).
 
 ### Changed
 
@@ -47,6 +51,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Proxy-independent app-layer protection for `/health` and `/metrics`** (plan
+  item 1.4). The deep `{API_PREFIX}/health/` route now answers a shallow
+  `{"status": ...}` to every caller and reveals the full infrastructure detail
+  (token mode, Redis/DB reachability, circuit breaker, degradation modes) **only**
+  to internal callers presenting the `X-Internal-Token` shared secret
+  (`PRIVATE_API_SECRET`). `{API_PREFIX}/metrics` gains an optional static scoped
+  scrape credential (`METRICS_SCRAPE_CREDENTIAL`): unset keeps metrics
+  internal-only (the network boundary is the control); when set, scrapers must
+  send `Authorization: Bearer <credential>` (constant-time match) or get `401`.
+  Both guards reuse the shared `auth_sdk_m8.security.guards` primitives
+  (`make_internal_token_authorizer`, `make_scrape_credential_guard`), so the
+  guarantee lives at the app layer and survives a reverse-proxy swap; proxy
+  route-hiding stays defense-in-depth. `{API_PREFIX}/ping` remains the
+  dependency-free public liveness route. Covered by
+  `tests/routes/health_test.py` (detail gating) and
+  `tests/security/test_metrics_scrape_guard.py`.
 - Removed a hardcoded Grafana admin password from version control.
 - **Removed the Docker socket from the hardened example** (plan item 0.3). The
   `hardened_m8` Traefik service no longer mounts `/var/run/docker.sock`, and the

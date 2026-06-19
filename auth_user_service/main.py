@@ -8,7 +8,7 @@ import uvicorn
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.routing import APIRoute
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +23,7 @@ from auth_user_service.events import metrics as _event_metrics
 from auth_sdk_m8.controllers.meta import mount_service_meta
 from auth_sdk_m8.observability import metrics as _metrics
 from auth_sdk_m8.observability.middleware import MetricsMiddleware
+from auth_sdk_m8.security.guards import make_scrape_credential_guard
 from auth_sdk_m8.security.headers import add_security_headers_middleware
 from auth_user_service.core.service_meta import build_service_meta
 
@@ -326,11 +327,22 @@ app.include_router(api_router, prefix=settings.API_PREFIX)
 mount_service_meta(app, build_service_meta(), prefix=settings.API_PREFIX)
 
 if settings.METRICS_ENABLED:
+    # Optional static scoped scrape credential (1.4). Internal-only by default —
+    # when METRICS_SCRAPE_CREDENTIAL is unset the guard is a no-op and the
+    # network boundary (internal entrypoint) stays the sole control. When set,
+    # requests must present ``Authorization: Bearer <credential>`` (constant-time
+    # match). The guard lives at the app layer so it survives a proxy swap.
+    _scrape_guard = make_scrape_credential_guard(
+        settings.METRICS_SCRAPE_CREDENTIAL.get_secret_value()
+        if settings.METRICS_SCRAPE_CREDENTIAL
+        else None
+    )
 
     @app.get(
         f"{settings.API_PREFIX}/metrics",
         include_in_schema=False,
         tags=["observability"],
+        dependencies=[Depends(_scrape_guard)],
     )
     def metrics_endpoint() -> Response:
         """Expose Prometheus metrics."""
