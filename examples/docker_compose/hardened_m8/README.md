@@ -376,6 +376,8 @@ When deploying publicly, replace `traefik/dynamic_conf.yml` with `traefik/produc
 
 Also update the `Host` rules in the production config to match your actual FQDN.
 
+**Socketless by design.** The production path — whether you apply `docker-compose.production.yml` or copy `production_dynamic_conf.yml` over `dynamic_conf.yml` — never mounts `/var/run/docker.sock`. Traefik routes via the **file provider only** (`traefik.yml` declares no `docker` provider); backends are declared statically and resolve over Docker DNS by container name (`http://auth_user_service:8000`), so no socket mount and no per-container `traefik.*` discovery labels are needed. Mounting the socket — even read-only — grants the Docker API, which is equivalent to host root. This contract is locked by `tests/security/test_socketless_traefik.py`.
+
 ---
 
 ## Troubleshooting

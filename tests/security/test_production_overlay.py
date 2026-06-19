@@ -6,54 +6,17 @@ Traefik config and assert the hardening contract — no Docker required.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import yaml
 
+from tests.security._compose import STACK, load_compose as _load_compose
+from tests.security._compose import parse_env as _parse_env
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-STACK = REPO_ROOT / "examples" / "docker_compose" / "hardened_m8"
 OVERLAY = STACK / "docker-compose.production.yml"
 BASE = STACK / "docker-compose.yml"
 AUTH_ENV = STACK / "auth.env.production.example"
 API_ENV = STACK / "api.env.production.example"
 ROOT_ENV = STACK / ".env.production.example"
 PROD_TRAEFIK = STACK / "traefik" / "production_dynamic_conf.yml"
-
-
-class _ComposeLoader(yaml.SafeLoader):
-    """SafeLoader that tolerates Compose's `!reset` / `!override` merge tags."""
-
-
-def _identity(loader: _ComposeLoader, node: yaml.Node) -> object:
-    if isinstance(node, yaml.SequenceNode):
-        return loader.construct_sequence(node)
-    if isinstance(node, yaml.MappingNode):
-        return loader.construct_mapping(node)
-    return loader.construct_scalar(node)
-
-
-_ComposeLoader.add_constructor("!reset", _identity)
-_ComposeLoader.add_constructor("!override", _identity)
-
-
-def _load_compose(path: Path) -> dict:
-    # _ComposeLoader subclasses SafeLoader (only adds !reset/!override), so this
-    # is a safe load despite using yaml.load to pass a custom Loader.
-    return yaml.load(  # nosec B506
-        path.read_text(encoding="utf-8"), Loader=_ComposeLoader
-    )
-
-
-def _parse_env(path: Path) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        out[key.strip()] = value.strip()
-    return out
 
 
 # ── overlay shape ───────────────────────────────────────────────────────────

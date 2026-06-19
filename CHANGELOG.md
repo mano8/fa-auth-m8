@@ -109,6 +109,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `app_net`), so the vestigial `traefik.enable` labels on `auth_user_service` and
   `fastapi_full` were removed too. Public routes are unchanged. Dev examples keep
   the Docker provider.
+- **Socketless Traefik production path locked in** (plan item 2.2). The production
+  path (the dev base merged with `docker-compose.production.yml`, or
+  `production_dynamic_conf.yml` copied over `dynamic_conf.yml`) routes through the
+  Traefik **file provider only** and never mounts `/var/run/docker.sock` — backends
+  resolve over Docker DNS by container name, so no socket and no per-container
+  `traefik.*` discovery labels are required. The structural guarantee established by
+  item 0.3 is now codified by `tests/security/test_socketless_traefik.py` (no socket
+  mount on the production path, file-provider-only static config, no discovery
+  labels, and every file-provider router resolving to a defined container-DNS
+  backend) so a future edit cannot silently re-introduce the Docker provider. The
+  hardened-stack README production section documents the contract. The shared
+  compose-parsing helpers were factored into `tests/security/_compose.py`.
 
 ---
 
