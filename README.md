@@ -95,7 +95,7 @@ Six ready-to-run stacks are provided under [`examples/docker_compose/`](https://
 | [`rs256_m8`](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose/rs256_m8) | MariaDB | RS256 | `hybrid` | — | Asymmetric signing + JWKS |
 | [`metrics_m8`](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose/metrics_m8) | PostgreSQL 16 | HS256 | `stateful` | Prometheus + Grafana | Metrics dashboards |
 | [`hardened_m8`](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose/hardened_m8) | PostgreSQL 16 | RS256 | `stateful` | Prometheus + Grafana | Container hardening + Docker Hub image |
-| [`vault_m8`](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose/vault_m8) | PostgreSQL 16 | RS256 | `stateful` | Prometheus + Grafana | HashiCorp Vault + Docker Hub image |
+| [`vault_dev_m8`](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose/vault_dev_m8) | PostgreSQL 18 | RS256 | `stateful` | Prometheus + Grafana | HashiCorp Vault (dev mode) + Docker Hub image |
 
 **Start here →** [`quickstart_m8`](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose/quickstart_m8) for the fastest path to a running stack.
 
@@ -946,7 +946,7 @@ Enabled with `METRICS_ENABLED=true`. The metric prefix is derived from `API_PREF
 | auth | `{prefix}auth_api_key_lifecycle_total` | Counter | action: created \| revoked |
 | auth | `{prefix}auth_api_key_flush_duration_seconds` | Histogram | — |
 
-Alert rules for `metrics_m8` and `vault_m8` stacks (`prometheus/alerts.yml`):
+Alert rules for `metrics_m8` and `vault_dev_m8` stacks (`prometheus/alerts.yml`):
 
 - `ApiKeyBlockRatioHigh` — hits/checks > 10% over 5 min
 - `ApiKeyRateLimitInvariantViolation` — hits > checks × 1.1 (instrumentation sanity guard)

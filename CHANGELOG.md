@@ -15,6 +15,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Vault example renamed and constrained** (plan item 2.3) — `vault_m8` renamed to
+  `vault_dev_m8` to make the ephemeral, dev-mode-only nature explicit in the directory
+  name. Preflight now hard-fails when either `VAULT_DEV_TOKEN` is present in an env
+  file **or** a compose service uses the Vault `-dev` flag, both under
+  `ENVIRONMENT=production`. A new non-runnable `vault_prod_template/` directory provides
+  annotated templates for connecting the auth service to a production-grade Vault:
+  `vault/config/vault.hcl` (Raft storage, TLS enabled), `vault/policies/app-policy.hcl`
+  (read-only scoped policy), and `docker-compose.app.yml.template` (app token via Docker
+  secret file, no `VAULT_DEV_TOKEN`). All README files updated with the rename and
+  cross-references. Covered by `tests/security/test_vault_dev_constrained.py` (16 tests).
+
 - **Production overlay for `hardened_m8`** (plan item 2.1) — a thin
   `docker-compose.production.yml` applied on top of the dev base
   (`docker compose -f docker-compose.yml -f docker-compose.production.yml up`,
@@ -411,7 +422,7 @@ HS256 and permissive validation remain available as documented opt-outs. See the
 - **Docker Compose examples consolidated 10 → 6**, each serving a distinct audience:
   `quickstart_m8` (HS256 / stateful / MariaDB — start here), `postgres_m8`,
   `rs256_m8` (RS256 / hybrid), `metrics_m8` (Prometheus + Grafana),
-  `hardened_m8` (container hardening + Docker Hub image), `vault_m8` (HashiCorp Vault).
+  `hardened_m8` (container hardening + Docker Hub image), `vault_dev_m8` (HashiCorp Vault dev mode).
   Each stack ships a self-contained README with "choose this when" guidance and a full
   port/config reference.
 

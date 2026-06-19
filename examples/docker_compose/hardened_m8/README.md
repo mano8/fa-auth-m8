@@ -4,7 +4,7 @@
 
 `auth_user_service` runs from the published Docker Hub image (`tepochtli/fa-auth-m8:latest`). Secrets live in env files — no Vault required.
 
-**Choose this when:** you want production-grade container posture (read-only rootfs, dropped capabilities, resource limits) and observability, but don't need HashiCorp Vault. Use [vault_m8](../vault_m8/) when you also need secrets-manager injection.
+**Choose this when:** you want production-grade container posture (read-only rootfs, dropped capabilities, resource limits) and observability, but don't need HashiCorp Vault. Use [vault_dev_m8](../vault_dev_m8/) when you also need secrets-manager injection.
 
 ---
 

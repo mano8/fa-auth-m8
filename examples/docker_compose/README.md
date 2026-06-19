@@ -27,7 +27,7 @@ Six ready-to-run stacks, each targeting a distinct use case. Each runs the same 
 | [rs256_m8](rs256_m8/) | MariaDB | RS256 | `hybrid` | env file | — | — | Asymmetric signing + JWKS |
 | [metrics_m8](metrics_m8/) | PostgreSQL 18 | HS256 | `stateful` | env file | Prometheus + Grafana | — | Metrics dashboards |
 | [hardened_m8](hardened_m8/) | PostgreSQL 18 | RS256 | `stateful` | env file | Prometheus + Grafana | container + network | Hardened posture without Vault |
-| [vault_m8](vault_m8/) | PostgreSQL 18 | RS256 | `stateful` | **HashiCorp Vault** | Prometheus + Grafana | container + network | Hardened + secrets manager |
+| [vault_dev_m8](vault_dev_m8/) | PostgreSQL 18 | RS256 | `stateful` | **HashiCorp Vault** (dev mode) | Prometheus + Grafana | container + network | Vault injection pattern — dev/learning only |
 
 **Decision guide:**
 
@@ -36,7 +36,7 @@ Six ready-to-run stacks, each targeting a distinct use case. Each runs the same 
 - **Asymmetric signing / multiple consumers** → [rs256_m8](rs256_m8/) or [hardened_m8](hardened_m8/)
 - **Metrics and dashboards** → [metrics_m8](metrics_m8/)
 - **Container hardening + observability** → [hardened_m8](hardened_m8/) — Docker Hub image, read-only rootfs, network segmentation
-- **Secrets manager (Vault)** → [vault_m8](vault_m8/) — credentials never live in plain env files
+- **Secrets manager (Vault)** → [vault_dev_m8](vault_dev_m8/) — learn the VaultProvider injection pattern (dev mode); see `vault_prod_template/` for the production-Vault reference
 - **Stateless mode** → start from [quickstart_m8](quickstart_m8/) and set `TOKEN_MODE=stateless` in `auth.env`
 
 ---
@@ -61,7 +61,7 @@ auth_user_service :8000            fastapi_full :8000
         m8_db          redis_cache
    (MariaDB / PG)      (Redis 8.8)
 
-(metrics_m8, hardened_m8, and vault_m8 also include Prometheus + Grafana)
+(metrics_m8, hardened_m8, and vault_dev_m8 also include Prometheus + Grafana)
 ```
 
 Traefik is the single entry point. Both application services sit on an internal Docker network (`m8_app_network`) and are not directly reachable from the host.
@@ -211,9 +211,9 @@ Migrations run automatically every time the containers start. If you switch stac
 | `8080` | `127.0.0.1` | Traefik dashboard |
 | `3306` / `5432` | `127.0.0.1` | Database |
 | `6379` | `127.0.0.1` | Redis |
-| `8200` | `127.0.0.1` | HashiCorp Vault UI/API (`vault_m8` only) |
-| `9090` | `127.0.0.1` | Prometheus (`metrics_m8`, `hardened_m8`, `vault_m8`) |
-| `3000` | `127.0.0.1` | Grafana (`metrics_m8`, `hardened_m8`, `vault_m8`) |
+| `8200` | `127.0.0.1` | HashiCorp Vault UI/API (`vault_dev_m8` only) |
+| `9090` | `127.0.0.1` | Prometheus (`metrics_m8`, `hardened_m8`, `vault_dev_m8`) |
+| `3000` | `127.0.0.1` | Grafana (`metrics_m8`, `hardened_m8`, `vault_dev_m8`) |
 
 Port `9000` is the one you'll use most in development — all API requests go through it.
 

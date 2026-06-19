@@ -329,6 +329,28 @@ if [[ "${ENV_VALUES[VAULT_DEV_TOKEN]+set}" == "set" && "$production" == "true" ]
     add_error "${ENV_SOURCES[VAULT_DEV_TOKEN]}: VAULT_DEV_TOKEN is for dev-mode Vault and must not be present in production"
 fi
 
+if [[ "$production" == "true" ]]; then
+    while IFS= read -r compose_file; do
+        line_no=0
+        in_vault_service=false
+        while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+            line_no=$((line_no + 1))
+            trimmed="$(trim "$raw_line")"
+            # Detect a service named "vault" (service key at 2-space indent)
+            if [[ "$raw_line" =~ ^[[:space:]]{2}vault[[:space:]]*: ]]; then
+                in_vault_service=true
+            elif [[ "$raw_line" =~ ^[[:space:]]{2}[a-zA-Z] && ! "$raw_line" =~ ^[[:space:]]{2}vault[[:space:]]*: ]]; then
+                in_vault_service=false
+            fi
+            # Within the vault service, flag the -dev flag
+            if [[ "$in_vault_service" == "true" ]] && \
+               [[ "$trimmed" == *" -dev"* || "$trimmed" == "- -dev" || "$trimmed" == "\"-dev\"" || "$trimmed" == "'-dev'" ]]; then
+                add_error "${compose_file#./}:${line_no}: Vault is configured in dev mode (ephemeral, root token); dev-mode Vault must not be used in production"
+            fi
+        done < "$compose_file"
+    done < <(find . -maxdepth 2 -type f \( -name 'docker-compose.yml' -o -name 'docker-compose.*.yml' \) | sort)
+fi
+
 if [[ ${#warnings[@]} -gt 0 ]]; then
     echo "!! M8 security preflight warnings"
     for warning in "${warnings[@]}"; do
