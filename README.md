@@ -264,6 +264,55 @@ The example stacks are ready-to-copy templates. To use one as the base for a new
 - Update all `changethis` values in the env files.
 - Add your own microservices to `docker-compose.yml` on the same internal network.
 
+### 8. Going to production (`hardened_m8` overlay)
+
+`hardened_m8` ships a **thin production overlay** so the same stack serves both a
+safe dev/home-lab default *and* a hardened production posture — no second tree to
+drift, nothing dangerous default-on. The base `docker-compose.yml` is unchanged
+when the overlay is not applied; the overlay is what turns the production-only
+options on.
+
+```bash
+cd examples/docker_compose/hardened_m8
+cp .env.production.example .env
+cp auth.env.production.example auth.env.production
+cp api.env.production.example api.env.production
+# Fill in every `changethis`, set your real FQDNs, and provision real TLS certs
+# at ./traefik/certs/local.crt + local.key (the overlay never self-signs).
+bash init.sh
+docker compose -f docker-compose.yml -f docker-compose.production.yml up -d
+```
+
+> Requires Docker Compose **v2.24+** (the overlay uses the `!reset` / `!override`
+> merge tags).
+
+What the overlay changes vs. the dev default:
+
+| Area | Dev default | Production overlay |
+| ---- | ----------- | ------------------ |
+| Mode | `ENVIRONMENT=local`, `STRICT_PRODUCTION_MODE=false` | `production` + `STRICT_PRODUCTION_MODE=true` (config-health is fatal, not warn) |
+| Docs | `SET_DOCS=true` | off (`SET_DOCS=false`; opt back in only with `SERVE_DOCS_IN_PRODUCTION=true`) |
+| TLS certs | `cert-init` self-signs | `cert-init` is a fail-closed presence check for operator certs |
+| Published ports | app `:8000`, dashboard `:8080`, internal `:9000`, DB/Redis/Prometheus/Grafana on loopback | only `:80` (HTTP→HTTPS redirect) and `:443`; everything else Docker-network only |
+| Host rules | `Host(`localhost`)` | FQDN rules + app-layer `ALLOWED_HOSTS` |
+| Cookies | — | `SESSION_COOKIE_SECURE=true` |
+| Images | auth pinned, consumer builds locally | pinned (never `:latest`) |
+
+Startup **fails closed** under the overlay on placeholder/duplicate secrets,
+missing `ALLOWED_HOSTS`, missing `TOKEN_ISSUER`/`TOKEN_AUDIENCE`, localhost CORS
+origins, unsafe internal HTTP, or unsafe event-signing rollout. HSTS stays
+opt-in even in production (it is browser-persisted and hard to reverse).
+
+**Migrations.** The stack runs `alembic upgrade head` automatically on `up`
+(idempotent). For a single-node deployment this is kept as-is. For
+multi-replica / zero-downtime rollouts, run it as a one-shot **before** starting
+the app instead:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.production.yml \
+  run --rm auth_user_service alembic upgrade head
+```
+
 ---
 
 ## Docker Hub image

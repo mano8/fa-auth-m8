@@ -15,6 +15,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Production overlay for `hardened_m8`** (plan item 2.1) — a thin
+  `docker-compose.production.yml` applied on top of the dev base
+  (`docker compose -f docker-compose.yml -f docker-compose.production.yml up`,
+  Compose v2.24+ for the `!reset`/`!override` tags). One stack, two postures: the
+  dev/home-lab default is unchanged and nothing dangerous is default-on; the
+  overlay flips on production hardening — `ENVIRONMENT=production` +
+  `STRICT_PRODUCTION_MODE=true` via new `auth.env.production.example` /
+  `api.env.production.example` / `.env.production.example` (all secrets stay the
+  fail-closed `changethis` placeholder), docs off, `SESSION_COOKIE_SECURE=true`,
+  FQDN host rules (`traefik/production_dynamic_conf.yml`) backed by app-layer
+  `ALLOWED_HOSTS`, `cert-init` downgraded from a self-signed generator to a
+  fail-closed cert **presence check**, only `:80` (HTTP→HTTPS redirect) and
+  `:443` published (no host-published dashboard/internal `:9000`/DB/Redis/
+  Prometheus/Grafana ports, via `!reset []`), and pinned images. **Migration
+  decision:** auto-`alembic upgrade head` on `up` is kept for the single-node
+  overlay (idempotent + pinned images); a one-shot pre-start command is
+  documented for multi-replica/zero-downtime rollouts. Documented in the README
+  production section and locked by `tests/security/test_production_overlay.py`.
 - **Deployment security preflight** (`examples/docker_compose/shared/scripts/preflight-security.sh`)
   — a fail-closed gate run from `init-common.sh` before the crypto lifecycle. It
   scans a stack's env and compose files and blocks startup on leftover
