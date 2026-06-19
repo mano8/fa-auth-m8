@@ -15,6 +15,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Compose hardening-policy tests** (plan item 5.1) — static assertions that lock
+  in the `hardened_m8` container security contract:
+  (1) app services (`auth_user_service`, `fastapi_full`) carry the required
+  hardening flags (`cap_drop: ALL`, `no-new-privileges:true`, `read_only: true`,
+  `tmpfs: [/tmp, /run]`) in the dev base;
+  (2) data/observability services (`m8_db`, `redis_cache`, `prometheus`, `grafana`)
+  bind only to `127.0.0.1` in the dev compose (no all-interface exposure);
+  (3) both the dev (`dynamic_conf.yml`) and production (`production_dynamic_conf.yml`)
+  Traefik configs explicitly exclude `/user/private` and `/user/metrics` from the
+  public `auth-public-router` rule. Docker-socket absence, image-pin policy, and
+  production-overlay data-port-reset are not duplicated (covered by
+  `test_socketless_traefik.py`, `test_image_pins.py`, and `test_production_overlay.py`).
+  Covered by `tests/security/test_compose_policy.py` (16 tests). 754 tests, 100% cov,
+  ruff + mypy + bandit green.
+
 - **Image-pin policy enforced in hardened/production compose** (plan item 4.1) — bare
   `alpine` image (no version tag) replaced with `alpine:3.22` across all six compose
   example stacks (`hardened_m8`, `metrics_m8`, `postgres_m8`, `quickstart_m8`, `rs256_m8`,
