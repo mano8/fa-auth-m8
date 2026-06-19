@@ -15,6 +15,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Live exposure-matrix tests** (plan item 5.2) — `tests/live/test_compose_exposure_matrix.py`,
+  a topology-parameterized live suite that asserts the public/internal route-exposure
+  contract against a running compose stack. Table-driven allow/deny lists selected by
+  `EXPOSURE_TOPOLOGY={case_a|case_b}` (default `case_b`, matching the shipped `hardened_m8`
+  example that routes both `/user` and `/fastapi` publicly). Case A (UI-only/closed)
+  additionally asserts no backend microservice route (`/fastapi/*`) is public on its own.
+  Asserted in **both** topologies: `/user/private/*`, `/user/metrics` + `/fastapi/metrics`
+  (no Prometheus body), the *detailed* `/health/` body (shallow `{"status"}` may answer
+  publicly; infra detail is token-gated per 1.4), and infra surfaces (Traefik dashboard/API).
+  Internal positive/negative controls verify `/user/private/v1/jti-status` is reachable on
+  the loopback services entryPoint only with a valid `X-Internal-Token`. The module
+  auto-skips when the stack is unreachable and is excluded from the coverage gate
+  (`--ignore=tests/live`); 21 tests, ruff + mypy + bandit green; 754 unit/security tests,
+  100% cov.
+
 - **Compose hardening-policy tests** (plan item 5.1) — static assertions that lock
   in the `hardened_m8` container security contract:
   (1) app services (`auth_user_service`, `fastapi_full`) carry the required
