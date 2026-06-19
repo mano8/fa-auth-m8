@@ -86,6 +86,20 @@ Auth degradation settings in `auth.env`:
 | `RATE_LIMIT_FAILURE_MODE` | `fail_closed` | Redis outage → 503, not open |
 | `ACCESS_REVOCATION_FAILURE_MODE` | `fail_closed` | Redis outage → tokens not accepted |
 
+### Redis ACLs (least privilege)
+
+The `redis_cache` bootstrap provisions a **scoped per-service** ACL instead of the
+old open `appuser ~* +@all`:
+
+| User | Key access | Commands |
+| --- | --- | --- |
+| `auth` (the app, via `REDIS_USER=auth`) | only its own prefixes — `oauth_session:*`, `auth_code:*`, `login:*`, `refresh:*`, `exchange:*`, `rt:*`, `jwt:blacklist:*`, `rate:*`, `api_key:*` | `+@read +@write +@transaction +@connection +eval -@dangerous` — exactly the commands the service uses (string/hash ops, pipelined transactions, the refresh-rotation Lua `EVAL`); admin/dangerous denied |
+| `default` | none (`resetkeys`) | `-@all +@connection -@dangerous` — connection commands only, so the healthcheck `PING` still works; no data or admin access |
+
+A leaked auth Redis credential can therefore only touch the auth service's own
+keyspace, and the always-present `default` user can no longer read, write, or
+flush data. The contract is locked by `tests/security/test_redis_acl_policy.py`.
+
 ---
 
 ## Services

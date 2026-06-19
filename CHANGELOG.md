@@ -122,6 +122,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Per-service Redis ACLs (least privilege)** (plan item 6.x.1). Every compose
+  example's `redis_cache` bootstrap replaces the open `appuser ~* +@all` with a
+  scoped `auth` user — restricted to exactly the key prefixes the service writes
+  (`oauth_session:*`, `auth_code:*`, `login:*`, `refresh:*`, `exchange:*`, `rt:*`,
+  `jwt:blacklist:*`, `rate:*`, `api_key:*`) and only the command categories it
+  uses (`+@read +@write +@transaction +@connection +eval -@dangerous`; the
+  refresh-rotation Lua `EVAL` is the sole scripting grant). The always-present
+  `default` user is stripped to `resetkeys -@all +@connection -@dangerous`, so it
+  keeps the healthcheck `PING` but can no longer read, write, or flush any data.
+  `REDIS_USER` in the auth env examples moves from `appuser` to `auth`. A leaked
+  auth Redis credential is now confined to the auth service's own keyspace.
+  Locked by `tests/security/test_redis_acl_policy.py` (37 static assertions across
+  all six example stacks: no open ACL, scoped key patterns, category allow/deny,
+  default-user lockdown, env wiring, and a source-linked guard that fails if a new
+  Redis key prefix is added without extending the ACL).
 - **Runtime secrets can be sourced from mounted files** (plan item 6.1). The
   service `Settings` inherits the Docker/K8s `<FIELD>_FILE` convention from
   `auth_sdk_m8.core.config.CommonSettings` — no service-side code is added. For

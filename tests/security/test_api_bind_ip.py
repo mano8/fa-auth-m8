@@ -35,9 +35,13 @@ _DEV_STACKS_WITH_9000 = [
     pytest.param(STACK / "docker-compose.yml", id="hardened_m8"),
     pytest.param(COMPOSE_DIR / "metrics_m8" / "docker-compose.yml", id="metrics_m8"),
     pytest.param(COMPOSE_DIR / "postgres_m8" / "docker-compose.yml", id="postgres_m8"),
-    pytest.param(COMPOSE_DIR / "quickstart_m8" / "docker-compose.yml", id="quickstart_m8"),
+    pytest.param(
+        COMPOSE_DIR / "quickstart_m8" / "docker-compose.yml", id="quickstart_m8"
+    ),
     pytest.param(COMPOSE_DIR / "rs256_m8" / "docker-compose.yml", id="rs256_m8"),
-    pytest.param(COMPOSE_DIR / "vault_dev_m8" / "docker-compose.yml", id="vault_dev_m8"),
+    pytest.param(
+        COMPOSE_DIR / "vault_dev_m8" / "docker-compose.yml", id="vault_dev_m8"
+    ),
 ]
 
 # All *.env.example files across every compose stack
