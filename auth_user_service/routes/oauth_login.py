@@ -85,6 +85,13 @@ def _validate_redirect_target(redirect_target: str) -> None:
         raise HTTPException(
             status_code=400, detail="redirect_target scheme not allowed."
         )
+    environment = getattr(settings, "ENVIRONMENT", "local")
+    if not isinstance(environment, str):
+        environment = "local"
+    strict_raw = getattr(settings, "STRICT_PRODUCTION_MODE", False)
+    strict = strict_raw is True or strict_raw == "true"
+    _is_prod = environment in {"production", "staging"} or strict
+
     if scheme in _WEB_SCHEMES:
         if not settings.OAUTH_ALLOWED_REDIRECT_PREFIXES:
             raise HTTPException(
@@ -98,14 +105,20 @@ def _validate_redirect_target(redirect_target: str) -> None:
                 status_code=400,
                 detail="http redirect targets are limited to localhost.",
             )
-        environment = getattr(settings, "ENVIRONMENT", "local")
-        if not isinstance(environment, str):
-            environment = "local"
-        if scheme == "http://" and environment in {"production", "staging"}:
+        if scheme == "http://" and _is_prod:
             raise HTTPException(
                 status_code=400,
                 detail="http redirect targets are not allowed in production.",
             )
+    _ext_unpinned = scheme == "chrome-extension://" and not settings.OAUTH_ALLOWED_REDIRECT_PREFIXES
+    if _ext_unpinned and _is_prod:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "chrome-extension redirect targets require OAUTH_ALLOWED_REDIRECT_PREFIXES "
+                "in production (set exact extension IDs to prevent open redirect)."
+            ),
+        )
     if settings.OAUTH_ALLOWED_REDIRECT_PREFIXES and not _uri_prefix_match_any(
         redirect_target, settings.OAUTH_ALLOWED_REDIRECT_PREFIXES
     ):

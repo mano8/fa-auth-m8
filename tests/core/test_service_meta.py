@@ -55,7 +55,11 @@ def test_meta_route_under_api_prefix() -> None:
     assert resp.headers["Cache-Control"] == "public, max-age=300"
 
 
-def test_ping_route_prefix_independent() -> None:
-    resp = _client().get("/ping")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+def test_ping_route_at_api_prefix() -> None:
+    """Ping is mounted at {prefix}/ping so it stays reachable behind a prefix-routing proxy.
+    Bare /ping 404s — this is the auth-sdk 1.5.0 fix that prevents the old root mount from
+    leaking through Traefik's PathPrefix filter."""
+    client = _client()
+    assert client.get("/user/ping").status_code == 200
+    assert client.get("/user/ping").json() == {"status": "ok"}
+    assert client.get("/ping").status_code == 404
