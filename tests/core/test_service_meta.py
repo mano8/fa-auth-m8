@@ -55,11 +55,23 @@ def test_meta_route_under_api_prefix() -> None:
     assert resp.headers["Cache-Control"] == "public, max-age=300"
 
 
-def test_ping_route_at_api_prefix() -> None:
-    """Ping is mounted at {prefix}/ping so it stays reachable behind a prefix-routing proxy.
-    Bare /ping 404s — this is the auth-sdk 1.5.0 fix that prevents the old root mount from
-    leaking through Traefik's PathPrefix filter."""
-    client = _client()
+def test_ping_routes_dual_mounted() -> None:
+    """auth-sdk 1.5.0 dual-mounts liveness: a root ``/ping`` for direct container/
+    sidecar probes plus a ``{prefix}/ping`` copy so it also stays reachable behind a
+    prefix-routing proxy. Both return the static ok body; only the root ``/ping`` is
+    advertised in the OpenAPI schema (the prefixed copy is hidden)."""
+    app = FastAPI()
+    mount_service_meta(app, build_service_meta(), prefix="/user")
+    client = TestClient(app)
+
     assert client.get("/user/ping").status_code == 200
     assert client.get("/user/ping").json() == {"status": "ok"}
-    assert client.get("/ping").status_code == 404
+    assert client.get("/ping").status_code == 200
+    assert client.get("/ping").json() == {"status": "ok"}
+
+    ping_schema = {
+        route.path: route.include_in_schema
+        for route in app.routes
+        if getattr(route, "path", "").endswith("/ping")
+    }
+    assert ping_schema == {"/ping": True, "/user/ping": False}
