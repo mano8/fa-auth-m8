@@ -28,16 +28,37 @@ done
 
 echo "==> M8 init: $(basename "$(pwd)")"
 
+# --- Deployment security preflight (advisory — never blocks compose up) ---
+# Shells out to the security-tests-m8 Python scanner.  The scanner's non-zero
+# exit is captured and reported; init always proceeds regardless.
+_preflight_rc=0
+if command -v security-tests-m8 &>/dev/null; then
+    security-tests-m8 preflight --deployment-root "$(pwd)" || _preflight_rc=$?
+    if [[ $_preflight_rc -ne 0 ]]; then
+        echo ""
+        echo "NOTE: preflight found issues (see above) — fix all ERROR findings before production deployment."
+        echo "      init will proceed regardless."
+        echo ""
+    fi
+else
+    echo "NOTE: security-tests-m8 not installed — skipping deployment preflight."
+    echo "      Install: pip install security-tests-m8"
+fi
+
 # --- Bootstrap missing env files from .example counterparts ---
+# Match every *.env.example in the example dir so each stack gets the env files
+# it actually ships.  dotglob picks up the leading-dot ".env.example"; nullglob
+# keeps the loop from running on a literal pattern when none exist.
 _copied=()
-for tmpl in .env.example auth.env.example api.env.example; do
+shopt -s nullglob dotglob
+for tmpl in *.env.example; do
     target="${tmpl%.example}"
-    if [[ -f "$tmpl" ]] && [[ ! -f "$target" ]]; then
+    if [[ ! -f "$target" ]]; then
         cp "$tmpl" "$target"
-        chmod 600 "$target"
         _copied+=("$target")
     fi
 done
+shopt -u nullglob dotglob
 if [[ ${#_copied[@]} -gt 0 ]]; then
     echo ""
     echo "NOTE: copied example env files — replace every 'changethis' before 'docker compose up':"
@@ -92,9 +113,6 @@ done
 if [[ -d "./db_data" ]]; then
     echo "NOTE: db_data/ exists — init-db.sh will NOT re-run (reset with: bash init.sh --reset-db)"
 fi
-
-# --- Deployment security preflight ---
-bash "${COMMON_DIR}/preflight-security.sh" "."
 
 # --- Crypto lifecycle ---
 run_init() {
