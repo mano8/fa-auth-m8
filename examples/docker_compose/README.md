@@ -221,19 +221,28 @@ Port `9000` is the one you'll use most in development — all API requests go th
 
 ## Live testing
 
-The repo includes a modular live test suite in `tests/live/` that runs against any running stack. Tests are automatically skipped when the running stack algorithm or token mode does not match.
+Every stack ships a `test.env.example` wired for [`security-tests-m8`](https://github.com/mano8/security-tests-m8) — a reusable live security suite that attacks the *running* stack (auth bypass, token forgery, `alg=none`, JWKS/algorithm confusion, privilege escalation, OWASP API Top 10). These flaws only surface end-to-end against a fully wired deployment, not in unit tests. Run it after `docker compose up` as an acceptance gate, and after any auth/token/network/image change.
+
+**Recommended — CLI mode** (excludes destructive tests by default):
 
 ```sh
-# From the repo root — run against any stack
-pytest -m live --no-cov
+pip install --upgrade security-tests-m8
 
-# Target specific algorithm or mode
-pytest -m live_asymmetric --no-cov    # RS256 / ES256 stacks
-pytest -m live_hs256 --no-cov         # HS256 stacks
-pytest -m live_stateful --no-cov      # TOKEN_MODE=stateful
-pytest -m live_hybrid --no-cov        # TOKEN_MODE=hybrid
-pytest -m live_stateless --no-cov     # TOKEN_MODE=stateless
+cd <stack>/                  # e.g. hardened_m8
+cp test.env.example test.env
+# Edit test.env: point LIVE_TEST_ADMIN_EMAIL / LIVE_TEST_ADMIN_PASSWORD at a
+# DEDICATED test-only superuser — it must already exist, and must NOT be the
+# bootstrap FIRST_SUPERUSER (preflight refuses that). Fill or remove the opt-in
+# secret lines; never leave 'changethis' in test.env.
+
+security-tests-m8 preflight --deployment-root .
+security-tests-m8 run --env-file test.env
+# Full mutation-heavy run: add --include-destructive
 ```
+
+The suite auto-detects the stack's algorithm and token mode and skips checks that don't apply, so the same workflow covers every stack here. **Clean up afterward:** the suite does not delete the dedicated test superuser (or the `redteam_*` users it creates) — remove or disable them after a run on any shared or long-lived stack.
+
+**Advanced — pytest mode.** For local marker selection, custom tests, or suite extension, use [`shared_live_tests/`](shared_live_tests/), which also documents the full rationale: why a dedicated superuser, when to run, and cleanup.
 
 For a manual smoke test, check the health endpoint after `docker compose up`:
 

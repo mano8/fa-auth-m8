@@ -622,14 +622,20 @@ bash init.sh --reset-db
 
 ## Live testing
 
-Run the live test suite against this stack (requires the stack to be up):
+Validate this stack's security posture with the [`security-tests-m8`](https://github.com/mano8/security-tests-m8) live suite (requires the stack to be up). It attacks the running stack — auth bypass, token forgery, JWKS/algorithm confusion, privilege escalation, OWASP API risks — flaws that only surface against a live deployment:
 
 ```sh
-# From the repo root
-pytest -m live_asymmetric --no-cov   # RS256/ES256-specific attacks
-pytest -m live_stateful --no-cov     # Token revocation guarantees
-pytest -m live_security --no-cov     # Universal attack categories (A–M)
+pip install --upgrade security-tests-m8
+
+cp test.env.example test.env
+# Edit test.env: set LIVE_TEST_ADMIN_EMAIL / LIVE_TEST_ADMIN_PASSWORD to a
+# DEDICATED test-only superuser (must already exist; never FIRST_SUPERUSER).
+
+security-tests-m8 preflight --deployment-root .
+security-tests-m8 run --env-file test.env
 ```
+
+The suite auto-skips checks that don't apply to this stack. Delete or disable the dedicated test superuser when you're done — the suite does not remove it. See [shared_live_tests/](../shared_live_tests/) for the full rationale (why a dedicated superuser, when to run, cleanup) and the advanced pytest mode.
 
 Manual smoke test:
 
