@@ -69,9 +69,12 @@ def test_ping_routes_dual_mounted() -> None:
     assert client.get("/ping").status_code == 200
     assert client.get("/ping").json() == {"status": "ok"}
 
-    ping_schema = {
-        route.path: route.include_in_schema
-        for route in app.routes
-        if getattr(route, "path", "").endswith("/ping")
-    }
-    assert ping_schema == {"/ping": True, "/user/ping": False}
+    # Only the root ``/ping`` is advertised in the OpenAPI schema; the prefixed
+    # ``/user/ping`` copy is hidden (``include_in_schema=False``) to avoid a
+    # duplicate operation. Asserted via the public OpenAPI schema rather than the
+    # internal ``app.routes`` list so it stays robust across FastAPI's
+    # ``include_router`` representation (0.137+ nests included routers instead of
+    # flattening their routes onto the parent app).
+    schema_paths = app.openapi()["paths"]
+    assert "/ping" in schema_paths
+    assert "/user/ping" not in schema_paths
