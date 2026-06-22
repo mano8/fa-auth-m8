@@ -81,9 +81,14 @@ cd /workspace/fa-auth-m8/examples/docker_compose/hardened_m8
 cp .env.example .env
 cp auth.env.example auth.env
 cp api.env.example api.env
+cp test.env.example test.env   # live-test runner config (edit before running tests)
 bash init.sh
 docker compose up -d
 ```
+
+`test.env` is not needed to boot the stack — it configures the `security-tests-m8`
+run below. Copy it now so everything is in place, then edit it (dedicated test
+superuser, opt-in secrets) before you run the suite.
 
 ### Dedicated test superuser
 
