@@ -110,7 +110,9 @@ def _validate_redirect_target(redirect_target: str) -> None:
                 status_code=400,
                 detail="http redirect targets are not allowed in production.",
             )
-    _ext_unpinned = scheme == "chrome-extension://" and not settings.OAUTH_ALLOWED_REDIRECT_PREFIXES
+    _ext_unpinned = (
+        scheme == "chrome-extension://" and not settings.OAUTH_ALLOWED_REDIRECT_PREFIXES
+    )
     if _ext_unpinned and _is_prod:
         raise HTTPException(
             status_code=400,

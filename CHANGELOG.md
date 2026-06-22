@@ -123,6 +123,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `auth_user_service/requirements_base.txt`, aligning the issuer with the rest
   of the fleet (`fastapi-m8` pins the same range) and capping below the breaking
   `2.0.0` single-mount `/ping` change.
+- Pinned the example consumers to `fastapi-m8>=2.1.0,<3.0.0` (was `>=2.0.0`) in
+  `examples/fastapi_full/requirements_base.txt` and
+  `examples/fastapi_minimal/requirements.txt`. `fastapi-m8` 2.0.0 depends on
+  `auth-sdk-m8>=1.4.0`, which lets a shared-env install downgrade the SDK below
+  1.5.0 and lose the dual-mounted `/ping`; 2.1.0 depends on
+  `auth-sdk-m8>=1.5.0,<2.0.0`, keeping the SDK aligned.
 - Grafana admin credentials moved out of the committed
   `grafana/config.monitoring` into a gitignored `grafana.env` loaded via
   `env_file`. Pinned the `fa-auth-m8` image to `0.9.9` (was `:latest`) in the
