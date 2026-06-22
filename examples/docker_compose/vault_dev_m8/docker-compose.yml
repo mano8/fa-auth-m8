@@ -186,7 +186,7 @@ services:
     # Published image — no local build required.
     # For production, pin to a specific release instead of latest:
     #   image: tepochtli/fa-auth-m8:0.9.0
-    image: tepochtli/fa-auth-m8:0.9.8
+    image: tepochtli/fa-auth-m8:0.9.9
     env_file:
       - ./auth.env
     environment:

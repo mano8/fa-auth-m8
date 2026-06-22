@@ -75,6 +75,10 @@ PRIVATE_API_SECRET=changethis
 #METRICS_ENABLED=false
 # Comma-separated groups or "all": traffic | performance | reliability | health
 #METRICS_GROUPS=all
+# Optional static scoped scrape credential for {API_PREFIX}/metrics. Leave unset
+# to keep metrics internal-only (the network boundary is the control). When set,
+# scrapers must send `Authorization: Bearer <credential>` (constant-time match).
+#METRICS_SCRAPE_CREDENTIAL=changethis
 
 # ── Response security headers (auth-sdk-m8 >= 1.2.1, three tiers) ────────────────
 # Applied by fastapi-m8 create_app. Tier 1 (X-Content-Type-Options, X-Frame-Options)

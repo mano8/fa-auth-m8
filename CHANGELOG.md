@@ -11,7 +11,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [0.9.9] — 2026-06-22 · Security remediation: hardened compose, app-layer guards, Redis ACLs
+
+> **Requires `auth-sdk-m8 >= 1.5.0` (and `< 2.0.0`)** — pin bumped in
+> `auth_user_service/requirements_base.txt`. 1.5.0 dual-mounts the liveness
+> `/ping` route (a root `/ping` for direct container/sidecar probes plus a hidden
+> `{prefix}/ping` copy that stays reachable behind a prefix-routing proxy); the
+> 2.0.0 line is a breaking single-mount change and is intentionally excluded.
 
 ### Added
 
@@ -54,7 +60,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   images) and does not use the mutable `:latest` tag. Services using `build:` are
   excluded. All previously pinned third-party images (`traefik:v3.7.5`,
   `postgres:18.4-alpine`, `redis:8.8.0-alpine`, `ubuntu/prometheus:3.11-26.04_stable`,
-  `grafana/grafana:13.1.0-25530058790`, `tepochtli/fa-auth-m8:0.9.8`) continue to pass
+  `grafana/grafana:13.1.0-25530058790`, `tepochtli/fa-auth-m8:0.9.9`) continue to pass
   the new assertions. 717 tests, 100% cov, ruff + mypy + bandit green.
 
 - **Vault example renamed and constrained** (plan item 2.3) — `vault_m8` renamed to
@@ -108,9 +114,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Bumped the `auth-sdk-m8` dependency to `>=1.5.0,<2.0.0` (was `>=1.4.0`) in
+  `auth_user_service/requirements_base.txt`, aligning the issuer with the rest
+  of the fleet (`fastapi-m8` pins the same range) and capping below the breaking
+  `2.0.0` single-mount `/ping` change.
 - Grafana admin credentials moved out of the committed
   `grafana/config.monitoring` into a gitignored `grafana.env` loaded via
-  `env_file`. Pinned the `fa-auth-m8` image to `0.9.8` (was `:latest`) in the
+  `env_file`. Pinned the `fa-auth-m8` image to `0.9.9` (was `:latest`) in the
   hardened and vault example stacks.
 - Lowered the `redis` requirement floor to `>=5.3.1` to match the tested
   runtime; no security advisory requires the 8.x line.
@@ -122,6 +132,32 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **OAuth redirect-prefix pinning required in production** (plan item 8.2). When
+  `ENVIRONMENT` is `production`/`staging` or `STRICT_PRODUCTION_MODE=true`, the
+  OAuth login flow now rejects `chrome-extension://` redirect targets at request
+  time (`400`) unless `OAUTH_ALLOWED_REDIRECT_PREFIXES` pins the trusted callback
+  origins. Without pinning, any installed extension could receive issued OAuth
+  tokens (open public-client risk); the gate makes pinning mandatory in
+  prod/strict and advisory in local/dev. `_validate_redirect_target` gained a
+  hardened prod/strict detection guard. `hardened_m8/auth.env.production.example`
+  documents the requirement with `OAUTH_ALLOWED_REDIRECT_SCHEMES` /
+  `OAUTH_ALLOWED_REDIRECT_PREFIXES` placeholders. Covered by
+  `tests/security/test_oauth_redirect_policy.py` (7 tests).
+- **App-layer Host-header validation** (plan item 5.3). `auth_user_service/main.py`
+  now wires Starlette's `TrustedHostMiddleware` whenever `ALLOWED_HOSTS` is set
+  (mirroring the fastapi-m8 consumer pattern), so a host allowlist is enforced at
+  the app layer and survives a reverse-proxy swap or misconfiguration. Non-prod
+  envs auto-inject `testserver` for test clients; production and
+  `STRICT_PRODUCTION_MODE` require every FQDN to be listed explicitly. Covered by
+  `tests/security/test_host_header_routing.py` (12 tests).
+- **`API_BIND_IP=0.0.0.0` production gate codified** (plan item 5.4). Static
+  compose-policy tests assert every dev-base stack binds port 9000 via
+  `${API_BIND_IP:-127.0.0.1}` (never a hardcoded `0.0.0.0`), the production
+  overlay drops port 9000 from published ports entirely, and no `*.env.example`
+  sets `API_BIND_IP=0.0.0.0`. A preflight test pins the break-glass path
+  (`ALLOW_PUBLIC_API_BIND=true` permits a public bind in production; rejection
+  without it was already covered). `tests/security/test_api_bind_ip.py` (plus a
+  preflight case in `tests/security/test_preflight_security.py`).
 - **Per-service Redis ACLs (least privilege)** (plan item 6.x.1). Every compose
   example's `redis_cache` bootstrap replaces the open `appuser ~* +@all` with a
   scoped `auth` user — restricted to exactly the key prefixes the service writes

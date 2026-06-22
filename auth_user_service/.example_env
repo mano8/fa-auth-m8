@@ -122,6 +122,10 @@ TRUSTED_PROXY_COUNT=0
 # ── Observability ──────────────────────────────────────────────────────────────
 METRICS_ENABLED=false
 METRICS_GROUPS=all
+# Optional static scoped scrape credential for {API_PREFIX}/metrics. Leave unset
+# to keep metrics internal-only (the network boundary is the control). When set,
+# scrapers must send `Authorization: Bearer <credential>` (constant-time match).
+#METRICS_SCRAPE_CREDENTIAL=changethis
 
 # ── Google OAuth (optional — uncomment to enable) ─────────────────────────────
 # GOOGLE_CLIENT_ID="changethis"
