@@ -1,0 +1,106 @@
+# docker-compose.production.yml — thin PRODUCTION overlay for hardened_m8.
+#
+# Apply ON TOP OF the base stack — never on its own:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.production.yml up -d
+#
+# Requires Docker Compose v2.24+ for the `!reset` / `!override` merge tags.
+#
+# DESIGN: one stack, two postures. The base docker-compose.yml stays the safe,
+# reversible dev/home-lab default; this overlay flips it to a hardened production
+# posture WITHOUT forking a second tree that drifts. Nothing dangerous is ever
+# default-on — the overlay is what turns the production-only options on.
+#
+# What this overlay changes vs. the dev default (which is unchanged when the
+# overlay is NOT applied):
+#   - ENVIRONMENT=production + STRICT_PRODUCTION_MODE=true via the *.production
+#     env files (mounted in place of the dev env files). The app then fails
+#     closed at boot on placeholder/duplicate secrets, missing ALLOWED_HOSTS,
+#     missing TOKEN_ISSUER/TOKEN_AUDIENCE, localhost CORS, unsafe internal http,
+#     and unsafe event-signing rollout (auth-sdk-m8 check_config_health).
+#   - No self-signed cert generator: cert-init becomes a fail-closed PRESENCE
+#     CHECK for real, operator-provisioned certs — it never mints a cert.
+#   - No public plaintext app port and no host-published dashboard: only :80
+#     (HTTP→HTTPS redirect) and :443 are published. The internal :9000
+#     service entryPoint is reachable only on the Docker network (Case A).
+#   - No host-published DB / Redis / Prometheus / Grafana ports (`!reset []`) —
+#     reachable only on the Docker network.
+#   - FQDN host rules via traefik/production_dynamic_conf.yml + app-layer
+#     ALLOWED_HOSTS (set in auth.env.production / api.env.production).
+#   - Pinned images (auth image already pinned in base).
+#
+# ── MIGRATIONS (decision) ──────────────────────────────────────────────────────
+# The hardened stack applies Alembic migrations automatically on `up` (the app
+# entrypoint runs `alembic upgrade head`, which is idempotent — a no-op when the
+# schema is already at head). DECISION for this single-node production overlay:
+# auto-migrate-on-`up` is KEPT, because images are pinned (so the migration set
+# is deterministic per release) and the upgrade is idempotent. For multi-replica
+# / zero-downtime rollouts, gate it instead to a one-shot run BEFORE bringing the
+# app up, e.g.:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.production.yml \
+#     run --rm auth_user_service alembic upgrade head
+#
+# then start the app normally. See the production section of the stack README.
+
+services:
+  cert-init:
+    # Production never generates self-signed certs. Replace the generator with a
+    # fail-closed presence check for operator-provisioned (real-CA) certs.
+    command:
+      - sh
+      - -c
+      - |
+        if [ -f /certs/local.crt ] && [ -f /certs/local.key ]; then
+          echo "==> cert-init: operator-provisioned TLS certs present"; exit 0
+        fi
+        echo "ERROR: the production overlay requires real TLS certificates at"
+        echo "       ./traefik/certs/local.crt and ./traefik/certs/local.key."
+        echo "       The production stack never generates self-signed certs."
+        exit 1
+
+  traefik:
+    # Publish only :80 (HTTP→HTTPS redirect) and :443. Drop the host-published
+    # dashboard (:8080) and the host-published internal service entryPoint
+    # (:9000) — the latter stays reachable only on the Docker network.
+    ports: !override
+      - "80:80"            # web entryPoint: permanent redirect to websecure only
+      - "443:443/tcp"
+      - "443:443/udp"      # HTTP/3 / QUIC
+    # Swap the dev dynamic config (Host(`localhost`)) for FQDN host rules.
+    volumes: !override
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/production_dynamic_conf.yml:/etc/traefik/dynamic_conf.yml:ro
+      - ./traefik/certs:/etc/traefik/certs:ro
+
+  # Data + observability: no host-published ports in production — Docker network only.
+  m8_db:
+    ports: !reset []
+
+  redis_cache:
+    ports: !reset []
+
+  prometheus:
+    ports: !reset []
+
+  grafana:
+    ports: !reset []
+
+  auth_user_service:
+    image: tepochtli/fa-auth-m8:0.9.9   # pinned release (never :latest)
+    env_file: !override
+      - ./auth.env.production
+    volumes: !override
+      - ./auth.env.production:/opt/auth_user_service/.env:ro
+      - ./shared_migrations:/opt/shared_migrations
+      - ./keys:/opt/keys:ro
+
+  fastapi_full:
+    # The bundled example consumer. A real deployment replaces this with its own
+    # pinned, published consumer image; here it keeps building from local context.
+    env_file: !override
+      - ./api.env.production
+    volumes: !override
+      - ../../fastapi_full:/opt/fastapi_full
+      - ./api.env.production:/opt/fastapi_full/.env:ro
+      - ./shared_migrations:/opt/shared_migrations

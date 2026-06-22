@@ -39,10 +39,10 @@ def test_build_service_meta_values() -> None:
 def test_service_version_in_contract_range() -> None:
     """The package version must stay inside the advertised compatibility range."""
     assert SERVICE_NAME == "fa-auth-m8"
-    # Lower bound matches CONTRACT_RANGE: /meta + /ping ship from 0.9.8.
-    assert Version(__version__) >= Version("0.9.8")
+    # Lower bound matches CONTRACT_RANGE: hardened security baseline is 0.9.9.
+    assert Version(__version__) >= Version("0.9.9")
     assert Version(__version__) < Version("0.10.0")
-    assert CONTRACT_RANGE == ">=0.9.8 <0.10.0"
+    assert CONTRACT_RANGE == ">=0.9.9 <0.10.0"
 
 
 # ── Mounted routes ────────────────────────────────────────────────────────────
@@ -55,7 +55,26 @@ def test_meta_route_under_api_prefix() -> None:
     assert resp.headers["Cache-Control"] == "public, max-age=300"
 
 
-def test_ping_route_prefix_independent() -> None:
-    resp = _client().get("/ping")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+def test_ping_routes_dual_mounted() -> None:
+    """auth-sdk 1.5.0 dual-mounts liveness: a root ``/ping`` for direct container/
+    sidecar probes plus a ``{prefix}/ping`` copy so it also stays reachable behind a
+    prefix-routing proxy. Both return the static ok body; only the root ``/ping`` is
+    advertised in the OpenAPI schema (the prefixed copy is hidden)."""
+    app = FastAPI()
+    mount_service_meta(app, build_service_meta(), prefix="/user")
+    client = TestClient(app)
+
+    assert client.get("/user/ping").status_code == 200
+    assert client.get("/user/ping").json() == {"status": "ok"}
+    assert client.get("/ping").status_code == 200
+    assert client.get("/ping").json() == {"status": "ok"}
+
+    # Only the root ``/ping`` is advertised in the OpenAPI schema; the prefixed
+    # ``/user/ping`` copy is hidden (``include_in_schema=False``) to avoid a
+    # duplicate operation. Asserted via the public OpenAPI schema rather than the
+    # internal ``app.routes`` list so it stays robust across FastAPI's
+    # ``include_router`` representation (0.137+ nests included routers instead of
+    # flattening their routes onto the parent app).
+    schema_paths = app.openapi()["paths"]
+    assert "/ping" in schema_paths
+    assert "/user/ping" not in schema_paths

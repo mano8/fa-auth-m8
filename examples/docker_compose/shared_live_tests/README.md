@@ -25,6 +25,29 @@ The live tests require a dedicated test-only superuser. Do not use `FIRST_SUPERU
 
 CLI mode is recommended for normal users and excludes destructive tests by default. This local pytest example is for custom tests, extra marker selection, and local suite extension. The unknown-route information-disclosure test now lives in the package full suite and no longer needs to be copied into this folder.
 
+## Why run live security tests
+
+Unit and contract tests verify code in isolation. They cannot prove that a *running, fully wired* stack — auth issuer, downstream consumers, Traefik, Redis, JWT keys — actually rejects a forged token, an `alg=none` JWT, an HS256 token signed with the public key, an unauthenticated call to a protected route, or a privilege-escalation attempt. Those failures only surface end-to-end. `security-tests-m8` drives the live HTTP surface the way an attacker would and asserts the stack fails closed. It covers the OWASP API Top 10 categories plus M8-specific JWT/JWKS/cross-service checks.
+
+**When to run it:**
+
+- After first bringing a stack up (`docker compose up -d`), as an acceptance gate.
+- After any change to auth/token configuration (`TOKEN_MODE`, algorithm, issuer/audience, key rotation).
+- After changing network exposure, Traefik routing, or upgrading a service image.
+- In CI against an ephemeral stack, before promoting a build.
+
+## Two ways to run it
+
+| | CLI mode (recommended) | This pytest example |
+| --- | --- | --- |
+| Who | Operators / normal users | Authors of custom or extra tests |
+| Where | From the **compose stack directory** | From **this folder** |
+| Config | `test.env` in the stack dir | `.env` in this folder |
+| Command | `security-tests-m8 run --env-file test.env` | `pytest` |
+| Destructive tests | Excluded unless `--include-destructive` | Selected via markers |
+
+CLI mode needs nothing from this folder — you install the package and point it at a stack's `test.env`. Use **this folder** only when you want to add local tests, select specific markers, or extend the suite. Both share the same underlying package, so coverage is identical for the checks that apply to your stack.
+
 ## What It Runs
 
 The example includes:
@@ -58,26 +81,37 @@ cd /workspace/fa-auth-m8/examples/docker_compose/hardened_m8
 cp .env.example .env
 cp auth.env.example auth.env
 cp api.env.example api.env
+cp test.env.example test.env   # live-test runner config (edit before running tests)
 bash init.sh
 docker compose up -d
 ```
 
-Before running the live tests, create a dedicated superuser for the test suite. Put that account in the live-test env file you use for the run:
+`test.env` is not needed to boot the stack — it configures the `security-tests-m8`
+run below. Copy it now so everything is in place, then edit it (dedicated test
+superuser, opt-in secrets) before you run the suite.
+
+### Dedicated test superuser
+
+The suite needs superuser credentials because it exercises admin-only paths — creating users, listing accounts, deleting other users, issuing API keys. You must give it a **dedicated, test-only superuser**, not your real admin and not the stack's bootstrap `FIRST_SUPERUSER`:
+
+- The preflight **refuses** to run as `FIRST_SUPERUSER` (`LIVE_TEST_FORBID_BOOTSTRAP_SUPERUSER=true`). Reusing the bootstrap account risks locking out or corrupting the identity your stack depends on.
+- During a run the suite also creates throwaway `redteam_*@redteam-test.com` regular users to attempt privilege escalation.
+
+Create the dedicated account first (it must already exist in the auth stack and have superuser permissions), then point the live-test env file at it:
 
 ```ini
 LIVE_TEST_ADMIN_EMAIL=tester@example.com
 LIVE_TEST_ADMIN_PASSWORD=change-this-test-password
 ```
 
-The account must already exist in the auth stack and must have superuser permissions.
+**Clean up afterward.** The suite does **not** delete the dedicated superuser or the `redteam_*` users it creates — leaving standing superuser credentials and test accounts on a stack is itself a security risk. After a run, delete or disable the dedicated test superuser (and prune the `redteam_*` accounts), especially on any shared or long-lived deployment. On a throwaway/CI stack you tear down immediately, this is moot.
 
 ## Run With The Recommended CLI Mode
 
-Install `security-tests-m8` in editable mode:
+Install (or update to the latest release of) `security-tests-m8`:
 
 ```bash
-cd /workspace/security-tests-m8
-pip install -e .
+pip install --upgrade security-tests-m8
 ```
 
 From the hardened stack directory, keep stack configuration in `.env`, `auth.env`, `api.env`, `media.env`, and `grafana/.env`, then create a dedicated `test.env` for the live-test runner values:

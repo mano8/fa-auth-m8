@@ -2,9 +2,9 @@
 
 **PostgreSQL 18** + **RS256 asymmetric token signing** + **stateful** token mode + **Prometheus & Grafana** observability + **container hardening** + **network segmentation**.
 
-`auth_user_service` runs from the published Docker Hub image (`tepochtli/fa-auth-m8:latest`). Secrets live in env files — no Vault required.
+`auth_user_service` runs from the published Docker Hub image (`tepochtli/fa-auth-m8:0.9.9`). Secrets live in env files — no Vault required.
 
-**Choose this when:** you want production-grade container posture (read-only rootfs, dropped capabilities, resource limits) and observability, but don't need HashiCorp Vault. Use [vault_m8](../vault_m8/) when you also need secrets-manager injection.
+**Choose this when:** you want production-grade container posture (read-only rootfs, dropped capabilities, resource limits) and observability, but don't need HashiCorp Vault. Use [vault_dev_m8](../vault_dev_m8/) when you also need secrets-manager injection.
 
 ---
 
@@ -71,6 +71,13 @@ Applied to `auth_user_service` and `fastapi_full`:
 | `PYTHONDONTWRITEBYTECODE` | `1` | Prevents Python writing `.pyc` to read-only paths |
 | `deploy.resources.limits` | `1 CPU`, `512 MB` | Prevents resource exhaustion |
 
+Traefik posture:
+
+| Option | Value | Effect |
+| --- | --- | --- |
+| Routing provider | file only (`traefik/dynamic_conf.yml`) | No Docker provider, so `/var/run/docker.sock` is never mounted — the Docker API is equivalent to host root |
+| Backend discovery | Docker DNS by container name | Routers/services are declared statically; backends resolve as `http://auth_user_service:8000` over `app_net` |
+
 Auth degradation settings in `auth.env`:
 
 | Setting | Value | Effect |
@@ -78,6 +85,20 @@ Auth degradation settings in `auth.env`:
 | `AUTH_STRICT_MODE` | `true` | Overrides all per-control modes to `fail_closed` |
 | `RATE_LIMIT_FAILURE_MODE` | `fail_closed` | Redis outage → 503, not open |
 | `ACCESS_REVOCATION_FAILURE_MODE` | `fail_closed` | Redis outage → tokens not accepted |
+
+### Redis ACLs (least privilege)
+
+The `redis_cache` bootstrap provisions a **scoped per-service** ACL instead of the
+old open `appuser ~* +@all`:
+
+| User | Key access | Commands |
+| --- | --- | --- |
+| `auth` (the app, via `REDIS_USER=auth`) | only its own prefixes — `oauth_session:*`, `auth_code:*`, `login:*`, `refresh:*`, `exchange:*`, `rt:*`, `jwt:blacklist:*`, `rate:*`, `api_key:*` | `+@read +@write +@transaction +@connection +eval -@dangerous` — exactly the commands the service uses (string/hash ops, pipelined transactions, the refresh-rotation Lua `EVAL`); admin/dangerous denied |
+| `default` | none (`resetkeys`) | `-@all +@connection -@dangerous` — connection commands only, so the healthcheck `PING` still works; no data or admin access |
+
+A leaked auth Redis credential can therefore only touch the auth service's own
+keyspace, and the always-present `default` user can no longer read, write, or
+flush data. The contract is locked by `tests/security/test_redis_acl_policy.py`.
 
 ---
 
@@ -90,7 +111,7 @@ Auth degradation settings in `auth.env`:
 | redis_cache | redis:8.8.0-alpine | `127.0.0.1:6379` |
 | prometheus | ubuntu/prometheus:3.11-26.04_stable | `127.0.0.1:9090` |
 | grafana | grafana/grafana:13.1.0 | `127.0.0.1:3000` |
-| auth_user_service | [tepochtli/fa-auth-m8:latest](https://hub.docker.com/r/tepochtli/fa-auth-m8) | via Traefik at `/user` |
+| auth_user_service | [tepochtli/fa-auth-m8:0.9.9](https://hub.docker.com/r/tepochtli/fa-auth-m8) | via Traefik at `/user` |
 | fastapi_full | local build | via Traefik at `/fastapi` |
 
 ---
@@ -156,8 +177,9 @@ docker compose up -d
 
 `auth_user_service` pulls from Docker Hub — no `--build` needed for it. Only `fastapi_full` is built locally.
 
-> **Pin for production:** replace `tepochtli/fa-auth-m8:latest` with a specific release tag
-> (e.g. `tepochtli/fa-auth-m8:0.9.0`) in `docker-compose.yml` to ensure reproducible deployments.
+> **Pinned for production:** the image is pinned to a specific release tag
+> (`tepochtli/fa-auth-m8:0.9.9`) in `docker-compose.yml` for reproducible deployments —
+> bump it to a newer published tag as releases are cut (never use `:latest`).
 
 ---
 
@@ -342,14 +364,20 @@ bash init.sh --reset-db
 
 ## Live testing
 
-Run the live test suite against this stack (requires the stack to be up):
+Validate this stack's security posture with the [`security-tests-m8`](https://github.com/mano8/security-tests-m8) live suite (requires the stack to be up). It attacks the running stack — auth bypass, token forgery, JWKS/algorithm confusion, privilege escalation, OWASP API risks — flaws that only surface against a live deployment:
 
 ```sh
-# From the repo root
-pytest -m live_asymmetric --no-cov   # RS256/ES256-specific attacks (JWKS, kid confusion)
-pytest -m live_stateful --no-cov     # Token revocation guarantees
-pytest -m live_security --no-cov     # Universal attack categories
+pip install --upgrade security-tests-m8
+
+cp test.env.example test.env
+# Edit test.env: set LIVE_TEST_ADMIN_EMAIL / LIVE_TEST_ADMIN_PASSWORD to a
+# DEDICATED test-only superuser (must already exist; never FIRST_SUPERUSER).
+
+security-tests-m8 preflight --deployment-root .
+security-tests-m8 run --env-file test.env
 ```
+
+The suite auto-skips checks that don't apply to this stack. Delete or disable the dedicated test superuser when you're done — the suite does not remove it. See [shared_live_tests/](../shared_live_tests/) for the full rationale (why a dedicated superuser, when to run, cleanup) and the advanced pytest mode.
 
 Manual smoke test:
 
@@ -368,6 +396,8 @@ When deploying publicly, replace `traefik/dynamic_conf.yml` with `traefik/produc
 - Dev `dynamic_conf.yml` has no CSP so Swagger UI works during development.
 
 Also update the `Host` rules in the production config to match your actual FQDN.
+
+**Socketless by design.** The production path — whether you apply `docker-compose.production.yml` or copy `production_dynamic_conf.yml` over `dynamic_conf.yml` — never mounts `/var/run/docker.sock`. Traefik routes via the **file provider only** (`traefik.yml` declares no `docker` provider); backends are declared statically and resolve over Docker DNS by container name (`http://auth_user_service:8000`), so no socket mount and no per-container `traefik.*` discovery labels are needed. Mounting the socket — even read-only — grants the Docker API, which is equivalent to host root. This contract is locked by `tests/security/test_socketless_traefik.py`.
 
 ---
 

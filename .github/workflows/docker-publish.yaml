@@ -13,7 +13,9 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write      # upload release assets
+      id-token: write      # keyless cosign OIDC signing
+      attestations: write  # GitHub artifact attestations (provenance)
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -65,7 +67,27 @@ jobs:
           exit-code: "1"
           format: table
 
+      - name: Trivy image scan (JSON — attach to release)
+        uses: aquasecurity/trivy-action@bfa4b33a029b9aa80ddb784b45574c30e072c59e # master
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_NAME }}:scan
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+          format: json
+          output: trivy-results.json
+
+      - name: Generate SBOM (SPDX JSON)
+        uses: anchore/sbom-action@fc46e51fd3c824e98d3e76da4e5a9d5b7b3d5af5 # v0.19.0
+        with:
+          image: ${{ env.IMAGE_NAME }}:scan
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+
       - name: Build and push (multi-arch)
+        id: build-push
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
@@ -74,5 +96,28 @@ jobs:
           push: ${{ github.event_name != 'workflow_dispatch' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        if: github.event_name != 'workflow_dispatch'
+        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
+
+      - name: Sign published image (keyless OIDC)
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          cosign sign --yes \
+            "${{ env.IMAGE_NAME }}@${{ steps.build-push.outputs.digest }}"
+
+      - name: Upload SBOM to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" sbom.spdx.json
+
+      - name: Upload Trivy scan report to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" trivy-results.json

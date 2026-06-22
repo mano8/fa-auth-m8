@@ -11,10 +11,87 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [0.9.9] — 2026-06-22 · Security remediation: hardened compose, app-layer guards, Redis ACLs
+
+> **Requires `auth-sdk-m8 >= 1.5.0` (and `< 2.0.0`)** — pin bumped in
+> `auth_user_service/requirements_base.txt`. 1.5.0 dual-mounts the liveness
+> `/ping` route (a root `/ping` for direct container/sidecar probes plus a hidden
+> `{prefix}/ping` copy that stays reachable behind a prefix-routing proxy); the
+> 2.0.0 line is a breaking single-mount change and is intentionally excluded.
 
 ### Added
 
+- **Live exposure-matrix tests** (plan item 5.2) — `tests/live/test_compose_exposure_matrix.py`,
+  a topology-parameterized live suite that asserts the public/internal route-exposure
+  contract against a running compose stack. Table-driven allow/deny lists selected by
+  `EXPOSURE_TOPOLOGY={case_a|case_b}` (default `case_b`, matching the shipped `hardened_m8`
+  example that routes both `/user` and `/fastapi` publicly). Case A (UI-only/closed)
+  additionally asserts no backend microservice route (`/fastapi/*`) is public on its own.
+  Asserted in **both** topologies: `/user/private/*`, `/user/metrics` + `/fastapi/metrics`
+  (no Prometheus body), the *detailed* `/health/` body (shallow `{"status"}` may answer
+  publicly; infra detail is token-gated per 1.4), and infra surfaces (Traefik dashboard/API).
+  Internal positive/negative controls verify `/user/private/v1/jti-status` is reachable on
+  the loopback services entryPoint only with a valid `X-Internal-Token`. The module
+  auto-skips when the stack is unreachable and is excluded from the coverage gate
+  (`--ignore=tests/live`); 21 tests, ruff + mypy + bandit green; 754 unit/security tests,
+  100% cov.
+
+- **Compose hardening-policy tests** (plan item 5.1) — static assertions that lock
+  in the `hardened_m8` container security contract:
+  (1) app services (`auth_user_service`, `fastapi_full`) carry the required
+  hardening flags (`cap_drop: ALL`, `no-new-privileges:true`, `read_only: true`,
+  `tmpfs: [/tmp, /run]`) in the dev base;
+  (2) data/observability services (`m8_db`, `redis_cache`, `prometheus`, `grafana`)
+  bind only to `127.0.0.1` in the dev compose (no all-interface exposure);
+  (3) both the dev (`dynamic_conf.yml`) and production (`production_dynamic_conf.yml`)
+  Traefik configs explicitly exclude `/user/private` and `/user/metrics` from the
+  public `auth-public-router` rule. Docker-socket absence, image-pin policy, and
+  production-overlay data-port-reset are not duplicated (covered by
+  `test_socketless_traefik.py`, `test_image_pins.py`, and `test_production_overlay.py`).
+  Covered by `tests/security/test_compose_policy.py` (16 tests). 754 tests, 100% cov,
+  ruff + mypy + bandit green.
+
+- **Image-pin policy enforced in hardened/production compose** (plan item 4.1) — bare
+  `alpine` image (no version tag) replaced with `alpine:3.22` across all six compose
+  example stacks (`hardened_m8`, `metrics_m8`, `postgres_m8`, `quickstart_m8`, `rs256_m8`,
+  `vault_dev_m8`). Static policy tests added in
+  `tests/security/test_image_pins.py` (4 tests) assert that every image in the
+  `hardened_m8` base and production overlay declares an explicit version tag (no bare
+  images) and does not use the mutable `:latest` tag. Services using `build:` are
+  excluded. All previously pinned third-party images (`traefik:v3.7.5`,
+  `postgres:18.4-alpine`, `redis:8.8.0-alpine`, `ubuntu/prometheus:3.11-26.04_stable`,
+  `grafana/grafana:13.1.0-25530058790`, `tepochtli/fa-auth-m8:0.9.9`) continue to pass
+  the new assertions. 717 tests, 100% cov, ruff + mypy + bandit green.
+
+- **Vault example renamed and constrained** (plan item 2.3) — `vault_m8` renamed to
+  `vault_dev_m8` to make the ephemeral, dev-mode-only nature explicit in the directory
+  name. Preflight now hard-fails when either `VAULT_DEV_TOKEN` is present in an env
+  file **or** a compose service uses the Vault `-dev` flag, both under
+  `ENVIRONMENT=production`. A new non-runnable `vault_prod_template/` directory provides
+  annotated templates for connecting the auth service to a production-grade Vault:
+  `vault/config/vault.hcl` (Raft storage, TLS enabled), `vault/policies/app-policy.hcl`
+  (read-only scoped policy), and `docker-compose.app.yml.template` (app token via Docker
+  secret file, no `VAULT_DEV_TOKEN`). All README files updated with the rename and
+  cross-references. Covered by `tests/security/test_vault_dev_constrained.py` (16 tests).
+
+- **Production overlay for `hardened_m8`** (plan item 2.1) — a thin
+  `docker-compose.production.yml` applied on top of the dev base
+  (`docker compose -f docker-compose.yml -f docker-compose.production.yml up`,
+  Compose v2.24+ for the `!reset`/`!override` tags). One stack, two postures: the
+  dev/home-lab default is unchanged and nothing dangerous is default-on; the
+  overlay flips on production hardening — `ENVIRONMENT=production` +
+  `STRICT_PRODUCTION_MODE=true` via new `auth.env.production.example` /
+  `api.env.production.example` / `.env.production.example` (all secrets stay the
+  fail-closed `changethis` placeholder), docs off, `SESSION_COOKIE_SECURE=true`,
+  FQDN host rules (`traefik/production_dynamic_conf.yml`) backed by app-layer
+  `ALLOWED_HOSTS`, `cert-init` downgraded from a self-signed generator to a
+  fail-closed cert **presence check**, only `:80` (HTTP→HTTPS redirect) and
+  `:443` published (no host-published dashboard/internal `:9000`/DB/Redis/
+  Prometheus/Grafana ports, via `!reset []`), and pinned images. **Migration
+  decision:** auto-`alembic upgrade head` on `up` is kept for the single-node
+  overlay (idempotent + pinned images); a one-shot pre-start command is
+  documented for multi-replica/zero-downtime rollouts. Documented in the README
+  production section and locked by `tests/security/test_production_overlay.py`.
 - **Deployment security preflight** (`examples/docker_compose/shared/scripts/preflight-security.sh`)
   — a fail-closed gate run from `init-common.sh` before the crypto lifecycle. It
   scans a stack's env and compose files and blocks startup on leftover
@@ -30,12 +107,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   full-security suite, README), and the shared Alembic migration set used to
   bring a hardened stack up for live runs.
 - `grafana.env.example` placeholder per stack.
+- `METRICS_SCRAPE_CREDENTIAL` setting (optional `SecretStr`, default unset) on the
+  service `Settings`, registered as a masked `secret_fields` entry and documented
+  (commented) in the metrics-enabled `auth.env.example` stacks (`hardened_m8`,
+  `metrics_m8`). Drives the optional `/metrics` scrape guard (plan item 1.4).
 
 ### Changed
 
+- Raised the `/meta` compatibility contract range lower bound to
+  `>=0.9.9 <0.10.0` (was `>=0.9.8 <0.10.0`) in
+  `auth_user_service/core/service_meta.py` so consumers pin to the hardened
+  security baseline. `CONTRACT_VERSION` stays `0.9`; `/meta` + `/ping` are
+  unchanged on the wire.
+- Bumped the `auth-sdk-m8` dependency to `>=1.5.0,<2.0.0` (was `>=1.4.0`) in
+  `auth_user_service/requirements_base.txt`, aligning the issuer with the rest
+  of the fleet (`fastapi-m8` pins the same range) and capping below the breaking
+  `2.0.0` single-mount `/ping` change.
+- Pinned the example consumers to `fastapi-m8>=2.1.0,<3.0.0` (was `>=2.0.0`) in
+  `examples/fastapi_full/requirements_base.txt` and
+  `examples/fastapi_minimal/requirements.txt`. `fastapi-m8` 2.0.0 depends on
+  `auth-sdk-m8>=1.4.0`, which lets a shared-env install downgrade the SDK below
+  1.5.0 and lose the dual-mounted `/ping`; 2.1.0 depends on
+  `auth-sdk-m8>=1.5.0,<2.0.0`, keeping the SDK aligned.
 - Grafana admin credentials moved out of the committed
   `grafana/config.monitoring` into a gitignored `grafana.env` loaded via
-  `env_file`. Pinned the `fa-auth-m8` image to `0.9.8` (was `:latest`) in the
+  `env_file`. Pinned the `fa-auth-m8` image to `0.9.9` (was `:latest`) in the
   hardened and vault example stacks.
 - Lowered the `redis` requirement floor to `>=5.3.1` to match the tested
   runtime; no security advisory requires the 8.x line.
@@ -47,7 +143,99 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **OAuth redirect-prefix pinning required in production** (plan item 8.2). When
+  `ENVIRONMENT` is `production`/`staging` or `STRICT_PRODUCTION_MODE=true`, the
+  OAuth login flow now rejects `chrome-extension://` redirect targets at request
+  time (`400`) unless `OAUTH_ALLOWED_REDIRECT_PREFIXES` pins the trusted callback
+  origins. Without pinning, any installed extension could receive issued OAuth
+  tokens (open public-client risk); the gate makes pinning mandatory in
+  prod/strict and advisory in local/dev. `_validate_redirect_target` gained a
+  hardened prod/strict detection guard. `hardened_m8/auth.env.production.example`
+  documents the requirement with `OAUTH_ALLOWED_REDIRECT_SCHEMES` /
+  `OAUTH_ALLOWED_REDIRECT_PREFIXES` placeholders. Covered by
+  `tests/security/test_oauth_redirect_policy.py` (7 tests).
+- **App-layer Host-header validation** (plan item 5.3). `auth_user_service/main.py`
+  now wires Starlette's `TrustedHostMiddleware` whenever `ALLOWED_HOSTS` is set
+  (mirroring the fastapi-m8 consumer pattern), so a host allowlist is enforced at
+  the app layer and survives a reverse-proxy swap or misconfiguration. Non-prod
+  envs auto-inject `testserver` for test clients; production and
+  `STRICT_PRODUCTION_MODE` require every FQDN to be listed explicitly. Covered by
+  `tests/security/test_host_header_routing.py` (12 tests).
+- **`API_BIND_IP=0.0.0.0` production gate codified** (plan item 5.4). Static
+  compose-policy tests assert every dev-base stack binds port 9000 via
+  `${API_BIND_IP:-127.0.0.1}` (never a hardcoded `0.0.0.0`), the production
+  overlay drops port 9000 from published ports entirely, and no `*.env.example`
+  sets `API_BIND_IP=0.0.0.0`. A preflight test pins the break-glass path
+  (`ALLOW_PUBLIC_API_BIND=true` permits a public bind in production; rejection
+  without it was already covered). `tests/security/test_api_bind_ip.py` (plus a
+  preflight case in `tests/security/test_preflight_security.py`).
+- **Per-service Redis ACLs (least privilege)** (plan item 6.x.1). Every compose
+  example's `redis_cache` bootstrap replaces the open `appuser ~* +@all` with a
+  scoped `auth` user — restricted to exactly the key prefixes the service writes
+  (`oauth_session:*`, `auth_code:*`, `login:*`, `refresh:*`, `exchange:*`, `rt:*`,
+  `jwt:blacklist:*`, `rate:*`, `api_key:*`) and only the command categories it
+  uses (`+@read +@write +@transaction +@connection +eval -@dangerous`; the
+  refresh-rotation Lua `EVAL` is the sole scripting grant). The always-present
+  `default` user is stripped to `resetkeys -@all +@connection -@dangerous`, so it
+  keeps the healthcheck `PING` but can no longer read, write, or flush any data.
+  `REDIS_USER` in the auth env examples moves from `appuser` to `auth`. A leaked
+  auth Redis credential is now confined to the auth service's own keyspace.
+  Locked by `tests/security/test_redis_acl_policy.py` (37 static assertions across
+  all six example stacks: no open ACL, scoped key patterns, category allow/deny,
+  default-user lockdown, env wiring, and a source-linked guard that fails if a new
+  Redis key prefix is added without extending the ACL).
+- **Runtime secrets can be sourced from mounted files** (plan item 6.1). The
+  service `Settings` inherits the Docker/K8s `<FIELD>_FILE` convention from
+  `auth_sdk_m8.core.config.CommonSettings` — no service-side code is added. For
+  any field `FOO` (service-declared like `PRIVATE_API_SECRET`, `SESSION_SECRET`,
+  `TOKENS_ENCRYPTION_KEY`, `METRICS_SCRAPE_CREDENTIAL`, or inherited like
+  `DB_PASSWORD`/`EVENT_SIGNING_KEY`), setting `FOO_FILE` to a readable path makes
+  the file's stripped contents the value of `FOO`, outranking a plaintext
+  `.env`/env value (init kwargs still win) and failing closed if the path is
+  missing. This is the mechanism the production overlay (item 2.1) uses to mount
+  secrets under `/run/secrets/*` instead of inlining them. The inheritance is
+  locked in at the service layer by `tests/security/test_config_file_secrets.py`
+  (8 tests across both MRO origins; precedence, fail-closed, and `SecretStr`
+  masking asserted). Full secret-manager migration + rotation playbooks (6.2)
+  remain P3.
+- **Proxy-independent app-layer protection for `/health` and `/metrics`** (plan
+  item 1.4). The deep `{API_PREFIX}/health/` route now answers a shallow
+  `{"status": ...}` to every caller and reveals the full infrastructure detail
+  (token mode, Redis/DB reachability, circuit breaker, degradation modes) **only**
+  to internal callers presenting the `X-Internal-Token` shared secret
+  (`PRIVATE_API_SECRET`). `{API_PREFIX}/metrics` gains an optional static scoped
+  scrape credential (`METRICS_SCRAPE_CREDENTIAL`): unset keeps metrics
+  internal-only (the network boundary is the control); when set, scrapers must
+  send `Authorization: Bearer <credential>` (constant-time match) or get `401`.
+  Both guards reuse the shared `auth_sdk_m8.security.guards` primitives
+  (`make_internal_token_authorizer`, `make_scrape_credential_guard`), so the
+  guarantee lives at the app layer and survives a reverse-proxy swap; proxy
+  route-hiding stays defense-in-depth. `{API_PREFIX}/ping` remains the
+  dependency-free public liveness route. Covered by
+  `tests/routes/health_test.py` (detail gating) and
+  `tests/security/test_metrics_scrape_guard.py`.
 - Removed a hardcoded Grafana admin password from version control.
+- **Removed the Docker socket from the hardened example** (plan item 0.3). The
+  `hardened_m8` Traefik service no longer mounts `/var/run/docker.sock`, and the
+  Docker provider is dropped from `traefik/traefik.yml` in favour of the file
+  provider only. Mounting the socket — even read-only — exposes the Docker API,
+  which is equivalent to host root. Routing was already declared statically in
+  `traefik/dynamic_conf.yml` (backends resolved by container-name DNS over
+  `app_net`), so the vestigial `traefik.enable` labels on `auth_user_service` and
+  `fastapi_full` were removed too. Public routes are unchanged. Dev examples keep
+  the Docker provider.
+- **Socketless Traefik production path locked in** (plan item 2.2). The production
+  path (the dev base merged with `docker-compose.production.yml`, or
+  `production_dynamic_conf.yml` copied over `dynamic_conf.yml`) routes through the
+  Traefik **file provider only** and never mounts `/var/run/docker.sock` — backends
+  resolve over Docker DNS by container name, so no socket and no per-container
+  `traefik.*` discovery labels are required. The structural guarantee established by
+  item 0.3 is now codified by `tests/security/test_socketless_traefik.py` (no socket
+  mount on the production path, file-provider-only static config, no discovery
+  labels, and every file-provider router resolving to a defined container-DNS
+  backend) so a future edit cannot silently re-introduce the Docker provider. The
+  hardened-stack README production section documents the contract. The shared
+  compose-parsing helpers were factored into `tests/security/_compose.py`.
 
 ---
 
@@ -338,7 +526,7 @@ HS256 and permissive validation remain available as documented opt-outs. See the
 - **Docker Compose examples consolidated 10 → 6**, each serving a distinct audience:
   `quickstart_m8` (HS256 / stateful / MariaDB — start here), `postgres_m8`,
   `rs256_m8` (RS256 / hybrid), `metrics_m8` (Prometheus + Grafana),
-  `hardened_m8` (container hardening + Docker Hub image), `vault_m8` (HashiCorp Vault).
+  `hardened_m8` (container hardening + Docker Hub image), `vault_dev_m8` (HashiCorp Vault dev mode).
   Each stack ships a self-contained README with "choose this when" guidance and a full
   port/config reference.
 

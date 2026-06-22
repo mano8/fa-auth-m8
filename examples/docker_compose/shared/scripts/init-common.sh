@@ -34,6 +34,7 @@ for tmpl in .env.example auth.env.example api.env.example; do
     target="${tmpl%.example}"
     if [[ -f "$tmpl" ]] && [[ ! -f "$target" ]]; then
         cp "$tmpl" "$target"
+        chmod 600 "$target"
         _copied+=("$target")
     fi
 done
@@ -41,6 +42,25 @@ if [[ ${#_copied[@]} -gt 0 ]]; then
     echo ""
     echo "NOTE: copied example env files — replace every 'changethis' before 'docker compose up':"
     for f in "${_copied[@]}"; do echo "        $f"; done
+    echo ""
+fi
+
+# --- Enforce chmod 600 on all runtime env files and private keys ---
+_perm_enforced=()
+while IFS= read -r _sf; do
+    _mode="$(stat -c '%a' "$_sf" 2>/dev/null || echo "???")"
+    if [[ "$_mode" != "600" ]]; then
+        chmod 600 "$_sf"
+        _perm_enforced+=("$_sf (was ${_mode})")
+    fi
+done < <(
+    find . -maxdepth 1 -type f -name '*.env' ! -name '*.example' ! -name '*.prod_example' | sort
+    find . -maxdepth 2 -type f \( -path './keys/private.*' \) | sort
+)
+if [[ ${#_perm_enforced[@]} -gt 0 ]]; then
+    echo ""
+    echo "NOTE: enforced chmod 600 on secret files (fixed permissive modes):"
+    for _f in "${_perm_enforced[@]}"; do echo "        $_f"; done
     echo ""
 fi
 

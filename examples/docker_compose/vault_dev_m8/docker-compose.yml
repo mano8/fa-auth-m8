@@ -3,7 +3,7 @@ services:
   # Traefik waits for this before starting. Skipped automatically when certs already exist.
   # For browser-trusted certs: install mkcert, then run: bash init.sh --rotate-certs
   cert-init:
-    image: alpine
+    image: alpine:3.22
     volumes:
       - ./traefik/certs:/certs
     command:
@@ -135,7 +135,14 @@ services:
       - |
         redis-server --save 20 1 --loglevel warning --requirepass "${REDIS_PASSWORD}" &
         until redis-cli ping 2>/dev/null | grep -q PONG; do sleep 0.2; done
-        redis-cli ACL SETUSER appuser on \>"${REDIS_PASSWORD}" "~*" +@all
+        # Per-service scoped ACL (plan 6.x.1): the auth app authenticates as
+        # `auth`, restricted to its own key prefixes and only the command
+        # categories it uses (read/write strings+hashes, pipelined txns, the
+        # refresh-rotation Lua EVAL, connection handshake; dangerous/admin
+        # denied). The default user is then stripped of all data/admin access
+        # — it keeps only connection commands so the healthcheck PING works.
+        redis-cli ACL SETUSER auth on \>"${REDIS_PASSWORD}" "~oauth_session:*" "~auth_code:*" "~login:*" "~refresh:*" "~exchange:*" "~rt:*" "~jwt:blacklist:*" "~rate:*" "~api_key:*" +@read +@write +@transaction +@connection +eval -@dangerous "+client|setinfo"
+        redis-cli ACL SETUSER default on \>"${REDIS_PASSWORD}" resetkeys -@all +@connection -@dangerous
         wait
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
@@ -179,7 +186,7 @@ services:
     # Published image — no local build required.
     # For production, pin to a specific release instead of latest:
     #   image: tepochtli/fa-auth-m8:0.9.0
-    image: tepochtli/fa-auth-m8:0.9.8
+    image: tepochtli/fa-auth-m8:0.9.9
     env_file:
       - ./auth.env
     environment:

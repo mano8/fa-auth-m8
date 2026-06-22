@@ -1,0 +1,43 @@
+# docker-compose.app.yml.template
+#
+# Snippet for connecting fa-auth-m8's auth_user_service to an external,
+# production-grade Vault instance.
+#
+# HOW TO USE:
+#   1. Follow the steps in README.md to initialize Vault and write a scoped
+#      app token to secrets/vault_token (chmod 600).
+#   2. Merge this snippet into your stack's docker-compose.yml.
+#   3. Remove the bundled `vault` and `vault_init` services (if present).
+#   4. Point VAULT_ADDR at your Vault host (internal DNS or managed endpoint).
+#
+# KEY DIFFERENCES FROM vault_dev_m8:
+#   - No `vault` service (Vault runs externally).
+#   - No `vault_init` service (secrets pre-loaded by your secrets pipeline).
+#   - VAULT_DEV_TOKEN is ABSENT from the environment — the root token is never
+#     in any env file or compose environment block.
+#   - The app token arrives via a Docker secret file at /run/secrets/vault_token.
+#     VaultProvider in auth-sdk-m8 reads /run/secrets/vault_token automatically
+#     when VAULT_TOKEN is not set in the environment.
+
+secrets:
+  vault_token:
+    file: ./secrets/vault_token   # chmod 600; never commit this file
+
+services:
+  auth_user_service:
+    image: tepochtli/fa-auth-m8:<pinned-version>   # pin to a digest or semver tag
+    env_file:
+      - ./auth.env
+    environment:
+      # VaultProvider activates when SECRET_PROVIDER=vault and ENVIRONMENT is
+      # staging or production. VAULT_ADDR points at the external Vault host.
+      # VAULT_TOKEN is intentionally absent — the scoped app token is delivered
+      # via the Docker secret file below (/run/secrets/vault_token).
+      SECRET_PROVIDER: vault
+      VAULT_ADDR: https://vault.internal:8200   # replace with your Vault address
+    secrets:
+      - vault_token
+    # Remove the vault_init condition if you had it:
+    # depends_on:
+    #   vault_init:
+    #     condition: service_completed_successfully

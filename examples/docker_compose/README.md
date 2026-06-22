@@ -27,7 +27,7 @@ Six ready-to-run stacks, each targeting a distinct use case. Each runs the same 
 | [rs256_m8](rs256_m8/) | MariaDB | RS256 | `hybrid` | env file | — | — | Asymmetric signing + JWKS |
 | [metrics_m8](metrics_m8/) | PostgreSQL 18 | HS256 | `stateful` | env file | Prometheus + Grafana | — | Metrics dashboards |
 | [hardened_m8](hardened_m8/) | PostgreSQL 18 | RS256 | `stateful` | env file | Prometheus + Grafana | container + network | Hardened posture without Vault |
-| [vault_m8](vault_m8/) | PostgreSQL 18 | RS256 | `stateful` | **HashiCorp Vault** | Prometheus + Grafana | container + network | Hardened + secrets manager |
+| [vault_dev_m8](vault_dev_m8/) | PostgreSQL 18 | RS256 | `stateful` | **HashiCorp Vault** (dev mode) | Prometheus + Grafana | container + network | Vault injection pattern — dev/learning only |
 
 **Decision guide:**
 
@@ -36,7 +36,7 @@ Six ready-to-run stacks, each targeting a distinct use case. Each runs the same 
 - **Asymmetric signing / multiple consumers** → [rs256_m8](rs256_m8/) or [hardened_m8](hardened_m8/)
 - **Metrics and dashboards** → [metrics_m8](metrics_m8/)
 - **Container hardening + observability** → [hardened_m8](hardened_m8/) — Docker Hub image, read-only rootfs, network segmentation
-- **Secrets manager (Vault)** → [vault_m8](vault_m8/) — credentials never live in plain env files
+- **Secrets manager (Vault)** → [vault_dev_m8](vault_dev_m8/) — learn the VaultProvider injection pattern (dev mode); see `vault_prod_template/` for the production-Vault reference
 - **Stateless mode** → start from [quickstart_m8](quickstart_m8/) and set `TOKEN_MODE=stateless` in `auth.env`
 
 ---
@@ -61,7 +61,7 @@ auth_user_service :8000            fastapi_full :8000
         m8_db          redis_cache
    (MariaDB / PG)      (Redis 8.8)
 
-(metrics_m8, hardened_m8, and vault_m8 also include Prometheus + Grafana)
+(metrics_m8, hardened_m8, and vault_dev_m8 also include Prometheus + Grafana)
 ```
 
 Traefik is the single entry point. Both application services sit on an internal Docker network (`m8_app_network`) and are not directly reachable from the host.
@@ -211,9 +211,9 @@ Migrations run automatically every time the containers start. If you switch stac
 | `8080` | `127.0.0.1` | Traefik dashboard |
 | `3306` / `5432` | `127.0.0.1` | Database |
 | `6379` | `127.0.0.1` | Redis |
-| `8200` | `127.0.0.1` | HashiCorp Vault UI/API (`vault_m8` only) |
-| `9090` | `127.0.0.1` | Prometheus (`metrics_m8`, `hardened_m8`, `vault_m8`) |
-| `3000` | `127.0.0.1` | Grafana (`metrics_m8`, `hardened_m8`, `vault_m8`) |
+| `8200` | `127.0.0.1` | HashiCorp Vault UI/API (`vault_dev_m8` only) |
+| `9090` | `127.0.0.1` | Prometheus (`metrics_m8`, `hardened_m8`, `vault_dev_m8`) |
+| `3000` | `127.0.0.1` | Grafana (`metrics_m8`, `hardened_m8`, `vault_dev_m8`) |
 
 Port `9000` is the one you'll use most in development — all API requests go through it.
 
@@ -221,19 +221,28 @@ Port `9000` is the one you'll use most in development — all API requests go th
 
 ## Live testing
 
-The repo includes a modular live test suite in `tests/live/` that runs against any running stack. Tests are automatically skipped when the running stack algorithm or token mode does not match.
+Every stack ships a `test.env.example` wired for [`security-tests-m8`](https://github.com/mano8/security-tests-m8) — a reusable live security suite that attacks the *running* stack (auth bypass, token forgery, `alg=none`, JWKS/algorithm confusion, privilege escalation, OWASP API Top 10). These flaws only surface end-to-end against a fully wired deployment, not in unit tests. Run it after `docker compose up` as an acceptance gate, and after any auth/token/network/image change.
+
+**Recommended — CLI mode** (excludes destructive tests by default):
 
 ```sh
-# From the repo root — run against any stack
-pytest -m live --no-cov
+pip install --upgrade security-tests-m8
 
-# Target specific algorithm or mode
-pytest -m live_asymmetric --no-cov    # RS256 / ES256 stacks
-pytest -m live_hs256 --no-cov         # HS256 stacks
-pytest -m live_stateful --no-cov      # TOKEN_MODE=stateful
-pytest -m live_hybrid --no-cov        # TOKEN_MODE=hybrid
-pytest -m live_stateless --no-cov     # TOKEN_MODE=stateless
+cd <stack>/                  # e.g. hardened_m8
+cp test.env.example test.env
+# Edit test.env: point LIVE_TEST_ADMIN_EMAIL / LIVE_TEST_ADMIN_PASSWORD at a
+# DEDICATED test-only superuser — it must already exist, and must NOT be the
+# bootstrap FIRST_SUPERUSER (preflight refuses that). Fill or remove the opt-in
+# secret lines; never leave 'changethis' in test.env.
+
+security-tests-m8 preflight --deployment-root .
+security-tests-m8 run --env-file test.env
+# Full mutation-heavy run: add --include-destructive
 ```
+
+The suite auto-detects the stack's algorithm and token mode and skips checks that don't apply, so the same workflow covers every stack here. **Clean up afterward:** the suite does not delete the dedicated test superuser (or the `redteam_*` users it creates) — remove or disable them after a run on any shared or long-lived stack.
+
+**Advanced — pytest mode.** For local marker selection, custom tests, or suite extension, use [`shared_live_tests/`](shared_live_tests/), which also documents the full rationale: why a dedicated superuser, when to run, and cleanup.
 
 For a manual smoke test, check the health endpoint after `docker compose up`:
 

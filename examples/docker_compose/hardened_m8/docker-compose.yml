@@ -3,7 +3,7 @@ services:
   # Traefik waits for this before starting. Skipped automatically when certs already exist.
   # For browser-trusted certs: install mkcert, then run: bash init.sh --rotate-certs
   cert-init:
-    image: alpine
+    image: alpine:3.22
     volumes:
       - ./traefik/certs:/certs
     command:
@@ -31,8 +31,10 @@ services:
       - "4430:443/udp"  # HTTP/3 / QUIC
       - "127.0.0.1:8080:8080"   # Dashboard — localhost only
       - "${API_BIND_IP:-127.0.0.1}:9000:9000"   # services entryPoint — override API_BIND_IP for LAN/public exposure
+    # No Docker socket mount: the hardened stack routes exclusively through the
+    # Traefik file provider (traefik/dynamic_conf.yml). Mounting /var/run/docker.sock
+    # — even read-only — grants the Docker API, which is equivalent to host root.
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./traefik/dynamic_conf.yml:/etc/traefik/dynamic_conf.yml:ro
       - ./traefik/certs:/etc/traefik/certs:ro
@@ -86,7 +88,14 @@ services:
       - |
         redis-server --save 20 1 --loglevel warning --requirepass "${REDIS_PASSWORD}" &
         until redis-cli ping 2>/dev/null | grep -q PONG; do sleep 0.2; done
-        redis-cli ACL SETUSER appuser on \>"${REDIS_PASSWORD}" "~*" +@all
+        # Per-service scoped ACL (plan 6.x.1): the auth app authenticates as
+        # `auth`, restricted to its own key prefixes and only the command
+        # categories it uses (read/write strings+hashes, pipelined txns, the
+        # refresh-rotation Lua EVAL, connection handshake; dangerous/admin
+        # denied). The default user is then stripped of all data/admin access
+        # — it keeps only connection commands so the healthcheck PING works.
+        redis-cli ACL SETUSER auth on \>"${REDIS_PASSWORD}" "~oauth_session:*" "~auth_code:*" "~login:*" "~refresh:*" "~exchange:*" "~rt:*" "~jwt:blacklist:*" "~rate:*" "~api_key:*" +@read +@write +@transaction +@connection +eval -@dangerous "+client|setinfo"
+        redis-cli ACL SETUSER default on \>"${REDIS_PASSWORD}" resetkeys -@all +@connection -@dangerous
         wait
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
@@ -127,7 +136,7 @@ services:
     restart: unless-stopped
 
   auth_user_service:
-    image: tepochtli/fa-auth-m8:0.9.8
+    image: tepochtli/fa-auth-m8:0.9.9
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -149,8 +158,6 @@ services:
       - ./auth.env:/opt/auth_user_service/.env:ro
       - ./shared_migrations:/opt/shared_migrations
       - ./keys:/opt/keys:ro
-    labels:
-      - "traefik.enable=true"
     depends_on:
       m8_db:
         condition: service_healthy
@@ -192,8 +199,6 @@ services:
       - ../../fastapi_full:/opt/fastapi_full
       - ./api.env:/opt/fastapi_full/.env:ro
       - ./shared_migrations:/opt/shared_migrations
-    labels:
-      - "traefik.enable=true"
     depends_on:
       m8_db:
         condition: service_healthy

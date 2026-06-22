@@ -1,8 +1,10 @@
+.env
+*.env
 prometheus/data/*
 grafana/data/*
 db_data/*
 redis/*
-keys/*.pem
+keys/
 traefik/certs/*.pem
 traefik/certs/*.crt
 traefik/certs/*.key

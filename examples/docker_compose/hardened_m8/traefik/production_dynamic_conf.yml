@@ -1,10 +1,22 @@
 # production_dynamic_conf.yml — Production
-# Copy to dynamic_conf.yml when deploying to a public-facing environment.
+#
+# Used two ways:
+#   1. Mounted directly by docker-compose.production.yml (the thin production
+#      overlay) in place of dynamic_conf.yml — no copy needed.
+#   2. Or copy to dynamic_conf.yml when deploying without the overlay.
 #
 # Changes from the dev config:
 #   1. security-headers-prod adds Content-Security-Policy and enables HSTS.
-#   2. Replace "localhost" in Host rules with your actual FQDN (e.g., auth.example.com).
-#   3. Update TLS section to use your real certificate paths or ACME resolver.
+#   2. Host rules use real FQDNs (e.g. auth.example.com) instead of localhost.
+#      Replace the example FQDNs below with your domain. The app also enforces
+#      these via ALLOWED_HOSTS (TrustedHostMiddleware) — proxy host rules are
+#      defense-in-depth; the app-layer guard is the primary control.
+#   3. Update the TLS section to use your real certificate paths or ACME resolver.
+#
+# TOPOLOGY: the routers below expose BOTH /user and /fastapi over HTTPS (Case B,
+# external clients). For the more closed Case A (UI-only / gateway-only), delete
+# the fastapi-public-router so the consumer is reachable only on the Docker
+# network. Either way the SECURITY CONTRACT path exclusions stay (see below).
 #
 # HSTS WARNING: once enabled, browsers refuse plain HTTP to this host for
 # stsSeconds. Only enable after TLS is stable and trusted.
@@ -54,12 +66,11 @@ http:
     auth-public-router:
       entryPoints:
         - websecure
-      # LOCALHOST-ONLY by default. PRODUCTION: replace `localhost` with your public
-      # FQDN (e.g. Host(`auth.example.com`)) to serve real traffic, or delete the
-      # `Host(...) && ` prefix to match any hostname/IP.
+      # Pinned to the real FQDN — replace auth.example.com with your domain.
+      # Deleting the `Host(...) && ` prefix matches any hostname/IP (not advised).
       # The path exclusions are the SECURITY CONTRACT and MUST stay regardless —
       # /user/health|metrics|private are never publicly routable.
-      rule: "Host(`localhost`) && PathPrefix(`/user`) && !(PathPrefix(`/user/health`) || PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
+      rule: "Host(`auth.example.com`) && PathPrefix(`/user`) && !(PathPrefix(`/user/health`) || PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
       service: auth-service
       middlewares:
         - security-headers-prod
@@ -76,13 +87,13 @@ http:
         - security-headers-prod
         - internal-only
 
-    # FastAPI-Service: public routes on HTTPS
+    # FastAPI-Service: public routes on HTTPS (Case B). For Case A (UI-only),
+    # DELETE this router so the consumer is reachable only on the Docker network.
     fastapi-public-router:
       entryPoints:
         - websecure
-      # LOCALHOST-ONLY by default. PRODUCTION: replace `localhost` with your public
-      # FQDN, or delete the `Host(...) && ` prefix to match any hostname/IP.
-      rule: "Host(`localhost`) && PathPrefix(`/fastapi`)"
+      # Pinned to the real FQDN — replace api.example.com with your domain.
+      rule: "Host(`api.example.com`) && PathPrefix(`/fastapi`)"
       service: fastapi-service
       middlewares:
         - security-headers-prod

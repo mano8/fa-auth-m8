@@ -8,13 +8,14 @@ import uvicorn
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.routing import APIRoute
 from fastapi.middleware.cors import CORSMiddleware
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.exc import OperationalError as SQLAlchemyOperationalError
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from auth_user_service.routes import api_router
 from auth_user_service.core.config import settings
@@ -23,6 +24,7 @@ from auth_user_service.events import metrics as _event_metrics
 from auth_sdk_m8.controllers.meta import mount_service_meta
 from auth_sdk_m8.observability import metrics as _metrics
 from auth_sdk_m8.observability.middleware import MetricsMiddleware
+from auth_sdk_m8.security.guards import make_scrape_credential_guard
 from auth_sdk_m8.security.headers import add_security_headers_middleware
 from auth_user_service.core.service_meta import build_service_meta
 
@@ -317,6 +319,20 @@ if settings.METRICS_ENABLED:
 #      both default False and are decoupled from the production gate.
 add_security_headers_middleware(app, settings)
 
+# TrustedHostMiddleware — outermost layer (added last so it wraps everything).
+# When ALLOWED_HOSTS is unset the middleware is skipped and any Host is accepted
+# (suitable for a fully-internal deployment where Traefik is the sole ingress).
+# In non-production, ``testserver`` is auto-injected so HTTPX test clients work
+# without explicitly listing it.  In production (ENVIRONMENT=production or
+# STRICT_PRODUCTION_MODE=true), only the explicitly listed FQDNs are accepted —
+# matching the production overlay's Traefik FQDN host rules for defence-in-depth.
+if settings.ALLOWED_HOSTS:
+    _allowed_hosts = list(settings.ALLOWED_HOSTS)
+    _is_prod = settings.ENVIRONMENT == "production" or settings.STRICT_PRODUCTION_MODE
+    if not _is_prod and "testserver" not in _allowed_hosts:
+        _allowed_hosts = [*_allowed_hosts, "testserver"]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
+
 app.include_router(api_router, prefix=settings.API_PREFIX)
 
 # Standard service triad (auth-sdk-m8 >= 1.4.0): the issuer mounts the shared
@@ -326,11 +342,22 @@ app.include_router(api_router, prefix=settings.API_PREFIX)
 mount_service_meta(app, build_service_meta(), prefix=settings.API_PREFIX)
 
 if settings.METRICS_ENABLED:
+    # Optional static scoped scrape credential (1.4). Internal-only by default —
+    # when METRICS_SCRAPE_CREDENTIAL is unset the guard is a no-op and the
+    # network boundary (internal entrypoint) stays the sole control. When set,
+    # requests must present ``Authorization: Bearer <credential>`` (constant-time
+    # match). The guard lives at the app layer so it survives a proxy swap.
+    _scrape_guard = make_scrape_credential_guard(
+        settings.METRICS_SCRAPE_CREDENTIAL.get_secret_value()
+        if settings.METRICS_SCRAPE_CREDENTIAL
+        else None
+    )
 
     @app.get(
         f"{settings.API_PREFIX}/metrics",
         include_in_schema=False,
         tags=["observability"],
+        dependencies=[Depends(_scrape_guard)],
     )
     def metrics_endpoint() -> Response:
         """Expose Prometheus metrics."""
