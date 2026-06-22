@@ -114,6 +114,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Raised the `/meta` compatibility contract range lower bound to
+  `>=0.9.9 <0.10.0` (was `>=0.9.8 <0.10.0`) in
+  `auth_user_service/core/service_meta.py` so consumers pin to the hardened
+  security baseline. `CONTRACT_VERSION` stays `0.9`; `/meta` + `/ping` are
+  unchanged on the wire.
 - Bumped the `auth-sdk-m8` dependency to `>=1.5.0,<2.0.0` (was `>=1.4.0`) in
   `auth_user_service/requirements_base.txt`, aligning the issuer with the rest
   of the fleet (`fastapi-m8` pins the same range) and capping below the breaking
