@@ -11,6 +11,58 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased] — Per-consumer scoped private-API credentials + service tokens (9.1, issuer side)
+
+> **Requires `auth-sdk-m8 >= 2.0.0` (and `< 3.0.0`)** — pin bumped in
+> `auth_user_service/requirements_base.txt`. This consumes the SDK's 9.1
+> verification primitives (`ConsumerCredentialRegistry`, `make_consumer_authorizer`).
+> 2.0.0 also **single-mounts** the liveness `/ping` route (served only at
+> `{API_PREFIX}/ping` and advertised in the schema; the root `/ping` is no longer
+> mounted) — a breaking change vs the 1.5.0 dual-mount; the `/ping` test is
+> updated accordingly. Deferred / post-1.0 roadmap item (plan 9.1); not part of
+> the 1.0.0 security-remediation scope.
+
+### Added
+
+- **Per-consumer scoped private-API credentials** (plan item 9.1, near-term —
+  issuer side). New `PRIVATE_API_CONSUMERS` setting maps consumer ids → scoped,
+  hashed-at-rest secrets. When configured it **replaces** the single shared
+  `PRIVATE_API_SECRET` on the private routes: each consumer presents
+  `X-Internal-Client` + `X-Internal-Token` and is authorized only for its granted
+  scopes (`introspection` / `event-stream` / `user-create`; **deny-by-default**),
+  bounding the blast radius to one consumer. `auth_user_service/core/consumer_registry.py`
+  builds an `auth_sdk_m8` `ConsumerCredentialRegistry` from config, auto-detecting
+  plaintext vs the portable `sha256$<salt>$<digest>` hashed form. The `/private`
+  routes are gated per-route by scope via the new
+  `auth_user_service.core.deps.require_private_scope`.
+
+- **Short-TTL scoped service tokens** (plan item 9.1, medium-term). New
+  `{API_PREFIX}/private/v1/service-token` exchange: a consumer authenticates with
+  its bootstrap credential and receives an OAuth-client-credentials-style JWT
+  carrying a (narrowable) subset of its granted scopes, presented as
+  `Authorization: Bearer <token>` on subsequent private calls. Tokens are signed
+  with `PRIVATE_API_SECRET` (HS256), isolated from user tokens by a dedicated
+  audience + `type=service` claim, and expire after `SERVICE_TOKEN_TTL_SECONDS`
+  (default 300). Rotation comes from the short TTL; the per-consumer bootstrap
+  secret rotates rarely. `/metrics` keeps its static scrape credential (no token
+  model). `auth_user_service/services/service_token.py`.
+
+- Tests (`tests/security/test_consumer_private_auth.py`, 23 cases) cover the
+  plan's required matrix — wrong consumer secret rejected, consumer A cannot use
+  consumer B's secret, expired service token rejected, scope violation denied —
+  plus the legacy single-`PRIVATE_API_SECRET` fallback, the encoded/plaintext
+  loader paths, and the exchange route (mint / narrow / escalation-denied /
+  disabled-without-registry). 884 tests, 100% coverage, ruff + mypy + bandit green.
+
+### Changed
+
+- **Back-compatible by default.** With `PRIVATE_API_CONSUMERS` unset (the
+  default), the private routes keep the legacy single-`PRIVATE_API_SECRET` gate —
+  home-lab and existing deployments are unaffected. The per-consumer model is
+  strictly opt-in. `PRIVATE_API_SECRET` remains required (it signs service
+  tokens and backs `/health` detail-gating + `/metrics`). Fully retiring the
+  shared `PRIVATE_API_SECRET` stays a later major.
+
 ## [0.9.9] — 2026-06-22 · Security remediation: hardened compose, app-layer guards, Redis ACLs
 
 > **Requires `auth-sdk-m8 >= 1.5.0` (and `< 2.0.0`)** — pin bumped in

@@ -6,12 +6,32 @@ This module loads environment settings securely and applies best practices.
 from pathlib import Path
 from typing import Optional
 
-from pydantic import EmailStr, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, field_validator
 from pydantic_settings import SettingsConfigDict
 from auth_sdk_m8.utils.paths import find_dotenv
 from auth_sdk_m8.core.config import CommonSettings
 from auth_sdk_m8.observability.settings import ObservabilitySettingsMixin
 # pylint: disable=invalid-name, import-outside-toplevel
+
+
+class ConsumerCredentialConfig(BaseModel):
+    """One per-consumer private-API credential, as supplied via configuration.
+
+    Used by the Phase 9.1 issuer side (``PRIVATE_API_CONSUMERS``): the issuer
+    replaces the single shared ``PRIVATE_API_SECRET`` with a map of consumer ids
+    → scoped per-consumer secrets. ``secret`` is either the plaintext bootstrap
+    secret (dev convenience) or the portable ``sha256$<salt_hex>$<digest_hex>``
+    encoded form (production — hashed at rest, never plaintext on disk); the
+    loader auto-detects which by the ``sha256$`` prefix. ``scopes`` are
+    deny-by-default — a consumer is refused every private operation until granted
+    one (``introspection`` / ``event-stream`` / ``user-create``, or a custom
+    string). See :mod:`auth_user_service.core.consumer_registry`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    secret: SecretStr
+    scopes: list[str] = Field(default_factory=list)
 
 
 class Settings(ObservabilitySettingsMixin, CommonSettings):
@@ -48,6 +68,10 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
         "SESSION_SECRET",
         "TOKENS_ENCRYPTION_KEY",
         "METRICS_SCRAPE_CREDENTIAL",
+        # Holds per-consumer bootstrap secrets (plaintext or hashed); keep it out
+        # of the debug dump. The strength/changethis validators skip it safely
+        # (it is a mapping, not a SecretStr).
+        "PRIVATE_API_CONSUMERS",
     ]
     passwords = CommonSettings.passwords + ["FIRST_SUPERUSER_PASSWORD"]
     secret_keys = CommonSettings.secret_keys + [
@@ -126,6 +150,23 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     # Never auto-generated from request host to prevent host-spoofing.
     GOOGLE_OAUTH_REDIRECT_URI: str = ""
     PRIVATE_API_SECRET: SecretStr
+    # ── Per-consumer private-API credentials (Phase 9.1, issuer side) ─────────
+    # Map of consumer id → {secret, scopes}. When non-empty it *replaces* the
+    # single shared PRIVATE_API_SECRET on the private routes: each consumer
+    # presents X-Internal-Client + X-Internal-Token and is authorized only for
+    # the scopes it was granted (deny-by-default), bounding the blast radius to
+    # one consumer. When empty (the default) the private routes fall back to the
+    # legacy single PRIVATE_API_SECRET gate — homelab/back-compat stays intact.
+    # PRIVATE_API_SECRET is still required: it doubles as the signing key for the
+    # short-TTL service tokens minted at {API_PREFIX}/private/v1/service-token and
+    # backs /health detail-gating + /metrics (1.4). Supply as a JSON object, e.g.
+    #   PRIVATE_API_CONSUMERS='{"media-service":{"secret":"sha256$..","scopes":["introspection"]}}'
+    PRIVATE_API_CONSUMERS: dict[str, ConsumerCredentialConfig] = Field(
+        default_factory=dict
+    )
+    # Lifetime (seconds) of a minted short-TTL scoped service token. Rotation
+    # comes from the short TTL; the per-consumer bootstrap secret rotates rarely.
+    SERVICE_TOKEN_TTL_SECONDS: int = Field(300, ge=30, le=3600)
     # Dedicated signing key for the Starlette session cookie. Kept separate
     # from TOKENS_ENCRYPTION_KEY (key separation): rotating the session key
     # must not invalidate encrypted external tokens, and vice versa.
