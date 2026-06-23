@@ -123,7 +123,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | Tag | Method | Path | Auth | Description |
 | --- | ------ | ---- | ---- | ----------- |
 | meta | GET | `/meta` | — | Static service/version/contract identity (`ServiceMeta`) for client compat checks; cacheable, read pre-auth |
-| meta | GET | `/ping` | — | Dependency-free liveness probe → `{"status": "ok"}` (prefix-independent, **not** under `API_PREFIX`) |
+| meta | GET | `/ping` | — | Dependency-free liveness probe → `{"status": "ok"}` (single-mounted at `{API_PREFIX}/ping` since auth-sdk-m8 2.0.0) |
 | health | GET | `/health/` | — | Redis, database, effective token mode (dependency-aware readiness) |
 | well-known | GET | `/.well-known/jwks.json` | — | JWKS endpoint (RS256/ES256 public key; `{"keys":[]}` for HS256) |
 | login | POST | `/login/access-token` | — | Email/password login — returns access token, sets refresh cookie |
@@ -162,7 +162,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | private | POST | `/private/v1/jti-status` | X-Internal-Token | Check whether an access-token JTI is revoked (inter-service) |
 | private | GET | `/private/v1/events/stream` | X-Internal-Token | SSE bridge of `session-revoked` / `user-deleted` events (inter-service) |
 
-**Service triad (`/meta`, `/ping`, `/health/`).** `/ping` answers "is the process up?" (liveness — point container/orchestrator liveness probes here; never touches a dependency), `/health/` answers "are dependencies reachable?" (readiness — Redis/DB), and `/meta` answers "what version/contract is this?" (client compatibility, read pre-auth — satisfies `@fa-m8/astro-auth-m8`'s `assertFaAuthM8Compatibility`). `/meta` + `/ping` are the shared auth-sdk-m8 routes (`mount_service_meta`); the issuer mounts them directly since it doesn't use `fastapi_m8.create_app`. `/ping` is intentionally prefix-independent so liveness never depends on routing config.
+**Service triad (`/meta`, `/ping`, `/health/`).** `/ping` answers "is the process up?" (liveness — point container/orchestrator liveness probes here; never touches a dependency), `/health/` answers "are dependencies reachable?" (readiness — Redis/DB), and `/meta` answers "what version/contract is this?" (client compatibility, read pre-auth — satisfies `@fa-m8/astro-auth-m8`'s `assertFaAuthM8Compatibility`). `/meta` + `/ping` are the shared auth-sdk-m8 routes (`mount_service_meta`); the issuer mounts them directly since it doesn't use `fastapi_m8.create_app`. Since auth-sdk-m8 2.0.0 `/ping` is **single-mounted** at `{API_PREFIX}/ping` (the root `/ping` is no longer served when a prefix is set) and advertised in the schema — point container/orchestrator liveness probes at `{API_PREFIX}/ping`.
 
 Interactive docs at `{BACKEND_HOST}{API_PREFIX}/docs` when `SET_DOCS=true` **and** `ENVIRONMENT ≠ production`. In production docs are suppressed by default; set `SERVE_DOCS_IN_PRODUCTION=true` to explicitly enable them (emits a startup warning — use only for public/open-source APIs).
 

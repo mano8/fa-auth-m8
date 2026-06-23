@@ -13,10 +13,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — Per-consumer scoped private-API credentials + service tokens (9.1, issuer side)
 
-> **Requires `auth-sdk-m8 >= 2.0.0` (and `< 3.0.0`)** — pin bumped in
+> **Requires `auth-sdk-m8 >= 2.0.1` (and `< 3.0.0`)** — pin bumped in
 > `auth_user_service/requirements_base.txt`. This consumes the SDK's 9.1
 > verification primitives (`ConsumerCredentialRegistry`, `make_consumer_authorizer`).
-> 2.0.0 also **single-mounts** the liveness `/ping` route (served only at
+> The `2.0.1` floor pulls in the `pydantic-settings >= 2.14.2` security patch
+> (symlink-traversal hardening in the nested-secrets source). 2.0.0 also
+> **single-mounts** the liveness `/ping` route (served only at
 > `{API_PREFIX}/ping` and advertised in the schema; the root `/ping` is no longer
 > mounted) — a breaking change vs the 1.5.0 dual-mount; the `/ping` test is
 > updated accordingly. Deferred / post-1.0 roadmap item (plan 9.1); not part of
@@ -56,6 +58,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Dependency floors raised for the `auth-sdk-m8 2.0.1` / `fastapi-m8 3.0.0`
+  alignment.** `auth_user_service/requirements_base.txt` now pins
+  `auth-sdk-m8>=2.0.1,<3.0.0` (was `>=2.0.0`) and `pydantic_settings>=2.14.2`
+  (was `>=2.14.1`). The example consumers move to `fastapi-m8>=3.0.0,<4.0.0`
+  (was `>=2.1.0,<3.0.0`) in `examples/fastapi_full/requirements_base.txt` (also
+  `pydantic_settings>=2.14.2`) and `examples/fastapi_minimal/requirements.txt`.
+  `fastapi-m8 3.0.0` requires `auth-sdk-m8>=2.0.1,<3.0.0`, so the whole stack
+  pins to the single-mount `/ping` SDK and the `pydantic-settings 2.14.2`
+  security patch. No consumer code changes: the public `fastapi_m8` API surface
+  used by the examples is unchanged across the major. Docs aligned to the SDK
+  2.0.x single-mount `/ping` (root `README.md` route table + service-triad note,
+  and `examples/docker_compose/SECURITY.md` public-route table + bring-up check
+  now reference `{API_PREFIX}/ping`). The removed `TOKEN_ALGORITHM` knob was
+  already migrated to `ACCESS_TOKEN_ALGORITHM` across every compose stack.
 - **Back-compatible by default.** With `PRIVATE_API_CONSUMERS` unset (the
   default), the private routes keep the legacy single-`PRIVATE_API_SECRET` gate —
   home-lab and existing deployments are unaffected. The per-consumer model is

@@ -1,10 +1,10 @@
-fastapi-m8[db,postgres,mysql]>=2.1.0,<3.0.0
+fastapi-m8[db,postgres,mysql]>=3.0.0,<4.0.0
 uvicorn>=0.48.0
 
 alembic>=1.18.4
 
 pydantic>=2.13.4
-pydantic_settings>=2.14.1
+pydantic_settings>=2.14.2
 
 tenacity>=9.1.4
 

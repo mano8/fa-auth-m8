@@ -78,7 +78,7 @@ Internet
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| GET | `/ping` | — | Dependency-free liveness; prefix-independent |
+| GET | `{API_PREFIX}/ping` | — | Dependency-free liveness; single-mounted under the prefix (auth-sdk-m8 2.0.0) |
 | GET | `{API_PREFIX}/meta` | — | Service/version identity for client compat checks |
 | GET | `{API_PREFIX}/health/` | — | Shallow `{"status":...}` only; full infra detail requires `X-Internal-Token` |
 | GET | `{API_PREFIX}/.well-known/jwks.json` | — | JWKS (RS256/ES256 public key) |
@@ -208,7 +208,7 @@ Requires Docker Compose **v2.24+** for the `!reset` / `!override` merge tags.
 ### 4 — Validate before opening traffic
 
 - [ ] Run `security-tests-m8 preflight --deployment-root .` — fix any fatal findings.
-- [ ] Confirm the service comes up: `curl -k https://<fqdn>/ping` → `{"status":"ok"}`.
+- [ ] Confirm the service comes up: `curl -k https://<fqdn>{API_PREFIX}/ping` → `{"status":"ok"}`.
 - [ ] Confirm docs are suppressed: `curl -k https://<fqdn>/user/docs` → 404 or redirect.
 - [ ] Confirm `/user/private/*` is not reachable on `websecure`:
   `curl -k https://<fqdn>/user/private/v1/jti-status` → 404.
