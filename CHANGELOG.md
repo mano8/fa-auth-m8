@@ -79,6 +79,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   tokens and backs `/health` detail-gating + `/metrics`). Fully retiring the
   shared `PRIVATE_API_SECRET` stays a later major.
 
+### Tests
+
+- **Degradation-policy regression suite** (plan item 5.5). New
+  `tests/security/test_degradation_policy.py` (7 tests) locks the auth service's
+  fail-open/fail-closed contract. Existing resilience suites only verify each
+  enforcement point honours a **mocked** `effective_failure_mode`; this suite
+  exercises the **real** `AUTH_STRICT_MODE` override on a genuine `Settings`
+  instance and proves it drives fail-closed end to end: strict forces every
+  per-control mode (`refresh_validation`, `session_write`, `rate_limit`,
+  `access_revocation`) to `fail_closed` over explicit `fail_open` settings; with
+  Redis down `_check_jti_revocation` returns 503 under strict even when
+  `ACCESS_REVOCATION_FAILURE_MODE=fail_open`; a non-strict `fail_open` opt-out
+  proceeds but is recorded via `degraded_decision_total` labelled with the real
+  effective mode; and the `/health` body's `degradation_modes` reflect the real
+  posture (all `fail_closed` under strict). No production code changed.
+
 ## [0.9.9] — 2026-06-22 · Security remediation: hardened compose, app-layer guards, Redis ACLs
 
 > **Requires `auth-sdk-m8 >= 1.5.0` (and `< 2.0.0`)** — pin bumped in
