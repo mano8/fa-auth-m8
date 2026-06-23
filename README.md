@@ -26,6 +26,7 @@ The included example stacks use `_m8` in their names as a personal naming conven
 - [Environment Variables](#environment-variables)
 - [Infrastructure Resilience](#infrastructure-resilience)
 - [Deployment Modes](#deployment-modes)
+- [Security defaults](#security-defaults)
 - [API Key Authentication](#api-key-authentication)
 - [Private API](#private-api)
 - [Consumer Service Integration](#consumer-service-integration)
@@ -723,6 +724,60 @@ files and enabled by default in `production_dynamic_conf.yml`. At the applicatio
 **off by default** and emitted only when `HSTS_ENABLED=true` (and `HSTS_MAX_AGE > 0`); it is
 never emitted on a `local` stack even when enabled. Only activate HSTS after confirming TLS is
 stable and the hostname will remain HTTPS-only for the full max-age period.
+
+---
+
+## Security defaults
+
+Security-critical settings and how they behave across the stack. All `secret_fields` reject the
+literal `changethis` placeholder at startup — a service with any modeled secret still at its
+placeholder fails closed immediately.
+
+**Boot-required conditions** — the service refuses to start unless:
+
+- Every `secret_fields` value has been changed from `changethis`.
+- `EVENT_SIGNING_KEY` is set when `EVENT_SIGNING_ENABLED=true` (the default).
+- `TOKEN_ISSUER` and `TOKEN_AUDIENCE` are set when `TOKEN_STRICT_VALIDATION=true` (the default).
+- `ACCESS_PUBLIC_KEY_FILE` or `JWKS_URI` is present for RS256/ES256.
+
+| Setting | SDK default | Dev / local | `hardened_m8` | Production overlay |
+| --- | --- | --- | --- | --- |
+| `ACCESS_TOKEN_ALGORITHM` | `RS256` | any | `RS256` | `RS256` |
+| `TOKEN_STRICT_VALIDATION` | `true` | `true` | `true` | `true` |
+| `TOKEN_ISSUER` | `None` | optional | set in `auth.env.example` | **required** (fatal if unset) |
+| `TOKEN_AUDIENCE` | `None` | optional | set in `auth.env.example` | **required** (fatal if unset) |
+| `EVENT_SIGNING_ENABLED` | `true` | `true` | `true` | `true` |
+| `EVENT_SIGNING_KEY` | `None` | **required** — boot fails without it | non-`changethis` required | non-`changethis` required |
+| `ENVIRONMENT` | `local` | `local` | `local` | `production` (overlay) |
+| `STRICT_PRODUCTION_MODE` | `false` | `false` | `false` | `true` (overlay) |
+| `ALLOWED_HOSTS` | `None` | no host check | `None` — Traefik `Host()` rules are primary | **required** (strict fatal if unset) |
+| `ALLOWED_ORIGINS` | `["http://localhost:8080"]` | localhost | localhost | no `localhost` (prod fatal) |
+| `SET_DOCS` / `SET_OPEN_API` | `true` | on | on | **off** (gated in production) |
+| `HSTS_ENABLED` | `false` | never (local-blocked) | never | opt-in only (`HSTS_ENABLED=true`) |
+| `CONTENT_SECURITY_POLICY_ENABLED` | `false` | never (local-blocked) | never | opt-in only |
+| `SESSION_COOKIE_SECURE` | `false` | `false` | `false` | `true` (overlay) |
+| `ALLOW_INTERNAL_HTTP` | `false` | no check in `local` | Docker-network-only | `true` opt-in (single trusted Docker host) |
+| `AUTH_STRICT_MODE` | `false` | `false` | `false` | optionally `true` for fail-closed Redis ops |
+
+**Dev-only stacks.** The examples below are development/learning templates and must not be used
+as-is for production deployments:
+
+| Stack | Why dev-only |
+| --- | --- |
+| `quickstart_m8` | HS256, no hardening layer, loopback DB/Redis |
+| `postgres_m8` | No hardening layer, loopback DB |
+| `rs256_m8` | RS256 demo, no hardening layer |
+| `metrics_m8` | Observability demo, no hardening layer |
+| `vault_dev_m8` | HashiCorp Vault in **dev mode** with root token — never production |
+
+`hardened_m8` is the only stack with a production path — apply `docker-compose.production.yml` as
+documented in [Going to production](#8-going-to-production-hardened_m8-overlay). See
+[`examples/docker_compose/SECURITY.md`](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose/SECURITY.md)
+for the full operational security runbook (trust model, route inventory, secret inventory, attacker
+paths, production checklist, and incident response playbooks).
+
+For the complete cross-layer table including fastapi-m8 consumer defaults, see the
+[auth-sdk-m8 Defaults by layer](https://github.com/mano8/auth-sdk-m8#defaults-by-layer) section.
 
 ---
 

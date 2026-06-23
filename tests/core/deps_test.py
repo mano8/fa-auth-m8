@@ -24,7 +24,7 @@ from auth_sdk_m8.schemas.user import UserModel
 
 
 def _make_valid_token(user_id: str | None = None) -> str:
-    """Create a signed access token that passes decode_access_token validation."""
+    """Create a signed access token that passes TokenValidator validation."""
     import re
 
     _pattern = re.compile(
