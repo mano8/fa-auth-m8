@@ -22,8 +22,10 @@ metrics:
     entryPoint: metrics
 
 providers:
-  docker:
-    exposedByDefault: false
+  # File provider only — no Docker provider, so the Docker socket is never
+  # mounted (the socket is equivalent to host root). All routers/services are
+  # declared statically in dynamic_conf.yml; backends resolve over the Docker
+  # network's embedded DNS by container name (e.g. http://auth_user_service:8000).
   file:
     filename: /etc/traefik/dynamic_conf.yml
     watch: true
