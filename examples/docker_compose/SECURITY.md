@@ -230,6 +230,183 @@ Requires Docker Compose **v2.24+** for the `!reset` / `!override` merge tags.
 
 ---
 
+## Planned secret rotation
+
+Proactive, scheduled rotation — distinct from the leak-driven **Incident response** playbooks below
+(those assume the old value is already compromised and must be cut over immediately, often with a
+session wipe). For a *planned* rotation you use each secret's no-downtime path where one exists.
+
+Every playbook states **rotation order → no-downtime path → blast radius → expected invalidation →
+verification → rollback**. Where a secret already has a leak playbook in *Incident response*, the
+steps are the same minus the wipe/audit — that playbook is cross-referenced rather than repeated.
+
+### Rotation mechanism matrix
+
+| Secret | Env var | No-downtime path | Mechanism | Forced re-auth |
+| --- | --- | --- | --- | --- |
+| RS256/ES256 signing keypair | `ACCESS_PRIVATE_KEY_FILE` (+ `ACCESS_KEY_ID`) | Partial (≤ JWKS cache TTL) | Single active JWK; consumers re-fetch JWKS | Access tokens only (refresh survives) |
+| Access signing key (HS256) | `ACCESS_SECRET_KEY` | No (fleet cutover) | Shared symmetric secret | Access tokens only (refresh survives) |
+| Refresh signing key | `REFRESH_SECRET_KEY` (+ `_OLD`) | **Yes** (dual-key) | `REFRESH_SECRET_KEY_OLD` fallback | None during window |
+| Session middleware key | `SESSION_SECRET` | No (≤1h window) | Single `secret_key`; `max_age=3600` bounds it | Mid-session cookies only |
+| Fernet payload key | `TOKENS_ENCRYPTION_KEY` (+ `_OLD`) | **Yes** (dual-key) | `MultiFernet([new, old])` | None during window |
+| Event signing key | `EVENT_SIGNING_KEY` | Soft (best-effort stream) | Fleet-coordinated; JTI blacklist stays authoritative | None |
+| Shared private-API secret | `PRIVATE_API_SECRET` | No (fleet cutover) | Shared secret + service-token signer | None (service only) |
+| Per-consumer credential | `PRIVATE_API_CONSUMERS` entry | **Yes** (per-entry) | Independent hashed entry per consumer | None (one consumer) |
+| Scrape credential | `METRICS_SCRAPE_CREDENTIAL` | Coordinated (auth + Prometheus) | Static bearer credential | None (metrics only) |
+| Google OAuth2 client secret | `GOOGLE_CLIENT_SECRET` | **Yes** (two-secret overlap at Google) | Google Console dual-secret | None (login flow only) |
+| Bootstrap superuser password | `FIRST_SUPERUSER_PASSWORD` | n/a (boot seed only) | Rotate the account in-app, not via env | One account |
+| DB / Redis credential | `DB_PASSWORD` / `REDIS_PASSWORD` | No (brief redeploy) | Datastore-side password change | None (brief outage) |
+
+### Rotation order (which secrets must move together)
+
+- **Independent (rotate one at a time, no coordination):** `REFRESH_SECRET_KEY` (dual-key),
+  `TOKENS_ENCRYPTION_KEY` (dual-key), `SESSION_SECRET`, a single `PRIVATE_API_CONSUMERS` entry,
+  `METRICS_SCRAPE_CREDENTIAL`, `GOOGLE_CLIENT_SECRET`, `DB_PASSWORD`, `REDIS_PASSWORD`.
+- **Auth-first, consumers follow within the cache TTL:** the RS256/ES256 keypair + `ACCESS_KEY_ID`
+  — the issuer cuts over, consumers re-fetch JWKS within `JWKS_CACHE_TTL_SECONDS` (default 300 s).
+- **Fleet-coordinated (rotate the auth service and every holder in one window):** `ACCESS_SECRET_KEY`
+  (HS256 — every consumer holds it to validate), the shared `PRIVATE_API_SECRET`, and
+  `EVENT_SIGNING_KEY`.
+
+### RS256/ES256 signing keypair + `ACCESS_KEY_ID`
+
+**No-downtime path (partial).** fa-auth publishes exactly **one** active public key in JWKS
+(`/.well-known/jwks.json` returns a single JWK keyed by `ACCESS_KEY_ID`); it does **not** serve two
+keys simultaneously, so there is no JWKS overlap window. A planned rotation is therefore a cutover
+with a cache-bounded propagation window:
+
+1. Generate a new keypair and a **new** `ACCESS_KEY_ID` (a fresh `kid` lets consumers distinguish the
+   keys): `openssl genrsa -out private.pem 2048 && openssl rsa -in private.pem -pubout -out public.pem`.
+2. Update `ACCESS_PRIVATE_KEY_FILE` / `ACCESS_PUBLIC_KEY_FILE` mounts and `ACCESS_KEY_ID` in
+   `auth.env`; redeploy the auth service. New access tokens are now signed by the new key and JWKS
+   serves the new `kid`.
+3. Consumers re-fetch JWKS within `JWKS_CACHE_TTL_SECONDS` (default 300 s). To eliminate the window,
+   restart consumers immediately after the deploy to force an instant JWKS re-fetch.
+
+**Blast radius.** Access tokens already issued under the old `kid` are rejected once consumers load
+the new JWKS (old key no longer served). Refresh tokens use `REFRESH_SECRET_KEY` and are unaffected,
+so clients transparently mint a fresh access token on their next refresh — user impact is bounded by
+`ACCESS_TOKEN_EXPIRE_MINUTES`, not a full re-login.
+
+**Expected invalidation.** All outstanding access tokens signed by the previous key.
+**Verification.** `GET /.well-known/jwks.json` shows the new `kid`; a freshly issued token validates
+at a consumer; a token carrying the old `kid` returns `401`.
+**Rollback.** Restore the previous keypair + `ACCESS_KEY_ID` and redeploy; consumers re-fetch within
+the cache TTL.
+
+### Access signing key — HS256 (`ACCESS_SECRET_KEY`)
+
+**No-downtime path.** None — in HS256 mode every consumer holds the shared secret to validate, so the
+rotation is a fleet cutover. Update `ACCESS_SECRET_KEY` in `auth.env` **and every consumer** in the
+same window, then redeploy all. **Blast radius / invalidation:** all access tokens (refresh survives,
+so re-login is not forced). **Verification:** new token validated by a consumer; a token signed with
+the old secret returns `401`. **Rollback:** revert to the old secret across the fleet and redeploy.
+(For the leak case — immediate cutover plus session wipe — see *Leaked access-token signing key*.)
+
+### Refresh signing key (`REFRESH_SECRET_KEY`)
+
+Use the **dual-key** path: set the new value as `REFRESH_SECRET_KEY`, move the current value to
+`REFRESH_SECRET_KEY_OLD`, redeploy. Refresh tokens signed with the old key validate via the fallback
+for the rotation window (`REFRESH_TOKEN_EXPIRE_MINUTES`); remove `REFRESH_SECRET_KEY_OLD` and redeploy
+once it closes. No forced re-auth during the window. Full steps, verification, and rollback are in
+*Incident response → Leaked refresh signing key* (a planned rotation is that playbook without the
+Redis `rt:*` wipe).
+
+### Session middleware key (`SESSION_SECRET`)
+
+**No-downtime path.** None — Starlette's `SessionMiddleware` exposes a single `secret_key` with no
+native key-list, so there is no fallback signer (decision recorded in plan item 6.2-pre and in
+`core/config.py`). Set the new value and redeploy. **Blast radius:** session cookies signed with the
+old key become invalid; affected callers (mid OAuth/PKCE flow) re-authenticate. The cookie's
+`max_age=3600` (`main.py`) caps the window to **≤1 h** — cookies expire on that schedule regardless.
+Keep `SESSION_SECRET ≠ TOKENS_ENCRYPTION_KEY` (key-separation invariant) so this rotation never
+touches encrypted Redis payloads. **Verification:** a fresh login establishes a working session; an
+old-key cookie is rejected. **Rollback:** revert `SESSION_SECRET` and redeploy.
+
+### Fernet payload key (`TOKENS_ENCRYPTION_KEY`)
+
+Use the **dual-key** `MultiFernet` path: move the current value to `TOKENS_ENCRYPTION_KEY_OLD`, set the
+new value as `TOKENS_ENCRYPTION_KEY`, redeploy. The service decrypts old-key payloads via the new→old
+fallback while writing new payloads under the new key — no session wipe or forced re-auth. Remove
+`TOKENS_ENCRYPTION_KEY_OLD` once every stored payload has been re-encrypted under (or expired past) the
+new key. Full detail (and the leak-case immediate cutover) is in *Incident response → Leaked
+`TOKENS_ENCRYPTION_KEY`*.
+
+### Event signing key (`EVENT_SIGNING_KEY`)
+
+**No-downtime path (soft).** The SSE bridge is a best-effort cache-eviction accelerator — the JTI
+blacklist (`jti-status`) remains the revocation authority — so a brief signing mismatch only drops
+frames (`auth_event_stream_events_total{result="dropped_sig_fail"}`), never changing correctness.
+Rotate the auth service `auth.env` and every consumer `api.env` in one window and redeploy. For a
+strictly seamless rollout, set `EVENT_SIGNING_ACCEPT_UNSIGNED=true` on consumers while distributing the
+key, then flip it back. **Blast radius:** event stream only; no user impact. **Verification:**
+`dropped_sig_fail` returns to zero once all publishers sign and all consumers verify with the new key.
+**Rollback:** revert to the old key fleet-wide (or re-enable `ACCEPT_UNSIGNED` mid-rollout). See also
+*Incident response → Leaked event-signing key*.
+
+### Private-API secret & per-consumer credentials
+
+**Per-consumer (`PRIVATE_API_CONSUMERS`, preferred — Phase 9.1).** Each consumer holds its own hashed
+entry, so rotation is independent: generate a new secret, update that consumer's entry
+(`sha256$<salt>$<digest>` or plaintext) in `auth.env` and the matching secret in that consumer's env,
+then redeploy the auth service and that one consumer. **Blast radius:** one consumer; no other holder
+is touched. Scopes (deny-by-default) are unchanged by a secret rotation.
+
+**Shared `PRIVATE_API_SECRET` (legacy single-secret mode).** Rotate the auth service and **every**
+registered consumer in one window (fleet cutover) — see *Incident response → Leaked `PRIVATE_API_SECRET`*.
+
+**Service-token note.** `PRIVATE_API_SECRET` also signs the short-TTL service tokens minted at
+`{API_PREFIX}/private/v1/service-token`. Rotating it invalidates outstanding service tokens, but they
+are re-minted automatically within `SERVICE_TOKEN_TTL_SECONDS` (default 300 s) on the consumer's next
+exchange — no operator action needed. **Verification:** the old secret returns `401` on
+`/private/v1/jti-status`; the consumer reconnects with the new credential. **Rollback:** revert the
+affected entry/secret and redeploy.
+
+### Prometheus scrape credential (`METRICS_SCRAPE_CREDENTIAL`)
+
+Rotate the value in `auth.env` and the matching `authorization` in Prometheus `scrape_configs` in the
+same window; redeploy the auth service and reload Prometheus. **Blast radius:** `/metrics` scraping
+only — a stale Prometheus receives `401` until updated; no user-facing impact. This is deliberately a
+long-lived static credential (short-TTL tokens are awkward for a scraper), so cadence can be relaxed.
+**Verification:** Prometheus resumes scraping with the new credential; a request with the old value
+returns `401`. **Rollback:** revert both sides and reload.
+
+### Google OAuth2 client secret (`GOOGLE_CLIENT_SECRET`)
+
+**No-downtime path.** The Google Cloud Console supports two simultaneously-valid client secrets: add a
+new secret in the Console, deploy it as `GOOGLE_CLIENT_SECRET`, confirm the login flow works, then
+delete the old secret in the Console. **Blast radius:** the Google OAuth login path only; password
+login is unaffected. **Verification:** complete a Google sign-in end-to-end. **Rollback:** revert
+`GOOGLE_CLIENT_SECRET` to the previous value (still valid in the Console until you delete it).
+
+### Bootstrap superuser password (`FIRST_SUPERUSER_PASSWORD`)
+
+This env var only **seeds** the superuser on an empty database — it is not read again after first boot.
+Rotate the account itself in-app (change the password via `{API_PREFIX}/profile/` as the superuser, or
+reset it through the user-management endpoints), not by editing the env file. Update
+`FIRST_SUPERUSER_PASSWORD` to a strong value for the record/next clean bootstrap. **Blast radius:** one
+account. **Verification:** log in with the new password; the old password is rejected.
+
+### Datastore credentials (`DB_PASSWORD`, `REDIS_PASSWORD`)
+
+Planned rotation uses the same mechanism as the leak playbooks (*Incident response → Leaked database
+password* / *Leaked Redis ACL credential*) **without** the audit and key-prefix wipe: change the
+password datastore-side, update `auth.env` (and `.env` for Redis), and redeploy the auth service.
+**Blast radius:** a brief redeploy window; no session impact when no data is wiped. **Verification:**
+`/user/health/` reports `"database":"ok"` / `"redis":"ok"` with `"circuit_breaker":"closed"`, and the
+old credential is rejected at the datastore. **Rollback:** revert the datastore-side change and the
+env value together.
+
+### Downstream-owned secrets (media-service-m8)
+
+`MEDIA_INTERNAL_SERVICE_TOKEN`, `MEDIA_SHARE_SIGNING_SECRET`, and the MinIO object-store credentials are
+**not held by fa-auth-m8** — they belong to `media-service-m8`. fa-auth's only relationship to
+media-service is its `PRIVATE_API_CONSUMERS` entry (rotated via the per-consumer playbook above). For
+those secrets' rotation procedures see the
+[media-service-m8 SECURITY.md](https://github.com/mano8/media-service-m8/blob/main/examples/docker_compose/SECURITY.md).
+
+---
+
 ## Incident response
 
 ### Legend
