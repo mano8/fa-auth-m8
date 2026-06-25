@@ -154,14 +154,21 @@ def refresh_google_session_tokens(
             )
 
         enc_key = settings.TOKENS_ENCRYPTION_KEY.get_secret_value()
+        old_enc_key = (
+            settings.TOKENS_ENCRYPTION_KEY_OLD.get_secret_value()
+            if settings.TOKENS_ENCRYPTION_KEY_OLD
+            else None
+        )
         client_session.external_access_token = (
-            SecurityHelper.encrypt_token(external_tokens.external_access_token, enc_key)
+            SecurityHelper.encrypt_token(
+                external_tokens.external_access_token, enc_key, old_enc_key
+            )
             if external_tokens.external_access_token
             else None
         )
         client_session.external_refresh_token = (
             SecurityHelper.encrypt_token(
-                external_tokens.external_refresh_token, enc_key
+                external_tokens.external_refresh_token, enc_key, old_enc_key
             )
             if external_tokens.external_refresh_token
             else None

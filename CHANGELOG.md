@@ -11,7 +11,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased] — Per-consumer scoped private-API credentials + service tokens (9.1, issuer side)
+## [Unreleased] — Per-consumer scoped private-API credentials + service tokens (9.1, issuer side) + `TOKENS_ENCRYPTION_KEY` dual-key rotation (6.2-pre)
 
 > **Requires `auth-sdk-m8 >= 2.0.1` (and `< 3.0.0`)** — pin bumped in
 > `auth_user_service/requirements_base.txt`. This consumes the SDK's 9.1
@@ -55,6 +55,27 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   plus the legacy single-`PRIVATE_API_SECRET` fallback, the encoded/plaintext
   loader paths, and the exchange route (mint / narrow / escalation-denied /
   disabled-without-registry). 884 tests, 100% coverage, ruff + mypy + bandit green.
+
+- **No-downtime `TOKENS_ENCRYPTION_KEY` rotation** (plan item 6.2-pre — the code
+  prerequisite that unblocks the 6.2 rotation playbooks). New optional
+  `TOKENS_ENCRYPTION_KEY_OLD` setting: when present, `SecurityHelper` builds a
+  `MultiFernet([new, old])` so external OAuth token payloads encrypted under the
+  previous key stay decryptable (new→old fallback) while new writes use the
+  current key — a Fernet key rotation no longer invalidates persisted tokens. The
+  key is strength-validated (`secret_keys`) and redacted from debug output
+  (`secret_fields`) only when set; unset (the default) keeps single-key behaviour.
+  Wired through both persistence call sites (`services/auth.py`,
+  `routes/sessions.py`). **`SESSION_SECRET` rotation decision:** accept the
+  bounded re-auth window — Starlette's `SessionMiddleware` has no native key-list,
+  and the cookie `max_age=3600` already caps a rotation's blast radius to ≤1h of
+  re-auth, so no fallback-capable signer is shipped (documented in
+  `core/config.py` and `examples/docker_compose/SECURITY.md`). New tests in
+  `tests/core/security_test.py` (cross-key decrypt, primary-key-on-write,
+  no-fallback failure, single-key `MultiFernet`) and
+  `tests/security/test_settings_validators.py` (optional default, strength
+  enforcement, `changethis` rejection, debug-output redaction). README env table,
+  `.example_env`, every compose `auth.env*` example, and the SECURITY.md secret
+  inventory + leaked-key playbook document the dual-key path.
 
 ### Changed
 

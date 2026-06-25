@@ -18,7 +18,7 @@ import uuid
 
 import bcrypt
 import jwt
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 
 from auth_sdk_m8.schemas.auth import TokenMinimalData, TokenAccessData, TokenSecret
 from auth_sdk_m8.core.security import ComSecurityHelper
@@ -140,19 +140,51 @@ class SecurityHelper(ComSecurityHelper):
         return Fernet(base64.urlsafe_b64encode(raw))
 
     @staticmethod
-    def encrypt_token(token: str, encryption_key: str) -> str:
-        """Encrypt a plaintext token for secure storage."""
+    def _multifernet(
+        encryption_key: str, old_encryption_key: Optional[str] = None
+    ) -> MultiFernet:
+        """Build a ``MultiFernet`` for no-downtime ``TOKENS_ENCRYPTION_KEY`` rotation.
+
+        Encryption always uses the **primary** (current) key — ``MultiFernet``
+        encrypts with the first key in the list. Decryption tries the primary key
+        first and falls back to ``old_encryption_key`` when supplied, so tokens
+        persisted under the previous key stay decryptable while a rotation is in
+        flight. Pass ``old_encryption_key=None`` (the steady state) for a
+        single-key ``MultiFernet``. See plan item 6.2-pre.
+        """
+        keys = [SecurityHelper._fernet(encryption_key)]
+        if old_encryption_key:
+            keys.append(SecurityHelper._fernet(old_encryption_key))
+        return MultiFernet(keys)
+
+    @staticmethod
+    def encrypt_token(
+        token: str, encryption_key: str, old_encryption_key: Optional[str] = None
+    ) -> str:
+        """Encrypt a plaintext token for secure storage.
+
+        ``old_encryption_key`` is accepted for call-site symmetry with
+        :meth:`decrypt_token`; encryption always uses the current
+        ``encryption_key`` (the primary ``MultiFernet`` key).
+        """
         return (
-            SecurityHelper._fernet(encryption_key)
+            SecurityHelper._multifernet(encryption_key, old_encryption_key)
             .encrypt(token.encode("utf-8"))
             .decode("utf-8")
         )
 
     @staticmethod
-    def decrypt_token(encrypted: str, encryption_key: str) -> str:
-        """Decrypt a stored token back to plaintext."""
+    def decrypt_token(
+        encrypted: str, encryption_key: str, old_encryption_key: Optional[str] = None
+    ) -> str:
+        """Decrypt a stored token back to plaintext.
+
+        When ``old_encryption_key`` is supplied, a token encrypted under either
+        the current or the previous key decrypts successfully (new→old fallback),
+        enabling a no-downtime ``TOKENS_ENCRYPTION_KEY`` rotation.
+        """
         return (
-            SecurityHelper._fernet(encryption_key)
+            SecurityHelper._multifernet(encryption_key, old_encryption_key)
             .decrypt(encrypted.encode("utf-8"))
             .decode("utf-8")
         )

@@ -125,6 +125,7 @@ excludes them via explicit `PathPrefix` deny rules in `dynamic_conf.yml` and
 | Old refresh signing key | `REFRESH_SECRET_KEY_OLD` | auth service only (rotation window) | Same as above during window | Remove when window expires |
 | Session middleware key | `SESSION_SECRET` | auth service only | Forge session middleware cookies | **Immediate** |
 | Fernet payload key | `TOKENS_ENCRYPTION_KEY` | auth service only | Decrypt token payloads in Redis | **Immediate** |
+| Old Fernet payload key | `TOKENS_ENCRYPTION_KEY_OLD` | auth service only (rotation window) | Same as above during window | Remove when window expires |
 | Event signing key | `EVENT_SIGNING_KEY` | auth service + all consumers | Forge revocation SSE frames → corrupt consumer caches | **Immediate; rotate all together** |
 | Shared private-API secret | `PRIVATE_API_SECRET` | auth service + registered consumers | Call any `/private/*` operation | **Immediate; 9.1 per-consumer credentials reduce blast radius** |
 | DB password | `DB_PASSWORD` | auth service only | Read/write user, session, auth-code, API-key tables | **Immediate** |
@@ -367,15 +368,25 @@ call until it is updated. Revert the consumer's `api.env` temporarily if needed.
 (refresh-token allowlist entries, PKCE auth codes, external OAuth tokens). Tokens in flight
 and the database are unaffected.
 
-**Containment.** Rotate the key in `auth.env`. Redeploy. All existing Redis payloads encrypted
-with the old key become unreadable — treating this as a full session wipe (wipe `rt:*`,
-`oauth_session:*` in Redis) prevents confusion from decrypt failures.
+**Containment (leak — immediate cutover).** Because the old key is compromised, do **not** retain
+it as a fallback: set the new value as `TOKENS_ENCRYPTION_KEY`, leave `TOKENS_ENCRYPTION_KEY_OLD`
+unset, and redeploy. All existing Redis payloads encrypted with the old key become unreadable —
+treating this as a full session wipe (wipe `rt:*`, `oauth_session:*` in Redis) prevents confusion
+from decrypt failures.
 
-**User impact.** All active refresh tokens and in-progress OAuth sessions invalidated; users
-must re-authenticate.
+> **Planned (non-leak) rotation — no downtime.** When rotating proactively (not in response to a
+> leak), use the dual-key path instead: move the current value to `TOKENS_ENCRYPTION_KEY_OLD`, set
+> the new value as `TOKENS_ENCRYPTION_KEY`, and redeploy. The service decrypts existing payloads via
+> the `MultiFernet` new→old fallback while writing new payloads under the new key, so no session wipe
+> or forced re-auth is needed. Remove `TOKENS_ENCRYPTION_KEY_OLD` once every stored payload has been
+> re-encrypted under (or has expired past) the new key.
 
-**Validation.** Issue a new refresh token; confirm it validates successfully. Confirm old-key
-Redis entries are gone.
+**User impact.** Immediate-cutover path: all active refresh tokens and in-progress OAuth sessions
+invalidated; users must re-authenticate. Dual-key path: none.
+
+**Validation.** Issue a new refresh token; confirm it validates successfully. After an
+immediate cutover, confirm old-key Redis entries are gone; after a dual-key rotation, confirm
+pre-rotation sessions still resolve until they expire.
 
 **Rollback.** Revert `TOKENS_ENCRYPTION_KEY` to the old value only if you can confirm the key
 was not actually exposed — this re-exposes old-key payloads.

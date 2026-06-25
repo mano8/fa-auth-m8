@@ -410,8 +410,9 @@ Set `SELECTED_DB` in `.env` (or `auth.env`):
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | no | `30` | Access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | no | `120` | Refresh token lifetime |
 | `REFRESH_TOKEN_COOKIE_EXPIRE_SECONDS` | no | `3600` | Refresh cookie max-age |
-| `SESSION_SECRET` | yes | — | Signing key for the `SessionMiddleware` cookie. Must be distinct from `TOKENS_ENCRYPTION_KEY` (key separation) so rotating the session key does not invalidate encrypted tokens. |
+| `SESSION_SECRET` | yes | — | Signing key for the `SessionMiddleware` cookie. Must be distinct from `TOKENS_ENCRYPTION_KEY` (key separation) so rotating the session key does not invalidate encrypted tokens. Rotation is single-key (Starlette exposes no key-list): the cookie `max_age` (3600s) bounds the blast radius to ≤1h of re-auth — there is no `_OLD` fallback. |
 | `TOKENS_ENCRYPTION_KEY` | yes | — | Fernet key encrypting external/refresh token payloads at rest in Redis |
+| `TOKENS_ENCRYPTION_KEY_OLD` | no | — | Previous `TOKENS_ENCRYPTION_KEY`. Set during a no-downtime key rotation so tokens encrypted under the old key stay decryptable (`MultiFernet` new→old fallback) while new writes use the current key. Remove once every stored token has been re-encrypted under / expired past the new key. |
 | `TOKEN_ISSUER` | if strict | — | `iss` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
 | `TOKEN_AUDIENCE` | if strict | — | `aud` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
 | `TOKEN_STRICT_VALIDATION` | no | `true` | Secure-by-default strict profile (`auth-sdk-m8 ≥ 1.0.0`): enforces `iss`/`aud` binding and pins the configured algorithm; the service fails closed at boot unless `TOKEN_ISSUER`/`TOKEN_AUDIENCE` are set. Set `false` to opt out (legacy/local), enforcing `iss`/`aud` only when configured. |

@@ -82,6 +82,11 @@ SESSION_SECRET="changethis"
 
 # Symmetric key used to encrypt Google OAuth tokens at rest.
 TOKENS_ENCRYPTION_KEY="changethis"
+# Set only during a TOKENS_ENCRYPTION_KEY rotation: the previous key, kept so
+# tokens encrypted under it stay decryptable (MultiFernet new→old fallback).
+# Remove once every stored token has been re-encrypted under / expired past the
+# new key. Leave commented in steady state.
+#TOKENS_ENCRYPTION_KEY_OLD="changethis"
 
 # ── Event signing (Redis Pub/Sub) ─────────────────────────────────────────────
 # Secure-by-default (auth-sdk-m8 >= 1.0.0): event-bus payloads are HMAC-signed

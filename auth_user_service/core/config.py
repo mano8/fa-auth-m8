@@ -67,6 +67,7 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
         "PRIVATE_API_SECRET",
         "SESSION_SECRET",
         "TOKENS_ENCRYPTION_KEY",
+        "TOKENS_ENCRYPTION_KEY_OLD",
         "METRICS_SCRAPE_CREDENTIAL",
         # Holds per-consumer bootstrap secrets (plaintext or hashed); keep it out
         # of the debug dump. The strength/changethis validators skip it safely
@@ -78,6 +79,9 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
         "PRIVATE_API_SECRET",
         "SESSION_SECRET",
         "TOKENS_ENCRYPTION_KEY",
+        # Strength-validated only when set (None is skipped); the previous key is
+        # itself a real secret, so it must clear the same bar as the current one.
+        "TOKENS_ENCRYPTION_KEY_OLD",
     ]
     TABLES_PREFIX: str = "auth"
 
@@ -170,8 +174,22 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     # Dedicated signing key for the Starlette session cookie. Kept separate
     # from TOKENS_ENCRYPTION_KEY (key separation): rotating the session key
     # must not invalidate encrypted external tokens, and vice versa.
+    # NOTE on SESSION_SECRET rotation (plan item 6.2-pre decision): the Starlette
+    # SessionMiddleware exposes a single ``secret_key`` with no native key-list, so
+    # SESSION_SECRET has no dual-key fallback. The decision is to **accept the
+    # bounded re-auth window** rather than ship a custom fallback-capable signer:
+    # the session cookie's ``max_age=3600`` (main.py) caps the blast radius of a
+    # rotation to ≤1h of stale cookies (holders simply re-authenticate). The 6.2
+    # rotation playbook documents SESSION_SECRET as a single-key rotation with this
+    # ≤1h re-auth window; no code change is required here.
     SESSION_SECRET: SecretStr
     TOKENS_ENCRYPTION_KEY: SecretStr
+    # Previous TOKENS_ENCRYPTION_KEY, set only during a no-downtime key rotation
+    # (plan item 6.2-pre). When present, external OAuth tokens persisted under the
+    # old key remain decryptable via the SecurityHelper MultiFernet new→old
+    # fallback while new writes use TOKENS_ENCRYPTION_KEY. Remove it once every
+    # stored token has been re-encrypted under (or has expired past) the new key.
+    TOKENS_ENCRYPTION_KEY_OLD: Optional[SecretStr] = None
 
 
 try:
