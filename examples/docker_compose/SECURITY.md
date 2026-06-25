@@ -149,7 +149,7 @@ excludes them via explicit `PathPrefix` deny rules in `dynamic_conf.yml` and
 | Replay stolen refresh cookie | HttpOnly refresh cookie | Cookie is `HttpOnly`; `SESSION_COOKIE_SECURE=true` in production; each rotation re-issues a new token and blacklists the old JTI |
 | JTI-blacklist suppression | Redis write access | Scoped Redis ACL (auth user restricted to `rt:* jwt:blacklist:* oauth_session:* login_rate:* refresh_rate:*`); Redis not exposed on host interfaces |
 | Forge revocation events | Stolen `EVENT_SIGNING_KEY` | HMAC signature verification on every SSE frame; fail-closed on bad signature; see event-signing playbook |
-| Call `/private/*` without authorization | Missing or wrong `X-Internal-Token` | `make_internal_token_authorizer` guard (app-layer, constant-time); Traefik `PathPrefix(/user/private)` excluded from `websecure`; `api` entryPoint loopback-bound |
+| Call `/private/*` without authorization | Missing/unknown consumer or wrong per-consumer secret | `require_private_scope` (app-layer, per-consumer `X-Internal-Client`+`X-Internal-Token` or scoped service token, constant-time, deny-by-default; legacy shared-secret gate retired in v1.0.0); Traefik `PathPrefix(/user/private)` excluded from `websecure`; `api` entryPoint loopback-bound |
 | Read full health detail | Anonymous `/health/` call | `make_internal_token_authorizer` gates the detail body; anonymous callers receive shallow `{"status":...}` only |
 | Scrape Prometheus metrics | Unauthorized `/metrics` call | `make_scrape_credential_guard` (optional; network boundary is the baseline); `api` entryPoint loopback-bound |
 | Container → host pivot | Docker socket exposure | `hardened_m8` uses file-provider only — no socket mount on the Traefik container (verified by `test_socketless_traefik.py`) |
@@ -346,14 +346,17 @@ key, then flip it back. **Blast radius:** event stream only; no user impact. **V
 
 ### Private-API secret & per-consumer credentials
 
-**Per-consumer (`PRIVATE_API_CONSUMERS`, preferred — Phase 9.1).** Each consumer holds its own hashed
-entry, so rotation is independent: generate a new secret, update that consumer's entry
-(`sha256$<salt>$<digest>` or plaintext) in `auth.env` and the matching secret in that consumer's env,
-then redeploy the auth service and that one consumer. **Blast radius:** one consumer; no other holder
-is touched. Scopes (deny-by-default) are unchanged by a secret rotation.
+**Per-consumer (`PRIVATE_API_CONSUMERS`, the only private-API auth model — Phase 9.1).** Each consumer
+holds its own hashed entry, so rotation is independent: generate a new secret, update that consumer's
+entry (`sha256$<salt>$<digest>` or plaintext) in `auth.env` and the matching secret in that consumer's
+env, then redeploy the auth service and that one consumer. **Blast radius:** one consumer; no other
+holder is touched. Scopes (deny-by-default) are unchanged by a secret rotation.
 
-**Shared `PRIVATE_API_SECRET` (legacy single-secret mode).** Rotate the auth service and **every**
-registered consumer in one window (fleet cutover) — see *Incident response → Leaked `PRIVATE_API_SECRET`*.
+**Legacy single-secret mode — retired (v1.0.0).** The shared `X-Internal-Token` == `PRIVATE_API_SECRET`
+gate no longer authorizes the private API. `PRIVATE_API_CONSUMERS` is now required: with it empty every
+`/private/*` call fails closed (`401`) and the service-token exchange is disabled (`404`). `PRIVATE_API_SECRET`
+itself stays (it signs service tokens and gates `/health` + `/metrics`), but it is no longer a private-route
+credential.
 
 **Service-token note.** `PRIVATE_API_SECRET` also signs the short-TTL service tokens minted at
 `{API_PREFIX}/private/v1/service-token`. Rotating it invalidates outstanding service tokens, but they
@@ -510,27 +513,32 @@ deployment fails mid-rollout.
 
 ---
 
-### Leaked `PRIVATE_API_SECRET` (shared model)
+### Leaked `PRIVATE_API_SECRET`
 
-**Detection.** Unexpected calls to `/private/v1/jti-status` or the SSE stream from unknown
-sources in the Traefik access log; external report.
+> **v1.0.0:** `PRIVATE_API_SECRET` is no longer a private-route gate (the legacy shared `X-Internal-Token`
+> path is retired). It now only **signs short-TTL service tokens** and gates `/health` detail + `/metrics`.
+> A leaked **per-consumer** credential is the private-API exposure path — see below.
 
-**Impact.** Any holder can call `/private/*` endpoints — JTI introspection and the event stream.
-They cannot forge tokens or read the database directly. If 9.1 per-consumer credentials are in
-use, blast radius is one consumer.
+**Detection.** Service tokens minted/accepted from unexpected sources; unexpected `/health` detail or
+`/metrics` reads in the Traefik access log; external report.
 
-**Containment.** Rotate the value in `auth.env` **and every registered consumer** `api.env`
-simultaneously. Redeploy all services.
+**Impact.** A holder can forge short-TTL service tokens (bounded by `SERVICE_TOKEN_TTL_SECONDS`) and read
+the `/health` detail / `/metrics`. They cannot forge user tokens or read the database directly. Private
+routes still require a valid `PRIVATE_API_CONSUMERS` identity, so a leaked `PRIVATE_API_SECRET` alone does
+not authorize `/private/*` user/introspection/stream calls.
 
-**Longer-term hardening.** Provision per-consumer credentials via `PRIVATE_API_CONSUMERS`
-(Phase 9.1 issuer-side). Each consumer then holds its own secret; rotating one does not require
-touching all others.
+**Containment.** Rotate `PRIVATE_API_SECRET` in `auth.env` and redeploy the auth service; outstanding
+service tokens invalidate and are re-minted within `SERVICE_TOKEN_TTL_SECONDS` on the next exchange.
 
-**User impact.** Brief unavailability on the private API during the simultaneous redeploy window.
-No user-visible sessions or tokens are affected.
+**Leaked per-consumer credential.** Rotate just that consumer's `PRIVATE_API_CONSUMERS` entry and the
+matching secret in its `api.env`, then redeploy the auth service and that one consumer — blast radius is
+one consumer; no other holder is touched.
 
-**Validation.** Attempt to call `/private/v1/jti-status` with the old secret — expect `401`.
-Confirm the consumer service reconnects with the new credential.
+**User impact.** None user-visible; brief private-API churn during the redeploy.
+
+**Validation.** A service token signed with the old secret returns `401`; for a consumer rotation, the
+old per-consumer secret returns `401` on `/private/v1/jti-status` and the consumer reconnects with the new
+credential.
 
 **Rollback.** If the redeploy fails for a consumer, it will return 401 on every private-API
 call until it is updated. Revert the consumer's `api.env` temporarily if needed.

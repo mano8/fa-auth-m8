@@ -18,11 +18,12 @@ SERVICE_NAME = "fa-auth-m8"
 API_VERSION = "v1"
 #: Contract version the plugin pins (astro-auth-m8 FA_AUTH_M8_CONTRACT_VERSION).
 CONTRACT_VERSION = "0.9"
-#: Compatible service-version range. Lower bound raised to 0.9.9 — the security
-#: remediation baseline (hardened compose, app-layer /health + /metrics guards,
-#: per-service Redis ACLs, OAuth redirect-prefix pinning). /meta + /ping have
-#: shipped since 0.9.8, but consumers should pin to the hardened 0.9.9 line.
-CONTRACT_RANGE = ">=0.9.9 <0.10.0"
+#: Compatible service-version range. Lower bound raised to 1.0.0 — the first
+#: stable line, which retires the legacy single-``PRIVATE_API_SECRET`` private-API
+#: gate in favour of per-consumer scoped credentials / short-TTL service tokens
+#: (on top of the 0.9.x security-remediation baseline). Consumers should pin to
+#: the 1.x line.
+CONTRACT_RANGE = ">=1.0.0 <2.0.0"
 
 
 def build_service_meta() -> ServiceMeta:

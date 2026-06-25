@@ -6,7 +6,6 @@ and role/privilege guards for auth_user_service routes.
 """
 
 import logging
-import secrets
 from datetime import datetime, timezone
 from typing import Annotated, Optional
 
@@ -247,41 +246,27 @@ def get_current_active_superuser(current_user: CurrentUser) -> UserModel:
     return current_user
 
 
-def verify_private_api_secret(
-    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
-) -> None:
-    """Reject requests that do not carry the correct inter-service secret.
-
-    Uses Optional header (not required) so a missing header returns 401, not
-    FastAPI's 422 Unprocessable Entity which would leak endpoint structure.
-    """
-    if x_internal_token is None or not secrets.compare_digest(
-        x_internal_token, settings.PRIVATE_API_SECRET.get_secret_value()
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
-        )
-
-
 def require_private_scope(
     scope: ConsumerScope | str,
 ) -> Callable[[Request], None]:
     """Build the private-route auth dependency for a required *scope* (9.1).
 
-    Authorizes a private call by one of three paths, in order:
+    Authorizes a private call by one of two paths:
 
-    1. **Legacy** — when no per-consumer registry is configured
-       (``PRIVATE_API_CONSUMERS`` empty), fall back to the single shared
-       ``PRIVATE_API_SECRET`` gate (``X-Internal-Token``). Scopes do not apply;
-       holding the shared secret authorizes every private op. Keeps the home lab
-       and existing deployments working unchanged.
-    2. **Short-TTL service token** — an ``Authorization: Bearer <token>`` minted
+    1. **Short-TTL service token** — an ``Authorization: Bearer <token>`` minted
        at ``/private/v1/service-token``. Verified and required to carry *scope*
        (``401`` invalid/expired, ``403`` missing scope).
-    3. **Per-consumer bootstrap credential** — ``X-Internal-Client`` +
+    2. **Per-consumer bootstrap credential** — ``X-Internal-Client`` +
        ``X-Internal-Token`` authorized against the registry for *scope*
        (``401`` unknown client / wrong secret — indistinguishable, no
        enumeration oracle; ``403`` authenticated but unscoped).
+
+    The per-consumer registry (``PRIVATE_API_CONSUMERS``) is **required**: the
+    legacy single shared ``PRIVATE_API_SECRET`` gate has been **retired**. When no
+    registry is configured no caller can be authenticated, so every private call
+    is denied (``401``, fail-closed) and startup logs the misconfiguration loudly.
+    ``PRIVATE_API_SECRET`` itself stays — it signs the short-TTL service tokens and
+    backs ``/health`` detail-gating + ``/metrics`` (1.4).
 
     The verification primitives are reused from ``auth-sdk-m8``; this is the
     issuer-side wiring plus the service-token branch.
@@ -290,10 +275,11 @@ def require_private_scope(
     def _dependency(request: Request) -> None:
         registry = get_consumer_registry()
         if registry is None:
-            verify_private_api_secret(
-                x_internal_token=request.headers.get(INTERNAL_TOKEN_HEADER)
+            # Legacy single-secret gate retired: with no per-consumer registry
+            # there is no identity to authenticate against — deny by default.
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
             )
-            return
 
         bearer = extract_bearer_token(request)
         if bearer is not None:

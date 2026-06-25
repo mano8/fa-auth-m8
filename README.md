@@ -158,9 +158,9 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | dashboard | GET | `/dashboard/users/activity/` | JWT | All-user activity stats (monthly) |
 | dashboard | GET | `/dashboard/users/activity/current/` | JWT | Own activity stats (monthly) |
 | metrics | GET | `/metrics` | — | Prometheus metrics (`METRICS_ENABLED=true` only) |
-| private | POST | `/private/users/` | X-Internal-Token | Create user (inter-service, Docker network only) |
-| private | POST | `/private/v1/jti-status` | X-Internal-Token | Check whether an access-token JTI is revoked (inter-service) |
-| private | GET | `/private/v1/events/stream` | X-Internal-Token | SSE bridge of `session-revoked` / `user-deleted` events (inter-service) |
+| private | POST | `/private/users/` | X-Internal-Client + X-Internal-Token (`user-create`) | Create user (inter-service, Docker network only) |
+| private | POST | `/private/v1/jti-status` | X-Internal-Client + X-Internal-Token (`introspection`) | Check whether an access-token JTI is revoked (inter-service) |
+| private | GET | `/private/v1/events/stream` | X-Internal-Client + X-Internal-Token (`event-stream`) | SSE bridge of `session-revoked` / `user-deleted` events (inter-service) |
 
 **Service triad (`/meta`, `/ping`, `/health/`).** `/ping` answers "is the process up?" (liveness — point container/orchestrator liveness probes here; never touches a dependency), `/health/` answers "are dependencies reachable?" (readiness — Redis/DB), and `/meta` answers "what version/contract is this?" (client compatibility, read pre-auth — satisfies `@fa-m8/astro-auth-m8`'s `assertFaAuthM8Compatibility`). `/meta` + `/ping` are the shared auth-sdk-m8 routes (`mount_service_meta`); the issuer mounts them directly since it doesn't use `fastapi_m8.create_app`. Since auth-sdk-m8 2.0.0 `/ping` is **single-mounted** at `{API_PREFIX}/ping` (the root `/ping` is no longer served when a prefix is set) and advertised in the schema — point container/orchestrator liveness probes at `{API_PREFIX}/ping`.
 
@@ -480,7 +480,8 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 | `OAUTH_ALLOWED_REDIRECT_SCHEMES` | no | URI scheme(s) accepted as `redirect_target` at `/google-api/login-url/` (default `chrome-extension://`). Add `https://` only for trusted web clients; add `http://` only for local development. |
 | `OAUTH_ALLOWED_REDIRECT_PREFIXES` | no | Optional full-URI prefix allowlist. Required for `http://` and `https://` redirects to pin trusted callback origins; optional for native public-client schemes. Plain HTTP is limited to localhost and rejected in production/staging. |
 | `CORS_ALLOWED_ORIGIN_SCHEMES` | no | Scheme-level CORS origins for native-app `fetch()` calls (e.g. `chrome-extension://`). |
-| `PRIVATE_API_SECRET` | yes | Shared secret for `X-Internal-Token` header |
+| `PRIVATE_API_SECRET` | yes | Signs the short-TTL service tokens and gates the `/health` detail body + `/metrics`. **No longer a private-route gate** (the legacy shared `X-Internal-Token` path was retired in v1.0.0 — `PRIVATE_API_CONSUMERS` replaces it). |
+| `PRIVATE_API_CONSUMERS` | yes¹ | Per-consumer private-API credentials: JSON map of consumer id → `{secret, scopes}` (scopes: `introspection` / `event-stream` / `user-create`, deny-by-default; `secret` plaintext or hashed `sha256$<salt>$<digest>`). The **only** private-API auth model — each consumer presents `X-Internal-Client` + `X-Internal-Token` (or exchanges it for a service token). ¹Empty is allowed but then every `/private/*` call fails closed (`401`) and the service-token exchange is disabled (`404`). |
 
 ### Event Signing
 
@@ -496,7 +497,7 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 
 ### Auth Event Stream (SSE bridge)
 
-fa-auth-m8 pushes its own auth-state changes to backend consumers over an authenticated **Server-Sent Events** stream on the private API: `GET /private/v1/events/stream` (gated by the same `X-Internal-Token` / `PRIVATE_API_SECRET` as `jti-status`). Consumers receive `session-revoked` and `user-deleted` events and evict locally cached token-validation state ahead of natural expiry.
+fa-auth-m8 pushes its own auth-state changes to backend consumers over an authenticated **Server-Sent Events** stream on the private API: `GET /private/v1/events/stream` (gated by the same per-consumer credential as `jti-status`, requiring the `event-stream` scope). Consumers receive `session-revoked` and `user-deleted` events and evict locally cached token-validation state ahead of natural expiry.
 
 > **Accelerator, not authority.** Push is a best-effort latency optimisation. The JTI blacklist behind `POST /private/v1/jti-status` remains the revocation authority — a consumer that misses every event is still correct, just slower to converge. So stream loss is never fatal: the service keeps enforcing revocation over the HTTP authority path.
 
@@ -813,7 +814,7 @@ Response headers on every API key request:
 Endpoints under `/user/private/` are for inter-service calls only:
 
 - Must not be exposed to the public internet — enforce at the reverse proxy / Docker network level.
-- Every request must include `X-Internal-Token: <PRIVATE_API_SECRET>`.
+- Every request must present a per-consumer credential — `X-Internal-Client: <consumer-id>` + `X-Internal-Token: <consumer-secret>` matching a `PRIVATE_API_CONSUMERS` entry (or a short-TTL `Authorization: Bearer <service-token>`), and carry the scope the route requires. The legacy shared `X-Internal-Token: <PRIVATE_API_SECRET>` gate was retired in v1.0.0.
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
@@ -869,12 +870,15 @@ JWKS_CACHE_TTL_SECONDS=300
 ### Revocation check (stateful mode)
 
 Consumer services check revocation via an HTTP call to the auth service private API —
-auth Redis is never shared with consumers. Set `INTROSPECTION_URL` and `PRIVATE_API_SECRET`
-(both must match the auth service) when `TOKEN_MODE=stateful`:
+auth Redis is never shared with consumers. Set `INTROSPECTION_URL`, `INTERNAL_CLIENT_ID`, and
+`PRIVATE_API_SECRET` (the consumer's per-consumer bootstrap secret) when `TOKEN_MODE=stateful`. The
+client id + secret must match an entry in the auth service `PRIVATE_API_CONSUMERS` map (the legacy
+shared-secret gate was retired in v1.0.0):
 
 ```ini
 INTROSPECTION_URL=http://auth_user_service:8000/user/private/v1/jti-status
-PRIVATE_API_SECRET=<same as auth service PRIVATE_API_SECRET>
+INTERNAL_CLIENT_ID=example-api
+PRIVATE_API_SECRET=<this consumer's secret, matching its PRIVATE_API_CONSUMERS entry>
 ```
 
 `fastapi-m8`'s `build_auth_deps` wires `RemoteRevocationClient` automatically and honours

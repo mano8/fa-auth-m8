@@ -28,7 +28,7 @@ class Settings(ConsumerServiceSettings):
 
     SERVICE_VERSION: str = __version__
     CONTRACT_VERSION: str = "0.9"
-    CONTRACT_RANGE: str = ">=0.9.9 <0.10.0"
+    CONTRACT_RANGE: str = ">=1.0.0 <2.0.0"
 
     # Vault/`_FILE` source ordering is handled by the inherited
     # CommonSettings.settings_customise_sources classmethod — no override needed.

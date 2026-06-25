@@ -71,7 +71,9 @@ def _snapshot(
 def get_consumer_registry() -> ConsumerCredentialRegistry | None:
     """Return the configured registry, or ``None`` when no consumers are set.
 
-    ``None`` signals the legacy single-``PRIVATE_API_SECRET`` posture to callers
-    (homelab / back-compat); a registry signals the per-consumer model is active.
+    A registry signals the per-consumer model is active. ``None`` now signals a
+    **misconfiguration** — the legacy single-``PRIVATE_API_SECRET`` gate has been
+    retired, so callers (``require_private_scope``, the service-token exchange)
+    fail closed / disable themselves when no ``PRIVATE_API_CONSUMERS`` are set.
     """
     return _build_registry(_snapshot(settings.PRIVATE_API_CONSUMERS))

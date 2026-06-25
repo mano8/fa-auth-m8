@@ -155,13 +155,14 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     GOOGLE_OAUTH_REDIRECT_URI: str = ""
     PRIVATE_API_SECRET: SecretStr
     # ── Per-consumer private-API credentials (Phase 9.1, issuer side) ─────────
-    # Map of consumer id → {secret, scopes}. When non-empty it *replaces* the
-    # single shared PRIVATE_API_SECRET on the private routes: each consumer
-    # presents X-Internal-Client + X-Internal-Token and is authorized only for
-    # the scopes it was granted (deny-by-default), bounding the blast radius to
-    # one consumer. When empty (the default) the private routes fall back to the
-    # legacy single PRIVATE_API_SECRET gate — homelab/back-compat stays intact.
-    # PRIVATE_API_SECRET is still required: it doubles as the signing key for the
+    # Map of consumer id → {secret, scopes}. This is now the **only** private-API
+    # auth model: each consumer presents X-Internal-Client + X-Internal-Token (or a
+    # short-TTL service token) and is authorized only for the scopes it was granted
+    # (deny-by-default), bounding the blast radius to one consumer. The legacy
+    # single shared PRIVATE_API_SECRET gate has been **retired** (v1.0.0): when this
+    # map is empty every /private/* call fails closed (401) and the service-token
+    # exchange is disabled (404) — startup logs the misconfiguration. It must be set
+    # for any inter-service traffic. PRIVATE_API_SECRET stays required: it signs the
     # short-TTL service tokens minted at {API_PREFIX}/private/v1/service-token and
     # backs /health detail-gating + /metrics (1.4). Supply as a JSON object, e.g.
     #   PRIVATE_API_CONSUMERS='{"media-service":{"secret":"sha256$..","scopes":["introspection"]}}'

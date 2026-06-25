@@ -39,10 +39,11 @@ def test_build_service_meta_values() -> None:
 def test_service_version_in_contract_range() -> None:
     """The package version must stay inside the advertised compatibility range."""
     assert SERVICE_NAME == "fa-auth-m8"
-    # Lower bound matches CONTRACT_RANGE: hardened security baseline is 0.9.9.
-    assert Version(__version__) >= Version("0.9.9")
-    assert Version(__version__) < Version("0.10.0")
-    assert CONTRACT_RANGE == ">=0.9.9 <0.10.0"
+    # Lower bound matches CONTRACT_RANGE: the first stable line is 1.0.0 (legacy
+    # PRIVATE_API_SECRET private-API gate retired).
+    assert Version(__version__) >= Version("1.0.0")
+    assert Version(__version__) < Version("2.0.0")
+    assert CONTRACT_RANGE == ">=1.0.0 <2.0.0"
 
 
 # ── Mounted routes ────────────────────────────────────────────────────────────

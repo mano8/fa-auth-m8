@@ -11,8 +11,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased] — Per-consumer scoped private-API credentials + service tokens (9.1, issuer side) + `TOKENS_ENCRYPTION_KEY` dual-key rotation (6.2-pre)
+## [1.0.0] — 2026-06-25 · First stable line — per-consumer private-API auth (legacy `PRIVATE_API_SECRET` gate retired), short-TTL service tokens, dual-key token encryption
 
+> **First `1.x` release.** `1.0.0` is the first stable line of `fa-auth-m8`,
+> reclaiming the version after the security-remediation `0.9.x` baseline. It
+> supersedes the abandoned early `1.x`/`2.x` tags, which were never real
+> `fa-auth-m8` releases. The package `__version__`, the issuer `/meta`
+> `CONTRACT_RANGE` (now `>=1.0.0 <2.0.0`), and the `fastapi_full` / `fastapi_minimal`
+> example consumers are all aligned to `1.0.0`.
+>
 > **Requires `auth-sdk-m8 >= 2.0.1` (and `< 3.0.0`)** — pin bumped in
 > `auth_user_service/requirements_base.txt`. This consumes the SDK's 9.1
 > verification primitives (`ConsumerCredentialRegistry`, `make_consumer_authorizer`).
@@ -21,8 +28,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 > **single-mounts** the liveness `/ping` route (served only at
 > `{API_PREFIX}/ping` and advertised in the schema; the root `/ping` is no longer
 > mounted) — a breaking change vs the 1.5.0 dual-mount; the `/ping` test is
-> updated accordingly. Deferred / post-1.0 roadmap item (plan 9.1); not part of
-> the 1.0.0 security-remediation scope.
+> updated accordingly.
+
+### Removed — BREAKING
+
+- **Legacy single-`PRIVATE_API_SECRET` private-API gate retired** (plan item —
+  `PRIVATE_API_SECRET` retirement, fa-auth-m8 side). The `/private/*` routes no
+  longer accept a single shared `X-Internal-Token` matching `PRIVATE_API_SECRET`.
+  Per-consumer credentials (`X-Internal-Client` + `X-Internal-Token`, authorized
+  against `PRIVATE_API_CONSUMERS`) or short-TTL service tokens are now the **only**
+  way to pass `require_private_scope`. With no `PRIVATE_API_CONSUMERS` configured
+  every `/private/*` call fails closed (`401`) and the service-token exchange stays
+  disabled (`404`); startup logs the misconfiguration loudly (`main.py`).
+  `verify_private_api_secret` is removed from `auth_user_service.core.deps`.
+  **Migration:** every internal caller must present a per-consumer credential —
+  the retirement gate was cleared by every live consumer adopting them (fastapi-m8
+  3.1.0 + media-service-m8). `PRIVATE_API_SECRET` itself stays required: it still
+  signs the short-TTL service tokens and backs `/health` detail-gating + `/metrics`
+  (1.4). `test_consumer_private_auth.py` now asserts the no-registry-denies-all
+  fail-closed posture in place of the retired legacy-fallback test.
 
 ### Added
 
@@ -49,12 +73,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   secret rotates rarely. `/metrics` keeps its static scrape credential (no token
   model). `auth_user_service/services/service_token.py`.
 
-- Tests (`tests/security/test_consumer_private_auth.py`, 23 cases) cover the
-  plan's required matrix — wrong consumer secret rejected, consumer A cannot use
+- Tests (`tests/security/test_consumer_private_auth.py`) cover the plan's
+  required matrix — wrong consumer secret rejected, consumer A cannot use
   consumer B's secret, expired service token rejected, scope violation denied —
-  plus the legacy single-`PRIVATE_API_SECRET` fallback, the encoded/plaintext
-  loader paths, and the exchange route (mint / narrow / escalation-denied /
-  disabled-without-registry). 884 tests, 100% coverage, ruff + mypy + bandit green.
+  plus the **no-registry fail-closed** posture (every credential shape denied
+  `401` once the legacy fallback is retired), the encoded/plaintext loader paths,
+  and the exchange route (mint / narrow / escalation-denied / disabled-without-registry).
 
 - **No-downtime `TOKENS_ENCRYPTION_KEY` rotation** (plan item 6.2-pre — the code
   prerequisite that unblocks the 6.2 rotation playbooks). New optional
@@ -82,9 +106,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **Dependency floors raised for the `auth-sdk-m8 2.0.1` / `fastapi-m8 3.0.0`
   alignment.** `auth_user_service/requirements_base.txt` now pins
   `auth-sdk-m8>=2.0.1,<3.0.0` (was `>=2.0.0`) and `pydantic_settings>=2.14.2`
-  (was `>=2.14.1`). The example consumers move to `fastapi-m8>=3.0.0,<4.0.0`
-  (was `>=2.1.0,<3.0.0`) in `examples/fastapi_full/requirements_base.txt` (also
-  `pydantic_settings>=2.14.2`) and `examples/fastapi_minimal/requirements.txt`.
+  (was `>=2.14.1`). The example consumers move to `fastapi-m8>=3.1.0,<4.0.0`
+  (was `>=2.1.0,<3.0.0`; see the per-consumer floor note below) in
+  `examples/fastapi_full/requirements_base.txt` (also `pydantic_settings>=2.14.2`)
+  and `examples/fastapi_minimal/requirements.txt`.
   `fastapi-m8 3.0.0` requires `auth-sdk-m8>=2.0.1,<3.0.0`, so the whole stack
   pins to the single-mount `/ping` SDK and the `pydantic-settings 2.14.2`
   security patch. No consumer code changes: the public `fastapi_m8` API surface
@@ -93,12 +118,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   and `examples/docker_compose/SECURITY.md` public-route table + bring-up check
   now reference `{API_PREFIX}/ping`). The removed `TOKEN_ALGORITHM` knob was
   already migrated to `ACCESS_TOKEN_ALGORITHM` across every compose stack.
-- **Back-compatible by default.** With `PRIVATE_API_CONSUMERS` unset (the
-  default), the private routes keep the legacy single-`PRIVATE_API_SECRET` gate —
-  home-lab and existing deployments are unaffected. The per-consumer model is
-  strictly opt-in. `PRIVATE_API_SECRET` remains required (it signs service
-  tokens and backs `/health` detail-gating + `/metrics`). Fully retiring the
-  shared `PRIVATE_API_SECRET` stays a later major.
+- **Per-consumer credentials are now mandatory for the private API.** The 9.1
+  issuer side originally landed additively (legacy single-`PRIVATE_API_SECRET`
+  gate kept as an opt-out default); `1.0.0` **retires that fallback** (see
+  *Removed — BREAKING*). `PRIVATE_API_CONSUMERS` must be configured for any
+  `/private/*` traffic; `PRIVATE_API_SECRET` remains required for service-token
+  signing and `/health` + `/metrics` gating.
+- **Version bumped to `1.0.0`** across `auth_user_service` (`__version__`), the
+  issuer `/meta` `CONTRACT_RANGE` (`>=1.0.0 <2.0.0`, was `>=0.9.9 <0.10.0`), and
+  the `fastapi_full` / `fastapi_minimal` example consumers (`__version__` +
+  `CONTRACT_RANGE`). `tests/core/test_service_meta.py` asserts the new range.
+- **Env examples rewired to the per-consumer model.** Every stateful compose
+  stack now ships an **active** issuer `PRIVATE_API_CONSUMERS` entry (`auth.env*`)
+  matched by a consumer `INTERNAL_CLIENT_ID` + bootstrap secret (`api.env*`);
+  `rs256_m8` (hybrid, revocation off) documents it commented. The `.example_env`,
+  the hardened production overlay (`auth.env.production.example` /
+  `api.env.production.example`, file-mounted), and the vault prod example are
+  aligned. The stale "homelab default / single-secret gate" guidance is removed.
+- **Example consumer floor raised to `fastapi-m8>=3.1.0,<4.0.0`** (was `>=3.0.0`)
+  in `examples/fastapi_full/requirements_base.txt` and
+  `examples/fastapi_minimal/requirements.txt` — `INTERNAL_CLIENT_ID` and the
+  per-consumer internal-auth path require the 3.1.0 consumer surface.
+- **Docs aligned** (`README.md` route table + env table + Private-API + revocation
+  sections; `examples/docker_compose/SECURITY.md` rotation, threat-model, and
+  leaked-secret playbook) to the retired gate and the per-consumer model.
 
 ### Tests
 

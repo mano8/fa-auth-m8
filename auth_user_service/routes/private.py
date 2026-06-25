@@ -2,8 +2,10 @@
 Private API routes for inter-service user management.
 
 These endpoints are NOT exposed to the public internet. They must be
-protected at the network level (Docker internal network) AND require
-the X-Internal-Token header to match PRIVATE_API_SECRET.
+protected at the network level (Docker internal network) AND require a
+per-consumer credential (``X-Internal-Client`` + ``X-Internal-Token``) or a
+short-TTL service token, authorized against ``PRIVATE_API_CONSUMERS``. The legacy
+single shared ``PRIVATE_API_SECRET`` gate has been retired.
 """
 
 from typing import Any, Optional
@@ -33,11 +35,11 @@ from auth_user_service.events import get_hub
 from auth_user_service.services.service_token import issue_service_token
 from auth_user_service.services.users import UserController
 
-# Each private route names the scope it needs (9.1, deny-by-default). When no
-# per-consumer registry is configured these dependencies transparently fall back
-# to the legacy single-PRIVATE_API_SECRET gate (see require_private_scope). The
-# router no longer carries a blanket gate so the service-token exchange route can
-# authenticate the bootstrap credential itself.
+# Each private route names the scope it needs (9.1, deny-by-default). The
+# per-consumer registry is required — the legacy single-PRIVATE_API_SECRET gate is
+# retired, so when no registry is configured these dependencies fail closed (see
+# require_private_scope). The router carries no blanket gate so the service-token
+# exchange route can authenticate the bootstrap credential itself.
 router = APIRouter(tags=["private"], prefix="/private")
 
 
@@ -79,7 +81,7 @@ class PrivateUserCreate(BaseModel):
     email: EmailStr
     # Mirror the public registration password policy (UserRegister): an
     # internal caller must not be able to seat a user with a sub-policy
-    # password just because it holds PRIVATE_API_SECRET.
+    # password just because it holds the user-create scope.
     password: str = Field(min_length=8, max_length=128)
     full_name: str
     is_verified: bool = False
@@ -101,12 +103,12 @@ def create_user(user_in: PrivateUserCreate, session: SessionDep) -> Any:
     """
     Create a new user (internal service call only).
 
-    Network isolation + PRIVATE_API_SECRET gate *who* may call this, but they
-    do not validate the payload. We still enforce the same invariants as the
-    public registration path — defence in depth so a compromised or buggy
-    internal caller cannot create duplicate-email or weak-password accounts —
-    and we honour the accepted ``is_verified`` flag (mapped to
-    ``email_verified``) instead of silently dropping it.
+    Network isolation + the per-consumer ``user-create`` scope gate *who* may
+    call this, but they do not validate the payload. We still enforce the same
+    invariants as the public registration path — defence in depth so a
+    compromised or buggy internal caller cannot create duplicate-email or
+    weak-password accounts — and we honour the accepted ``is_verified`` flag
+    (mapped to ``email_verified``) instead of silently dropping it.
     """
     existing = UserController.get_user_by_email(session=session, email=user_in.email)
     if existing:
@@ -213,9 +215,10 @@ def issue_service_token_route(
     presented as ``Authorization: Bearer <token>`` on subsequent private calls.
     Rotation comes from the short TTL; the bootstrap secret rotates rarely.
 
-    Only available under the per-consumer model — when no ``PRIVATE_API_CONSUMERS``
-    registry is configured the exchange is disabled (``404``): the legacy single
-    ``PRIVATE_API_SECRET`` posture has no per-consumer identity to mint against.
+    Requires the per-consumer model — when no ``PRIVATE_API_CONSUMERS`` registry
+    is configured there is no per-consumer identity to mint against, so the
+    exchange is disabled (``404``). The legacy single ``PRIVATE_API_SECRET`` gate
+    has been retired, so a registry is the only supported private-API posture.
     """
     registry = get_consumer_registry()
     if registry is None:

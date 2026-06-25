@@ -7,7 +7,8 @@ verification primitives:
   ``PRIVATE_API_CONSUMERS`` setting (plaintext *and* hashed-at-rest forms);
 * ``services.service_token`` — minting/verifying short-TTL scoped service tokens;
 * ``core.deps.require_private_scope`` — the private-route auth dependency
-  (legacy single-secret fallback, per-consumer credential, and service token);
+  (per-consumer credential and service token; fail-closed with no registry now
+  that the legacy single-secret gate is retired);
 * the ``/private/v1/service-token`` exchange route.
 
 The plan's required matrix is exercised end to end: wrong consumer secret
@@ -71,7 +72,7 @@ def _clear_registry_cache():
 
 
 def test_registry_none_when_no_consumers(monkeypatch) -> None:
-    """Empty config → no registry (legacy single-secret posture)."""
+    """Empty config → no registry (a misconfiguration; callers fail closed)."""
     monkeypatch.setattr(settings, "PRIVATE_API_CONSUMERS", {})
     assert get_consumer_registry() is None
 
@@ -202,14 +203,32 @@ def _guarded_client(scope: ConsumerScope) -> TestClient:
     return TestClient(app)
 
 
-def test_legacy_shared_secret_allows_and_rejects(monkeypatch) -> None:
-    """No registry → single PRIVATE_API_SECRET gate (homelab/back-compat)."""
+def test_no_registry_denies_all(monkeypatch) -> None:
+    """Legacy gate retired: no registry → every private call is denied (401).
+
+    Even an ``X-Internal-Token`` matching the (still-present) ``PRIVATE_API_SECRET``
+    no longer authorizes anything — the single shared-secret gate is gone, so the
+    private surface fails closed until ``PRIVATE_API_CONSUMERS`` is configured.
+    """
     monkeypatch.setattr(settings, "PRIVATE_API_CONSUMERS", {})
     client = _guarded_client(ConsumerScope.INTROSPECTION)
+    # The retired legacy shared secret is rejected.
     assert (
-        client.get("/p", headers={"X-Internal-Token": _SIGNING_KEY}).status_code == 200
+        client.get("/p", headers={"X-Internal-Token": _SIGNING_KEY}).status_code == 401
     )
-    assert client.get("/p", headers={"X-Internal-Token": "wrong"}).status_code == 401
+    # A would-be per-consumer credential is rejected (no registry to match).
+    assert (
+        client.get(
+            "/p", headers={"X-Internal-Client": "a", "X-Internal-Token": "secret-a"}
+        ).status_code
+        == 401
+    )
+    # A bearer-shaped credential is rejected.
+    assert (
+        client.get("/p", headers={"Authorization": "Bearer whatever"}).status_code
+        == 401
+    )
+    # No credential at all is rejected.
     assert client.get("/p").status_code == 401
 
 
