@@ -131,12 +131,18 @@ excludes them via explicit `PathPrefix` deny rules in `dynamic_conf.yml` and
 | DB password | `DB_PASSWORD` | auth service only | Read/write user, session, auth-code, API-key tables | **Immediate** |
 | Redis ACL password | `REDIS_PASSWORD` | auth service only | Read/write JTI blacklist, refresh allowlist, rate-limit keys | **Immediate** |
 | Prometheus scrape credential | `METRICS_SCRAPE_CREDENTIAL` | auth service + Prometheus | Unauthorized metrics reads | Rotate promptly |
+| Health-detail credential | `HEALTH_DETAIL_CREDENTIAL` | auth service + internal monitoring tooling | Unauthorized full infrastructure reads via `/health/` | Rotate promptly |
 | Bootstrap superuser password | `FIRST_SUPERUSER_PASSWORD` | ops (used once) | Superuser takeover on first boot if not rotated | Change immediately after first login |
 | Google OAuth2 client secret | `GOOGLE_CLIENT_SECRET` | auth service only | Impersonate the OAuth2 client | **Immediate** |
 | Per-consumer credential | `PRIVATE_API_CONSUMERS` entries | auth service credential map | Call scoped `/private/*` for that consumer only | Rotate individual entry; no fleet-wide impact |
 
 > **Key separation invariant.** `SESSION_SECRET` and `TOKENS_ENCRYPTION_KEY` must be distinct values
 > so rotating the session key does not invalidate encrypted tokens stored in Redis.
+>
+> **No operational↔private-API reuse (plan 9.3).** `HEALTH_DETAIL_CREDENTIAL` and
+> `METRICS_SCRAPE_CREDENTIAL` must each differ from `PRIVATE_API_SECRET`; the settings
+> validator rejects any reuse at boot so the misconfiguration is caught before the service
+> starts.
 
 ---
 
@@ -150,7 +156,7 @@ excludes them via explicit `PathPrefix` deny rules in `dynamic_conf.yml` and
 | JTI-blacklist suppression | Redis write access | Scoped Redis ACL (auth user restricted to `rt:* jwt:blacklist:* oauth_session:* login_rate:* refresh_rate:*`); Redis not exposed on host interfaces |
 | Forge revocation events | Stolen `EVENT_SIGNING_KEY` | HMAC signature verification on every SSE frame; fail-closed on bad signature; see event-signing playbook |
 | Call `/private/*` without authorization | Missing/unknown consumer or wrong per-consumer secret | `require_private_scope` (app-layer, per-consumer `X-Internal-Client`+`X-Internal-Token` or scoped service token, constant-time, deny-by-default; legacy shared-secret gate retired in v1.0.0); Traefik `PathPrefix(/user/private)` excluded from `websecure`; `api` entryPoint loopback-bound |
-| Read full health detail | Anonymous `/health/` call | `make_internal_token_authorizer` gates the detail body; anonymous callers receive shallow `{"status":...}` only |
+| Read full health detail | Anonymous `/health/` call | `HEALTH_DETAIL_CREDENTIAL` gates the detail body (plan 9.3); when unset the gate fails closed; anonymous callers always receive shallow `{"status":...}` only |
 | Scrape Prometheus metrics | Unauthorized `/metrics` call | `make_scrape_credential_guard` (optional; network boundary is the baseline); `api` entryPoint loopback-bound |
 | Container → host pivot | Docker socket exposure | `hardened_m8` uses file-provider only — no socket mount on the Traefik container (verified by `test_socketless_traefik.py`) |
 | Google OAuth redirect hijack | Manipulated `redirect_target` | `OAUTH_ALLOWED_REDIRECT_PREFIXES` enforced in production/strict; plain HTTP redirects blocked unless localhost |
@@ -171,6 +177,7 @@ Run through this checklist **before** bringing up the production overlay.
   `*.production.example` copies with a strong random value
   (`python -c "import secrets; print(secrets.token_urlsafe(64))"`).
 - [ ] Ensure `SESSION_SECRET` ≠ `TOKENS_ENCRYPTION_KEY` (key separation).
+- [ ] Ensure `HEALTH_DETAIL_CREDENTIAL` ≠ `PRIVATE_API_SECRET` and `METRICS_SCRAPE_CREDENTIAL` ≠ `PRIVATE_API_SECRET` (plan 9.3 no-reuse; the settings validator rejects violations at boot).
 - [ ] Set `EVENT_SIGNING_KEY` to the same non-placeholder value in `auth.env` and in every
   consumer stack's env file.
 - [ ] Set `PRIVATE_API_SECRET` to the same non-placeholder value in `auth.env` and every
@@ -253,6 +260,7 @@ steps are the same minus the wipe/audit — that playbook is cross-referenced ra
 | Shared private-API secret | `PRIVATE_API_SECRET` | No (fleet cutover) | Shared secret + service-token signer | None (service only) |
 | Per-consumer credential | `PRIVATE_API_CONSUMERS` entry | **Yes** (per-entry) | Independent hashed entry per consumer | None (one consumer) |
 | Scrape credential | `METRICS_SCRAPE_CREDENTIAL` | Coordinated (auth + Prometheus) | Static bearer credential | None (metrics only) |
+| Health-detail credential | `HEALTH_DETAIL_CREDENTIAL` | Coordinated (auth + monitoring tooling) | Static bearer credential | None (health reads only) |
 | Google OAuth2 client secret | `GOOGLE_CLIENT_SECRET` | **Yes** (two-secret overlap at Google) | Google Console dual-secret | None (login flow only) |
 | Bootstrap superuser password | `FIRST_SUPERUSER_PASSWORD` | n/a (boot seed only) | Rotate the account in-app, not via env | One account |
 | DB / Redis credential | `DB_PASSWORD` / `REDIS_PASSWORD` | No (brief redeploy) | Datastore-side password change | None (brief outage) |
@@ -261,7 +269,7 @@ steps are the same minus the wipe/audit — that playbook is cross-referenced ra
 
 - **Independent (rotate one at a time, no coordination):** `REFRESH_SECRET_KEY` (dual-key),
   `TOKENS_ENCRYPTION_KEY` (dual-key), `SESSION_SECRET`, a single `PRIVATE_API_CONSUMERS` entry,
-  `METRICS_SCRAPE_CREDENTIAL`, `GOOGLE_CLIENT_SECRET`, `DB_PASSWORD`, `REDIS_PASSWORD`.
+  `METRICS_SCRAPE_CREDENTIAL`, `HEALTH_DETAIL_CREDENTIAL`, `GOOGLE_CLIENT_SECRET`, `DB_PASSWORD`, `REDIS_PASSWORD`.
 - **Auth-first, consumers follow within the cache TTL:** the RS256/ES256 keypair + `ACCESS_KEY_ID`
   — the issuer cuts over, consumers re-fetch JWKS within `JWKS_CACHE_TTL_SECONDS` (default 300 s).
 - **Fleet-coordinated (rotate the auth service and every holder in one window):** `ACCESS_SECRET_KEY`
@@ -355,8 +363,8 @@ holder is touched. Scopes (deny-by-default) are unchanged by a secret rotation.
 **Legacy single-secret mode — retired (v1.0.0).** The shared `X-Internal-Token` == `PRIVATE_API_SECRET`
 gate no longer authorizes the private API. `PRIVATE_API_CONSUMERS` is now required: with it empty every
 `/private/*` call fails closed (`401`) and the service-token exchange is disabled (`404`). `PRIVATE_API_SECRET`
-itself stays (it signs service tokens and gates `/health` + `/metrics`), but it is no longer a private-route
-credential.
+itself stays (it signs service tokens), but it is no longer a private-route credential and no longer
+gates `/health/` (see plan 9.3 — that gate now uses `HEALTH_DETAIL_CREDENTIAL`).
 
 **Service-token note.** `PRIVATE_API_SECRET` also signs the short-TTL service tokens minted at
 `{API_PREFIX}/private/v1/service-token`. Rotating it invalidates outstanding service tokens, but they
@@ -373,6 +381,17 @@ only — a stale Prometheus receives `401` until updated; no user-facing impact.
 long-lived static credential (short-TTL tokens are awkward for a scraper), so cadence can be relaxed.
 **Verification:** Prometheus resumes scraping with the new credential; a request with the old value
 returns `401`. **Rollback:** revert both sides and reload.
+
+### Health-detail credential (`HEALTH_DETAIL_CREDENTIAL`)
+
+Gates the full infrastructure detail body on `GET {API_PREFIX}/health/`. When unset the gate fails
+closed (no detail ever revealed). Rotate the value in `auth.env` and in any monitoring tool or
+script that presents `X-Internal-Token` to `/health/`; redeploy the auth service. **Blast radius:**
+`/health/` infrastructure reads only — anonymous callers still receive `{"status":...}`;
+no user-facing impact. **No-reuse invariant:** `HEALTH_DETAIL_CREDENTIAL` must not equal
+`PRIVATE_API_SECRET` (the validator rejects this at boot). **Verification:** a request with the
+new credential receives the full detail body; a request with the old value returns only
+`{"status":...}`. **Rollback:** revert `auth.env` to the previous value and redeploy.
 
 ### Google OAuth2 client secret (`GOOGLE_CLIENT_SECRET`)
 

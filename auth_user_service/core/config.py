@@ -6,7 +6,7 @@ This module loads environment settings securely and applies best practices.
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict
 from auth_sdk_m8.utils.paths import find_dotenv
 from auth_sdk_m8.core.config import CommonSettings
@@ -69,6 +69,7 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
         "TOKENS_ENCRYPTION_KEY",
         "TOKENS_ENCRYPTION_KEY_OLD",
         "METRICS_SCRAPE_CREDENTIAL",
+        "HEALTH_DETAIL_CREDENTIAL",
         # Holds per-consumer bootstrap secrets (plaintext or hashed); keep it out
         # of the debug dump. The strength/changethis validators skip it safely
         # (it is a mapping, not a SecretStr).
@@ -136,6 +137,39 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     # Prometheus ``authorization`` in scrape_configs. Deliberately a long-lived
     # static credential — short-TTL tokens are awkward for a scraper.
     METRICS_SCRAPE_CREDENTIAL: Optional[SecretStr] = None
+
+    # Dedicated credential for the deep-/health detail gate (plan item 9.3).
+    # When set, the X-Internal-Token header is matched against this value
+    # (constant-time via make_internal_token_authorizer) to reveal the full
+    # infrastructure detail body; anonymous callers always get a shallow
+    # {"status":...} only. When unset the gate fails closed — no detail body
+    # is ever revealed regardless of any presented token.
+    # Must be a separate secret from PRIVATE_API_SECRET (the validator rejects
+    # reuse); rotate independently without touching the private-API consumer
+    # credentials. HEALTH_DETAIL_FILE is also supported for Docker/K8s secrets.
+    HEALTH_DETAIL_CREDENTIAL: Optional[SecretStr] = None
+
+    @model_validator(mode="after")
+    def _assert_no_operational_secret_reuse(self) -> "Settings":
+        """Fail closed if an operational credential reuses PRIVATE_API_SECRET."""
+        private = self.PRIVATE_API_SECRET.get_secret_value()
+        if (
+            self.HEALTH_DETAIL_CREDENTIAL is not None
+            and self.HEALTH_DETAIL_CREDENTIAL.get_secret_value() == private
+        ):
+            raise ValueError(
+                "HEALTH_DETAIL_CREDENTIAL must not equal PRIVATE_API_SECRET — "
+                "operational credentials must be separately rotatable (plan 9.3)"
+            )
+        if (
+            self.METRICS_SCRAPE_CREDENTIAL is not None
+            and self.METRICS_SCRAPE_CREDENTIAL.get_secret_value() == private
+        ):
+            raise ValueError(
+                "METRICS_SCRAPE_CREDENTIAL must not equal PRIVATE_API_SECRET — "
+                "operational credentials must be separately rotatable (plan 9.3)"
+            )
+        return self
 
     # API key rate limiting defaults (0 = disabled for that period)
     API_KEY_STRICT_RATE_LIMIT: bool = False

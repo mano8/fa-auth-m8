@@ -77,15 +77,17 @@ def health_check(request: Request) -> dict[str, Any]:
     Shallow ``{"status": ...}`` answers every caller so liveness/readiness probes
     and load balancers keep working. The full infrastructure detail (token mode,
     Redis/DB reachability, degradation modes) is revealed only to internal
-    callers presenting the ``X-Internal-Token`` shared secret (1.4). The guard
-    lives here, in the app, so it survives a reverse-proxy swap; proxy
-    route-hiding stays defense-in-depth. ``{API_PREFIX}/ping`` remains the
-    dependency-free public liveness route.
+    callers presenting the dedicated ``HEALTH_DETAIL_CREDENTIAL`` via the
+    ``X-Internal-Token`` header (plan 9.3). When ``HEALTH_DETAIL_CREDENTIAL`` is
+    unset the gate **fails closed** — no detail body is ever revealed regardless
+    of any presented token. The guard lives here, in the app, so it survives a
+    reverse-proxy swap; proxy route-hiding stays defense-in-depth.
+    ``{API_PREFIX}/ping`` remains the dependency-free public liveness route.
     """
     detail = _collect_health()
-    authorize = make_internal_token_authorizer(
-        settings.PRIVATE_API_SECRET.get_secret_value()
-    )
-    if authorize(request):
-        return detail
+    credential = settings.HEALTH_DETAIL_CREDENTIAL
+    if credential is not None:
+        authorize = make_internal_token_authorizer(credential.get_secret_value())
+        if authorize(request):
+            return detail
     return {"status": detail["status"]}
