@@ -6,7 +6,15 @@ This module loads environment settings securely and applies best practices.
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import SettingsConfigDict
 from auth_sdk_m8.utils.paths import find_dotenv
 from auth_sdk_m8.core.config import CommonSettings

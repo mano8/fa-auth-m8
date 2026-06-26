@@ -32,6 +32,8 @@ from auth_sdk_m8.security.consumer_auth import (
 )
 
 from auth_user_service.core import consumer_registry as cr
+from pydantic import SecretStr
+
 from auth_user_service.core.config import ConsumerCredentialConfig, settings
 from auth_user_service.core.consumer_registry import get_consumer_registry
 from auth_user_service.core.deps import require_private_scope
@@ -50,7 +52,7 @@ _SIGNING_KEY = settings.PRIVATE_API_SECRET.get_secret_value()
 def _consumers(**spec: tuple[str, list[str]]) -> dict[str, ConsumerCredentialConfig]:
     """Build a ``PRIVATE_API_CONSUMERS`` mapping from ``id=(secret, scopes)``."""
     return {
-        client_id: ConsumerCredentialConfig(secret=secret, scopes=scopes)
+        client_id: ConsumerCredentialConfig(secret=SecretStr(secret), scopes=scopes)
         for client_id, (secret, scopes) in spec.items()
     }
 

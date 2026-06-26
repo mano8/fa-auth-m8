@@ -29,10 +29,18 @@ from auth_user_service.events.hub import (
 )
 
 
-def _make_hub(**overrides) -> EventHub:
-    params = dict(buffer_size=10, heartbeat_seconds=5.0, max_queue=10, signing_key="k")
-    params.update(overrides)
-    return EventHub(**params)
+def _make_hub(
+    buffer_size: int = 10,
+    heartbeat_seconds: float = 5.0,
+    max_queue: int = 10,
+    signing_key: str | None = "k",
+) -> EventHub:
+    return EventHub(
+        buffer_size=buffer_size,
+        heartbeat_seconds=heartbeat_seconds,
+        max_queue=max_queue,
+        signing_key=signing_key,
+    )
 
 
 class TestEventNameConstants:
