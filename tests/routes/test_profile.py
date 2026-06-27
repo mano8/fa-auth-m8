@@ -5,7 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from sqlmodel import select
 
+from auth_user_service.db_models.api_keys import ApiKey
 from auth_user_service.db_models.users import UpdatePassword, UserUpdateMe
 from auth_user_service.routes.profile import (
     delete_user_me,
@@ -31,6 +33,18 @@ def _mock_session(db_user: object = None) -> MagicMock:
     s = MagicMock()
     s.get.return_value = db_user
     return s
+
+
+def _add_api_key(db_session, user_id: uuid.UUID) -> ApiKey:
+    api_key = ApiKey(
+        name="Self delete key",
+        key_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+        user_id=user_id,
+    )
+    db_session.add(api_key)
+    db_session.commit()
+    db_session.refresh(api_key)
+    return api_key
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +254,17 @@ class TestDeleteUserMe:
         assert "deleted" in result.message.lower()
         session.delete.assert_called_once_with(sample_user)
         session.commit.assert_called_once()
+
+    def test_success_deletes_owned_api_keys(self, db_session, sample_user) -> None:
+        api_key = _add_api_key(db_session, sample_user.id)
+
+        result = delete_user_me(session=db_session, current_user=sample_user)
+
+        deleted_key = db_session.exec(
+            select(ApiKey).where(ApiKey.id == api_key.id)
+        ).first()
+        assert "deleted" in result.message.lower()
+        assert deleted_key is None
 
     def test_generic_exception_delegated(self, sample_user) -> None:
         session = _mock_session(db_user=sample_user)

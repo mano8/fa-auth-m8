@@ -95,7 +95,7 @@ superuser, opt-in secrets) before you run the suite.
 The suite needs superuser credentials because it exercises admin-only paths — creating users, listing accounts, deleting other users, issuing API keys. You must give it a **dedicated, test-only superuser**, not your real admin and not the stack's bootstrap `FIRST_SUPERUSER`:
 
 - The preflight **refuses** to run as `FIRST_SUPERUSER` (`LIVE_TEST_FORBID_BOOTSTRAP_SUPERUSER=true`). Reusing the bootstrap account risks locking out or corrupting the identity your stack depends on.
-- During a run the suite also creates throwaway `redteam_*@redteam-test.com` regular users to attempt privilege escalation.
+- During a run the suite also creates one throwaway `redteam_*@redteam-test.com` regular user to attempt privilege escalation. The suite **deletes that user automatically at the end of the test session** (best-effort, through the admin account), so a run leaves no standing test identity behind.
 
 Create the dedicated account first (it must already exist in the auth stack and have superuser permissions), then point the live-test env file at it:
 
@@ -104,7 +104,7 @@ LIVE_TEST_ADMIN_EMAIL=tester@example.com
 LIVE_TEST_ADMIN_PASSWORD=change-this-test-password
 ```
 
-**Clean up afterward.** The suite does **not** delete the dedicated superuser or the `redteam_*` users it creates — leaving standing superuser credentials and test accounts on a stack is itself a security risk. After a run, delete or disable the dedicated test superuser (and prune the `redteam_*` accounts), especially on any shared or long-lived deployment. On a throwaway/CI stack you tear down immediately, this is moot.
+**Clean up afterward.** The suite **auto-deletes** the throwaway `redteam_*@redteam-test.com` user it creates, at session teardown via the admin account. This is best-effort: a `redteam_*` account only survives if the stack was unreachable during teardown, so prune any leftovers by filtering on the `redteam_*@redteam-test.com` pattern. The suite does **not** delete the dedicated superuser — that account is pre-existing and yours to manage. Leaving standing superuser credentials on a stack is itself a security risk, so after a run delete or disable the dedicated test superuser, especially on any shared or long-lived deployment. On a throwaway/CI stack you tear down immediately, this is moot.
 
 ## Run With The Recommended CLI Mode
 
