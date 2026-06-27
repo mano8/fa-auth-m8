@@ -331,7 +331,7 @@ docker pull tepochtli/fa-auth-m8:latest
 | Tag | Description |
 | --- | ----------- |
 | `latest` | Latest release from the `main` branch |
-| `x.y.z` (e.g. `0.9.5`) | Pinned release — recommended for production |
+| `x.y.z` (e.g. `1.0.0`) | Pinned release — recommended for production |
 
 ### Using the published image in a Compose stack
 
@@ -348,7 +348,7 @@ auth_user_service:
 
 # With this:
 auth_user_service:
-  image: tepochtli/fa-auth-m8:0.9.5   # pin to a specific release for production
+  image: tepochtli/fa-auth-m8:1.0.0   # pin to a specific release for production
 ```
 
 All env files, volumes, labels, and `depends_on` entries remain unchanged —

@@ -13,24 +13,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
-
-- **Example stacks migrated to the per-consumer `1.0.0` issuer image + live-test
-  harness alignment (security-tests-m8 ≥ 0.2.0).**
-  - `hardened_m8` (base + production overlay) and `vault_dev_m8` now pin the issuer
-    image `tepochtli/fa-auth-m8:1.0.0` (was `0.9.9`), so every example stack runs a
-    per-consumer issuer (the source-built stacks already did). `1.0.0` ignores the
-    legacy single `X-Internal-Token` gate — `PRIVATE_API_CONSUMERS` + per-consumer
-    `X-Internal-Client` (or short-TTL service tokens) is the only private-API path.
-  - `rs256_m8`: activated the per-consumer config it previously shipped commented —
-    `PRIVATE_API_CONSUMERS={"example-api":…}` in `auth.env.example` and
-    `INTERNAL_CLIENT_ID=example-api` in `api.env.example`.
-  - All stack `test.env` / `test.env.example` and `shared_live_tests/env.example`
-    gain `LIVE_TEST_PRIVATE_API_CLIENT_ID=example-api` (sent as `X-Internal-Client`;
-    enables the harness F06 legacy-detection check) and a documented, opt-in
-    `LIVE_TEST_HEALTH_DETAIL_CREDENTIAL` (unlocks the deep `/health` detail via the
-    dedicated credential decoupled from `PRIVATE_API_SECRET`). `shared_live_tests`
-    README env table aligned.
+_Nothing yet._
 
 ---
 
@@ -126,6 +109,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Example stacks migrated to the per-consumer `1.0.0` issuer image + live-test
+  harness alignment (security-tests-m8 ≥ 0.2.0).**
+  - `hardened_m8` (base + production overlay) and `vault_dev_m8` now pin the issuer
+    image `tepochtli/fa-auth-m8:1.0.0` (was `0.9.9`), so every example stack runs a
+    per-consumer issuer (the source-built stacks already did). `1.0.0` ignores the
+    legacy single `X-Internal-Token` gate — `PRIVATE_API_CONSUMERS` + per-consumer
+    `X-Internal-Client` (or short-TTL service tokens) is the only private-API path.
+  - `rs256_m8`: activated the per-consumer config it previously shipped commented —
+    `PRIVATE_API_CONSUMERS={"example-api":…}` in `auth.env.example` and
+    `INTERNAL_CLIENT_ID=example-api` in `api.env.example`.
+  - All stack `test.env` / `test.env.example` and `shared_live_tests/env.example`
+    gain `LIVE_TEST_PRIVATE_API_CLIENT_ID=example-api` (sent as `X-Internal-Client`;
+    enables the harness F06 legacy-detection check) and a documented, opt-in
+    `LIVE_TEST_HEALTH_DETAIL_CREDENTIAL` (unlocks the deep `/health` detail via the
+    dedicated credential decoupled from `PRIVATE_API_SECRET`). `shared_live_tests`
+    README env table aligned.
 - **Dependency floors raised for the `auth-sdk-m8 2.0.1` / `fastapi-m8 3.0.0`
   alignment.** `auth_user_service/requirements_base.txt` now pins
   `auth-sdk-m8>=2.0.1,<3.0.0` (was `>=2.0.0`) and `pydantic_settings>=2.14.2`
