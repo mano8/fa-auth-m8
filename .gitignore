@@ -227,3 +227,6 @@ __marimo__/
 **/keys/private.*
 **/keys/public.*
 *README_DEV*
+
+Claude.md
+Agents.md
