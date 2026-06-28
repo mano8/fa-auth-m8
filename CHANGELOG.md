@@ -164,6 +164,18 @@ _Nothing yet._
 - **Docs aligned** (`README.md` route table + env table + Private-API + revocation
   sections; `examples/docker_compose/SECURITY.md` rotation, threat-model, and
   leaked-secret playbook) to the retired gate and the per-consumer model.
+- **Public-HTTPS `/health` hardening — constant ungated liveness body** (plan item
+  9.4, Design B). The ungated `/health` response is now a constant,
+  dependency-independent `{"status":"ok"}` — identical whether Redis/DB are healthy
+  or `degraded` (`routes/health.py`). Previously the ungated branch echoed
+  `detail["status"]`, which reflected `degraded` and acted as a public timing/state
+  oracle for fail-open degradation. Readiness/degradation detection is now
+  **credential-only** via the 9.3 `HEALTH_DETAIL_CREDENTIAL` detail gate (unchanged,
+  still fail-closed). With the body safe to expose, the Traefik **SECURITY CONTRACT**
+  drops `/user/health` from the `auth-public-router` exclusion in all six stacks
+  (`dynamic_conf.yml` + `production_dynamic_conf.yml`) so the shallow status is
+  publicly reachable; `/user/metrics` + `/user/private` stay internal-only. README +
+  `SECURITY.md` route tables, threat model, and bring-up checklist aligned.
 
 ### Tests
 
@@ -180,6 +192,14 @@ _Nothing yet._
   proceeds but is recorded via `degraded_decision_total` labelled with the real
   effective mode; and the `/health` body's `degradation_modes` reflect the real
   posture (all `fail_closed` under strict). No production code changed.
+- **Public-`/health` Design B coverage** (plan item 9.4). `tests/routes/health_test.py`
+  adds cases proving the ungated body stays the constant `{"status":"ok"}` even when
+  Redis is down (never `degraded`, no detail keys), while the credential-gated detail
+  still surfaces `degraded`. `tests/security/test_compose_policy.py` asserts
+  `/user/health` is NOT route-excluded (publicly reachable) while `/user/metrics` +
+  `/user/private` stay excluded; `tests/security/test_production_overlay.py` updated to
+  match. The live `TestF_HealthAPI` (f3) flips from "blocked by Traefik (404)" to
+  "public shallow-constant, no detail leak".
 
 ## [0.9.9] — 2026-06-22 · Security remediation: hardened compose, app-layer guards, Redis ACLs
 

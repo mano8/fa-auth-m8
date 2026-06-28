@@ -10,9 +10,10 @@ Docker-socket absence, image-pin policy, and production-overlay data-port-reset 
 covered by test_socketless_traefik.py, test_image_pins.py, and test_production_overlay.py
 — not duplicated here.
 
-Note on /user/health: per plan item 1.4 the shallow health status is allowed publicly
-(detail is token-gated at the app layer); the static-policy tests do NOT assert
-whole-route exclusion of /user/health from public routers.
+Note on /user/health: per plan items 1.4 / 9.4 (Design B) the shallow health status is
+served publicly — the ungated body is a constant {"status":"ok"} and the deep detail is
+token-gated at the app layer. The static-policy tests assert /user/health is NOT
+route-excluded from the public router (it must stay publicly reachable).
 """
 
 from __future__ import annotations
@@ -95,4 +96,19 @@ def test_auth_public_router_excludes_internal_path(
     assert excluded_path in rule, (
         f"{traefik_path.name}: auth-public-router rule must explicitly "
         f"exclude {excluded_path!r} — add it to the negated PathPrefix block"
+    )
+
+
+@pytest.mark.parametrize("traefik_path", _TRAEFIK_CONFS)
+def test_auth_public_router_does_not_exclude_health(traefik_path) -> None:
+    """Plan 9.4 Design B: /user/health must stay publicly reachable.
+
+    The shallow body is a constant ``{"status":"ok"}`` and the deep detail is
+    app-gated (fail-closed), so the route must NOT be excluded at the proxy.
+    """
+    conf = yaml.safe_load(traefik_path.read_text(encoding="utf-8"))
+    rule = conf["http"]["routers"]["auth-public-router"]["rule"]
+    assert "/user/health" not in rule, (
+        f"{traefik_path.name}: auth-public-router rule must NOT exclude "
+        "/user/health — Design B serves the shallow status publicly"
     )

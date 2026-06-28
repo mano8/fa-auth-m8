@@ -297,3 +297,54 @@ class TestHealthDetailGating:
 
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
+
+    def _enter_patches_degraded(self, stack: ExitStack) -> None:
+        """Patch the route with Redis unavailable (status would be degraded)."""
+        stack.enter_context(
+            patch(
+                "auth_user_service.routes.health.settings",
+                self._patched_settings(credential_set=True),
+            )
+        )
+        stack.enter_context(
+            patch("auth_user_service.routes.health.get_redis_client", return_value=None)
+        )
+        stack.enter_context(
+            patch(
+                "auth_user_service.routes.health.get_redis_degraded_since",
+                return_value=None,
+            )
+        )
+        stack.enter_context(
+            patch("auth_user_service.routes.health.engine", self._mock_db_ok())
+        )
+
+    def test_ungated_body_is_constant_ok_even_when_degraded(self):
+        """Plan 9.4 Design B: the ungated body is a constant, not a state oracle.
+
+        Even when Redis is down (status would be ``degraded``), the anonymous /
+        unauthorised response must stay ``{"status": "ok"}`` — it never reflects
+        degradation, so it cannot leak that fail-open degradation is active.
+        """
+        with ExitStack() as stack:
+            self._enter_patches_degraded(stack)
+            resp = self._client().get("/health/")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+        for key in _DETAIL_ONLY_KEYS:
+            assert key not in resp.json()
+
+    def test_authorized_detail_still_reflects_degradation(self):
+        """Degradation detection stays credential-only: the gated detail shows it."""
+        with ExitStack() as stack:
+            self._enter_patches_degraded(stack)
+            resp = self._client().get(
+                "/health/", headers={"X-Internal-Token": _HEALTH_CREDENTIAL}
+            )
+
+        body = resp.json()
+        assert resp.status_code == 200
+        assert body["status"] == "degraded"
+        assert body["redis"] == "unavailable"
+        assert body["circuit_breaker"] == "open"

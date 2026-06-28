@@ -80,7 +80,7 @@ Internet
 | --- | --- | --- | --- |
 | GET | `{API_PREFIX}/ping` | — | Dependency-free liveness; single-mounted under the prefix (auth-sdk-m8 2.0.0) |
 | GET | `{API_PREFIX}/meta` | — | Service/version identity for client compat checks |
-| GET | `{API_PREFIX}/health/` | — | Shallow `{"status":...}` only; full infra detail requires `X-Internal-Token` |
+| GET | `{API_PREFIX}/health/` | — | Constant shallow `{"status":"ok"}` (never reflects degradation — plan 9.4); full infra detail requires `X-Internal-Token` |
 | GET | `{API_PREFIX}/.well-known/jwks.json` | — | JWKS (RS256/ES256 public key) |
 | POST | `{API_PREFIX}/login/access-token` | — | Email + password → access token + refresh cookie |
 | POST | `{API_PREFIX}/login/refresh-token/` | — | Rotate refresh cookie → new access token |
@@ -156,7 +156,8 @@ excludes them via explicit `PathPrefix` deny rules in `dynamic_conf.yml` and
 | JTI-blacklist suppression | Redis write access | Scoped Redis ACL (auth user restricted to `rt:* jwt:blacklist:* oauth_session:* login_rate:* refresh_rate:*`); Redis not exposed on host interfaces |
 | Forge revocation events | Stolen `EVENT_SIGNING_KEY` | HMAC signature verification on every SSE frame; fail-closed on bad signature; see event-signing playbook |
 | Call `/private/*` without authorization | Missing/unknown consumer or wrong per-consumer secret | `require_private_scope` (app-layer, per-consumer `X-Internal-Client`+`X-Internal-Token` or scoped service token, constant-time, deny-by-default; legacy shared-secret gate retired in v1.0.0); Traefik `PathPrefix(/user/private)` excluded from `websecure`; `api` entryPoint loopback-bound |
-| Read full health detail | Anonymous `/health/` call | `HEALTH_DETAIL_CREDENTIAL` gates the detail body (plan 9.3); when unset the gate fails closed; anonymous callers always receive shallow `{"status":...}` only |
+| Read full health detail | Anonymous `/health/` call | `HEALTH_DETAIL_CREDENTIAL` gates the detail body (plan 9.3); when unset the gate fails closed; anonymous callers always receive the constant shallow `{"status":"ok"}` only (never reflects degradation — plan 9.4) |
+| Probe degradation state | Public `/health/` body as an oracle | The ungated body is a constant `{"status":"ok"}` regardless of Redis/DB health (plan 9.4 Design B), so it cannot signal when fail-open degradation is active |
 | Scrape Prometheus metrics | Unauthorized `/metrics` call | `make_scrape_credential_guard` (optional; network boundary is the baseline); `api` entryPoint loopback-bound |
 | Container → host pivot | Docker socket exposure | `hardened_m8` uses file-provider only — no socket mount on the Traefik container (verified by `test_socketless_traefik.py`) |
 | Google OAuth redirect hijack | Manipulated `redirect_target` | `OAUTH_ALLOWED_REDIRECT_PREFIXES` enforced in production/strict; plain HTTP redirects blocked unless localhost |
@@ -222,7 +223,8 @@ Requires Docker Compose **v2.24+** for the `!reset` / `!override` merge tags.
   `curl -k https://<fqdn>/user/private/v1/jti-status` → 404.
 - [ ] Confirm `/user/metrics` is not reachable on `websecure`:
   `curl -k https://<fqdn>/user/metrics` → 404.
-- [ ] Confirm anonymous `/user/health/` returns only `{"status":...}` (no Redis/DB detail).
+- [ ] Confirm anonymous `/user/health/` returns the constant `{"status":"ok"}` (no Redis/DB
+      detail; never `degraded`), and that it IS reachable on `websecure` (plan 9.4 Design B).
 - [ ] Run the full live security suite:
   `security-tests-m8 run --env-file test.env --include-destructive` (against a non-production
   clone if possible, since destructive tests create and delete users).

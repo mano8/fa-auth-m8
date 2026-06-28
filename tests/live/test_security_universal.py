@@ -686,32 +686,55 @@ class TestF_MetricsAPI:
 
 
 class TestF_HealthAPI:
-    """Category F3 — Health endpoint security.
+    """Category F3 — Health endpoint security (plan 9.4, Design B).
 
-    /health is NOT routed through Traefik's public entrypoint so public
-    requests receive 404.  It is only reachable via the internal api entrypoint
-    (port 9000 from within the Docker network).
+    /health IS routed through Traefik's public entrypoint, but the ungated body
+    is a constant ``{"status": "ok"}`` — it never reflects degradation and never
+    leaks infrastructure detail. The deep detail stays gated at the app layer on
+    HEALTH_DETAIL_CREDENTIAL (fail-closed). /metrics and /private remain
+    internal-only.
 
-    OPERATOR NOTE: if any test below fails with a non-404 status, it means
-    Traefik is misconfigured — PathPrefix(`/user/health`) is missing from the
-    exclusion list in auth-public-router (dynamic_conf.yml).  Add it and restart
-    Traefik.  See the SECURITY CONTRACT comment in dynamic_conf.yml.
+    OPERATOR NOTE: if test_f3_01 fails with 404, /user/health is still excluded
+    from auth-public-router (dynamic_conf.yml) — Design B drops that exclusion so
+    the shallow status is publicly reachable. If a detail key leaks, the app-layer
+    gate is misconfigured. See the SECURITY CONTRACT comment in dynamic_conf.yml.
     """
 
     _URL = "https://localhost:4430/user/health/"
+    _DETAIL_ONLY_KEYS = (
+        "token_mode",
+        "effective_mode",
+        "redis",
+        "circuit_breaker",
+        "database",
+        "revocation_available",
+        "rate_limiting_available",
+        "degraded_since",
+        "degradation_modes",
+    )
 
-    def test_f3_01_health_blocked_by_traefik(self):
-        """GOOD: Traefik returns 404 — /health not reachable from the internet."""
+    def test_f3_01_health_public_shallow_constant(self):
+        """GOOD: public /health answers 200 with the constant shallow body."""
         try:
             r = requests.get(self._URL, timeout=TIMEOUT, verify=False)  # noqa: S501
         except requests.exceptions.SSLError:
             return
-        assert r.status_code == 404, (
-            f"[TRAEFIK MISCONFIGURATION] PathPrefix(`/user/health`) is not excluded "
-            f"from auth-public-router in dynamic_conf.yml. "
-            f"Got {r.status_code}, expected 404. "
-            f"Fix: add PathPrefix(`/user/health`) to the exclusion list and restart Traefik."
+        assert r.status_code == 200, (
+            f"[TRAEFIK MISCONFIGURATION] /user/health must be publicly reachable "
+            f"(plan 9.4 Design B). Got {r.status_code}, expected 200. "
+            f"Fix: drop PathPrefix(`/user/health`) from the auth-public-router "
+            f"exclusion list and restart Traefik."
         )
+        body = r.json()
+        assert body == {"status": "ok"}, (
+            f"[EXPOSURE] public /health must be the constant {{'status': 'ok'}}; "
+            f"got {body!r} — the ungated body must never reflect degradation."
+        )
+        for key in self._DETAIL_ONLY_KEYS:
+            assert key not in body, (
+                f"[EXPOSURE] public /health leaked detail key {key!r}; the deep "
+                f"detail must stay gated on HEALTH_DETAIL_CREDENTIAL."
+            )
 
     def test_f3_02_health_absent_from_openapi(self):
         """Health endpoint must not appear in the public OpenAPI schema."""

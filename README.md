@@ -124,7 +124,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | --- | ------ | ---- | ---- | ----------- |
 | meta | GET | `/meta` | — | Static service/version/contract identity (`ServiceMeta`) for client compat checks; cacheable, read pre-auth |
 | meta | GET | `/ping` | — | Dependency-free liveness probe → `{"status": "ok"}` (single-mounted at `{API_PREFIX}/ping` since auth-sdk-m8 2.0.0) |
-| health | GET | `/health/` | — | Redis, database, effective token mode (dependency-aware readiness) |
+| health | GET | `/health/` | — (detail: `X-Internal-Token`) | Public body is the constant `{"status":"ok"}`; Redis/database/effective-token-mode readiness detail is gated on `HEALTH_DETAIL_CREDENTIAL` (plan 9.4) |
 | well-known | GET | `/.well-known/jwks.json` | — | JWKS endpoint (RS256/ES256 public key; `{"keys":[]}` for HS256) |
 | login | POST | `/login/access-token` | — | Email/password login — returns access token, sets refresh cookie |
 | login | POST | `/login/refresh-token/` | — | Refresh access token from HttpOnly cookie |
@@ -162,7 +162,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | private | POST | `/private/v1/jti-status` | X-Internal-Client + X-Internal-Token (`introspection`) | Check whether an access-token JTI is revoked (inter-service) |
 | private | GET | `/private/v1/events/stream` | X-Internal-Client + X-Internal-Token (`event-stream`) | SSE bridge of `session-revoked` / `user-deleted` events (inter-service) |
 
-**Service triad (`/meta`, `/ping`, `/health/`).** `/ping` answers "is the process up?" (liveness — point container/orchestrator liveness probes here; never touches a dependency), `/health/` answers "are dependencies reachable?" (readiness — Redis/DB), and `/meta` answers "what version/contract is this?" (client compatibility, read pre-auth — satisfies `@fa-m8/astro-auth-m8`'s `assertFaAuthM8Compatibility`). `/meta` + `/ping` are the shared auth-sdk-m8 routes (`mount_service_meta`); the issuer mounts them directly since it doesn't use `fastapi_m8.create_app`. Since auth-sdk-m8 2.0.0 `/ping` is **single-mounted** at `{API_PREFIX}/ping` (the root `/ping` is no longer served when a prefix is set) and advertised in the schema — point container/orchestrator liveness probes at `{API_PREFIX}/ping`.
+**Service triad (`/meta`, `/ping`, `/health/`).** `/ping` answers "is the process up?" (liveness — point container/orchestrator liveness probes here; never touches a dependency), `/health/` answers liveness publicly with a constant `{"status":"ok"}` and "are dependencies reachable?" (readiness — Redis/DB) **only in its credential-gated detail body** (the public body never reflects degradation — plan 9.4 Design B), and `/meta` answers "what version/contract is this?" (client compatibility, read pre-auth — satisfies `@fa-m8/astro-auth-m8`'s `assertFaAuthM8Compatibility`). `/meta` + `/ping` are the shared auth-sdk-m8 routes (`mount_service_meta`); the issuer mounts them directly since it doesn't use `fastapi_m8.create_app`. Since auth-sdk-m8 2.0.0 `/ping` is **single-mounted** at `{API_PREFIX}/ping` (the root `/ping` is no longer served when a prefix is set) and advertised in the schema — point container/orchestrator liveness probes at `{API_PREFIX}/ping`.
 
 Interactive docs at `{BACKEND_HOST}{API_PREFIX}/docs` when `SET_DOCS=true` **and** `ENVIRONMENT ≠ production`. In production docs are suppressed by default; set `SERVE_DOCS_IN_PRODUCTION=true` to explicitly enable them (emits a startup warning — use only for public/open-source APIs).
 
@@ -254,7 +254,7 @@ Alembic migrations run automatically. The first start seeds the superuser from `
 GET http://localhost:9000/user/health/
 ```
 
-> Health and metrics routes (`/user/health`, `/user/metrics`) are only reachable on the internal `api` entryPoint (port 9000, localhost-bound). They are blocked on the public `websecure` entryPoint (port 4430/443).
+> `/user/health` answers publicly on the `websecure` entryPoint (port 4430/443) with a **constant shallow body** (`{"status":"ok"}`) — it never reflects degradation. Its full infrastructure detail is gated at the app layer on `HEALTH_DETAIL_CREDENTIAL` (fail-closed). `/user/metrics` and `/user/private` stay internal-only — reachable only on the `api` entryPoint (port 9000, localhost-bound) and blocked on `websecure` (plan 9.4, Design B).
 
 ### 7. Adapt for your own project
 
