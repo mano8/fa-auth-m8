@@ -157,10 +157,15 @@ _Nothing yet._
   the hardened production overlay (`auth.env.production.example` /
   `api.env.production.example`, file-mounted), and the vault prod example are
   aligned. The stale "homelab default / single-secret gate" guidance is removed.
-- **Example consumer floor raised to `fastapi-m8>=3.1.0,<4.0.0`** (was `>=3.0.0`)
+- **Example consumer floor raised to `fastapi-m8>=3.2.0,<4.0.0`** (was `>=3.0.0`)
   in `examples/fastapi_full/requirements_base.txt` and
-  `examples/fastapi_minimal/requirements.txt` — `INTERNAL_CLIENT_ID` and the
-  per-consumer internal-auth path require the 3.1.0 consumer surface.
+  `examples/fastapi_minimal/requirements.txt`. The `3.1.0` surface added
+  `INTERNAL_CLIENT_ID` + the per-consumer internal-auth path; `3.2.0` adds the
+  item-9.4 Design B constant-ungated-`/health` consumer hardening, which the
+  example stacks need because `fastapi-public-router` routes `/fastapi/health`
+  publicly (no Traefik exclusion) — without the `3.2.0` floor that public body
+  would still leak `degraded`. `3.2.0` requires `auth-sdk-m8>=2.1.0,<3.0.0`,
+  compatible with the issuer's `>=2.0.1,<3.0.0` pin.
 - **Docs aligned** (`README.md` route table + env table + Private-API + revocation
   sections; `examples/docker_compose/SECURITY.md` rotation, threat-model, and
   leaked-secret playbook) to the retired gate and the per-consumer model.
@@ -175,7 +180,10 @@ _Nothing yet._
   drops `/user/health` from the `auth-public-router` exclusion in all six stacks
   (`dynamic_conf.yml` + `production_dynamic_conf.yml`) so the shallow status is
   publicly reachable; `/user/metrics` + `/user/private` stay internal-only. README +
-  `SECURITY.md` route tables, threat model, and bring-up checklist aligned.
+  `SECURITY.md` route tables, threat model, and bring-up checklist aligned. The
+  `fastapi_full` / `fastapi_minimal` example consumers are floored to
+  `fastapi-m8>=3.2.0` (the consumer-side Design B release) so their publicly-routed
+  `/fastapi/health` is the same constant body — see the dependency-floor note below.
 
 ### Tests
 
