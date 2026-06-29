@@ -26,6 +26,7 @@ The included example stacks use `_m8` in their names as a personal naming conven
 - [Environment Variables](#environment-variables)
 - [Infrastructure Resilience](#infrastructure-resilience)
 - [Deployment Modes](#deployment-modes)
+- [Security defaults](#security-defaults)
 - [API Key Authentication](#api-key-authentication)
 - [Private API](#private-api)
 - [Consumer Service Integration](#consumer-service-integration)
@@ -122,8 +123,8 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | Tag | Method | Path | Auth | Description |
 | --- | ------ | ---- | ---- | ----------- |
 | meta | GET | `/meta` | — | Static service/version/contract identity (`ServiceMeta`) for client compat checks; cacheable, read pre-auth |
-| meta | GET | `/ping` | — | Dependency-free liveness probe → `{"status": "ok"}` (prefix-independent, **not** under `API_PREFIX`) |
-| health | GET | `/health/` | — | Redis, database, effective token mode (dependency-aware readiness) |
+| meta | GET | `/ping` | — | Dependency-free liveness probe → `{"status": "ok"}` (single-mounted at `{API_PREFIX}/ping` since auth-sdk-m8 2.0.0) |
+| health | GET | `/health/` | — (detail: `X-Internal-Token`) | Public body is the constant `{"status":"ok"}`; Redis/database/effective-token-mode readiness detail is gated on `HEALTH_DETAIL_CREDENTIAL` (plan 9.4) |
 | well-known | GET | `/.well-known/jwks.json` | — | JWKS endpoint (RS256/ES256 public key; `{"keys":[]}` for HS256) |
 | login | POST | `/login/access-token` | — | Email/password login — returns access token, sets refresh cookie |
 | login | POST | `/login/refresh-token/` | — | Refresh access token from HttpOnly cookie |
@@ -135,7 +136,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | profile | GET | `/profile/get/me/` | JWT | Read own profile |
 | profile | PATCH | `/profile/update/me/` | JWT | Update own profile (`email`, `full_name`, `avatar` only — explicit allowlist) |
 | profile | PATCH | `/profile/me/password/` | JWT | Change own password |
-| profile | DELETE | `/profile/delete/me/` | JWT | Delete own account |
+| profile | DELETE | `/profile/delete/me/` | JWT | Delete own account (cascades to the user's sessions, API keys, and rate-limit rows) |
 | api-keys | GET | `/profile/api-keys/verify` | X-API-Key | Validate key header, enforce rate limits, return key metadata |
 | api-keys | POST | `/profile/api-keys/` | JWT | Create API key — plaintext returned once, never stored |
 | api-keys | GET | `/profile/api-keys/` | JWT | List own API keys (metadata only) |
@@ -153,15 +154,15 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | users | POST | `/users/signup/` | superuser | Register user (no password set) |
 | users | GET | `/users/get/{user_id}/` | superuser | Get user by ID |
 | users | PATCH | `/users/update/{user_id}/` | superuser | Update user |
-| users | DELETE | `/users/delete/{user_id}/` | superuser | Delete user |
+| users | DELETE | `/users/delete/{user_id}/` | superuser | Delete user (cascades to the user's sessions, API keys, and rate-limit rows) |
 | dashboard | GET | `/dashboard/users/activity/` | JWT | All-user activity stats (monthly) |
 | dashboard | GET | `/dashboard/users/activity/current/` | JWT | Own activity stats (monthly) |
 | metrics | GET | `/metrics` | — | Prometheus metrics (`METRICS_ENABLED=true` only) |
-| private | POST | `/private/users/` | X-Internal-Token | Create user (inter-service, Docker network only) |
-| private | POST | `/private/v1/jti-status` | X-Internal-Token | Check whether an access-token JTI is revoked (inter-service) |
-| private | GET | `/private/v1/events/stream` | X-Internal-Token | SSE bridge of `session-revoked` / `user-deleted` events (inter-service) |
+| private | POST | `/private/users/` | X-Internal-Client + X-Internal-Token (`user-create`) | Create user (inter-service, Docker network only) |
+| private | POST | `/private/v1/jti-status` | X-Internal-Client + X-Internal-Token (`introspection`) | Check whether an access-token JTI is revoked (inter-service) |
+| private | GET | `/private/v1/events/stream` | X-Internal-Client + X-Internal-Token (`event-stream`) | SSE bridge of `session-revoked` / `user-deleted` events (inter-service) |
 
-**Service triad (`/meta`, `/ping`, `/health/`).** `/ping` answers "is the process up?" (liveness — point container/orchestrator liveness probes here; never touches a dependency), `/health/` answers "are dependencies reachable?" (readiness — Redis/DB), and `/meta` answers "what version/contract is this?" (client compatibility, read pre-auth — satisfies `@fa-m8/astro-auth-m8`'s `assertFaAuthM8Compatibility`). `/meta` + `/ping` are the shared auth-sdk-m8 routes (`mount_service_meta`); the issuer mounts them directly since it doesn't use `fastapi_m8.create_app`. `/ping` is intentionally prefix-independent so liveness never depends on routing config.
+**Service triad (`/meta`, `/ping`, `/health/`).** `/ping` answers "is the process up?" (liveness — point container/orchestrator liveness probes here; never touches a dependency), `/health/` answers liveness publicly with a constant `{"status":"ok"}` and "are dependencies reachable?" (readiness — Redis/DB) **only in its credential-gated detail body** (the public body never reflects degradation — plan 9.4 Design B), and `/meta` answers "what version/contract is this?" (client compatibility, read pre-auth — satisfies `@fa-m8/astro-auth-m8`'s `assertFaAuthM8Compatibility`). `/meta` + `/ping` are the shared auth-sdk-m8 routes (`mount_service_meta`); the issuer mounts them directly since it doesn't use `fastapi_m8.create_app`. Since auth-sdk-m8 2.0.0 `/ping` is **single-mounted** at `{API_PREFIX}/ping` (the root `/ping` is no longer served when a prefix is set) and advertised in the schema — point container/orchestrator liveness probes at `{API_PREFIX}/ping`.
 
 Interactive docs at `{BACKEND_HOST}{API_PREFIX}/docs` when `SET_DOCS=true` **and** `ENVIRONMENT ≠ production`. In production docs are suppressed by default; set `SERVE_DOCS_IN_PRODUCTION=true` to explicitly enable them (emits a startup warning — use only for public/open-source APIs).
 
@@ -253,7 +254,7 @@ Alembic migrations run automatically. The first start seeds the superuser from `
 GET http://localhost:9000/user/health/
 ```
 
-> Health and metrics routes (`/user/health`, `/user/metrics`) are only reachable on the internal `api` entryPoint (port 9000, localhost-bound). They are blocked on the public `websecure` entryPoint (port 4430/443).
+> `/user/health` answers publicly on the `websecure` entryPoint (port 4430/443) with a **constant shallow body** (`{"status":"ok"}`) — it never reflects degradation. Its full infrastructure detail is gated at the app layer on `HEALTH_DETAIL_CREDENTIAL` (fail-closed). `/user/metrics` and `/user/private` stay internal-only — reachable only on the `api` entryPoint (port 9000, localhost-bound) and blocked on `websecure` (plan 9.4, Design B).
 
 ### 7. Adapt for your own project
 
@@ -330,7 +331,7 @@ docker pull tepochtli/fa-auth-m8:latest
 | Tag | Description |
 | --- | ----------- |
 | `latest` | Latest release from the `main` branch |
-| `x.y.z` (e.g. `0.9.5`) | Pinned release — recommended for production |
+| `x.y.z` (e.g. `1.0.0`) | Pinned release — recommended for production |
 
 ### Using the published image in a Compose stack
 
@@ -347,7 +348,7 @@ auth_user_service:
 
 # With this:
 auth_user_service:
-  image: tepochtli/fa-auth-m8:0.9.5   # pin to a specific release for production
+  image: tepochtli/fa-auth-m8:1.0.0   # pin to a specific release for production
 ```
 
 All env files, volumes, labels, and `depends_on` entries remain unchanged —
@@ -409,8 +410,9 @@ Set `SELECTED_DB` in `.env` (or `auth.env`):
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | no | `30` | Access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | no | `120` | Refresh token lifetime |
 | `REFRESH_TOKEN_COOKIE_EXPIRE_SECONDS` | no | `3600` | Refresh cookie max-age |
-| `SESSION_SECRET` | yes | — | Signing key for the `SessionMiddleware` cookie. Must be distinct from `TOKENS_ENCRYPTION_KEY` (key separation) so rotating the session key does not invalidate encrypted tokens. |
+| `SESSION_SECRET` | yes | — | Signing key for the `SessionMiddleware` cookie. Must be distinct from `TOKENS_ENCRYPTION_KEY` (key separation) so rotating the session key does not invalidate encrypted tokens. Rotation is single-key (Starlette exposes no key-list): the cookie `max_age` (3600s) bounds the blast radius to ≤1h of re-auth — there is no `_OLD` fallback. |
 | `TOKENS_ENCRYPTION_KEY` | yes | — | Fernet key encrypting external/refresh token payloads at rest in Redis |
+| `TOKENS_ENCRYPTION_KEY_OLD` | no | — | Previous `TOKENS_ENCRYPTION_KEY`. Set during a no-downtime key rotation so tokens encrypted under the old key stay decryptable (`MultiFernet` new→old fallback) while new writes use the current key. Remove once every stored token has been re-encrypted under / expired past the new key. |
 | `TOKEN_ISSUER` | if strict | — | `iss` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
 | `TOKEN_AUDIENCE` | if strict | — | `aud` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
 | `TOKEN_STRICT_VALIDATION` | no | `true` | Secure-by-default strict profile (`auth-sdk-m8 ≥ 1.0.0`): enforces `iss`/`aud` binding and pins the configured algorithm; the service fails closed at boot unless `TOKEN_ISSUER`/`TOKEN_AUDIENCE` are set. Set `false` to opt out (legacy/local), enforcing `iss`/`aud` only when configured. |
@@ -478,7 +480,8 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 | `OAUTH_ALLOWED_REDIRECT_SCHEMES` | no | URI scheme(s) accepted as `redirect_target` at `/google-api/login-url/` (default `chrome-extension://`). Add `https://` only for trusted web clients; add `http://` only for local development. |
 | `OAUTH_ALLOWED_REDIRECT_PREFIXES` | no | Optional full-URI prefix allowlist. Required for `http://` and `https://` redirects to pin trusted callback origins; optional for native public-client schemes. Plain HTTP is limited to localhost and rejected in production/staging. |
 | `CORS_ALLOWED_ORIGIN_SCHEMES` | no | Scheme-level CORS origins for native-app `fetch()` calls (e.g. `chrome-extension://`). |
-| `PRIVATE_API_SECRET` | yes | Shared secret for `X-Internal-Token` header |
+| `PRIVATE_API_SECRET` | yes | Signs the short-TTL service tokens and gates the `/health` detail body + `/metrics`. **No longer a private-route gate** (the legacy shared `X-Internal-Token` path was retired in v1.0.0 — `PRIVATE_API_CONSUMERS` replaces it). |
+| `PRIVATE_API_CONSUMERS` | yes¹ | Per-consumer private-API credentials: JSON map of consumer id → `{secret, scopes}` (scopes: `introspection` / `event-stream` / `user-create`, deny-by-default; `secret` plaintext or hashed `sha256$<salt>$<digest>`). The **only** private-API auth model — each consumer presents `X-Internal-Client` + `X-Internal-Token` (or exchanges it for a service token). ¹Empty is allowed but then every `/private/*` call fails closed (`401`) and the service-token exchange is disabled (`404`). |
 
 ### Event Signing
 
@@ -494,7 +497,7 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 
 ### Auth Event Stream (SSE bridge)
 
-fa-auth-m8 pushes its own auth-state changes to backend consumers over an authenticated **Server-Sent Events** stream on the private API: `GET /private/v1/events/stream` (gated by the same `X-Internal-Token` / `PRIVATE_API_SECRET` as `jti-status`). Consumers receive `session-revoked` and `user-deleted` events and evict locally cached token-validation state ahead of natural expiry.
+fa-auth-m8 pushes its own auth-state changes to backend consumers over an authenticated **Server-Sent Events** stream on the private API: `GET /private/v1/events/stream` (gated by the same per-consumer credential as `jti-status`, requiring the `event-stream` scope). Consumers receive `session-revoked` and `user-deleted` events and evict locally cached token-validation state ahead of natural expiry.
 
 > **Accelerator, not authority.** Push is a best-effort latency optimisation. The JTI blacklist behind `POST /private/v1/jti-status` remains the revocation authority — a consumer that misses every event is still correct, just slower to converge. So stream loss is never fatal: the service keeps enforcing revocation over the HTTP authority path.
 
@@ -726,6 +729,60 @@ stable and the hostname will remain HTTPS-only for the full max-age period.
 
 ---
 
+## Security defaults
+
+Security-critical settings and how they behave across the stack. All `secret_fields` reject the
+literal `changethis` placeholder at startup — a service with any modeled secret still at its
+placeholder fails closed immediately.
+
+**Boot-required conditions** — the service refuses to start unless:
+
+- Every `secret_fields` value has been changed from `changethis`.
+- `EVENT_SIGNING_KEY` is set when `EVENT_SIGNING_ENABLED=true` (the default).
+- `TOKEN_ISSUER` and `TOKEN_AUDIENCE` are set when `TOKEN_STRICT_VALIDATION=true` (the default).
+- `ACCESS_PUBLIC_KEY_FILE` or `JWKS_URI` is present for RS256/ES256.
+
+| Setting | SDK default | Dev / local | `hardened_m8` | Production overlay |
+| --- | --- | --- | --- | --- |
+| `ACCESS_TOKEN_ALGORITHM` | `RS256` | any | `RS256` | `RS256` |
+| `TOKEN_STRICT_VALIDATION` | `true` | `true` | `true` | `true` |
+| `TOKEN_ISSUER` | `None` | optional | set in `auth.env.example` | **required** (fatal if unset) |
+| `TOKEN_AUDIENCE` | `None` | optional | set in `auth.env.example` | **required** (fatal if unset) |
+| `EVENT_SIGNING_ENABLED` | `true` | `true` | `true` | `true` |
+| `EVENT_SIGNING_KEY` | `None` | **required** — boot fails without it | non-`changethis` required | non-`changethis` required |
+| `ENVIRONMENT` | `local` | `local` | `local` | `production` (overlay) |
+| `STRICT_PRODUCTION_MODE` | `false` | `false` | `false` | `true` (overlay) |
+| `ALLOWED_HOSTS` | `None` | no host check | `None` — Traefik `Host()` rules are primary | **required** (strict fatal if unset) |
+| `ALLOWED_ORIGINS` | `["http://localhost:8080"]` | localhost | localhost | no `localhost` (prod fatal) |
+| `SET_DOCS` / `SET_OPEN_API` | `true` | on | on | **off** (gated in production) |
+| `HSTS_ENABLED` | `false` | never (local-blocked) | never | opt-in only (`HSTS_ENABLED=true`) |
+| `CONTENT_SECURITY_POLICY_ENABLED` | `false` | never (local-blocked) | never | opt-in only |
+| `SESSION_COOKIE_SECURE` | `false` | `false` | `false` | `true` (overlay) |
+| `ALLOW_INTERNAL_HTTP` | `false` | no check in `local` | Docker-network-only | `true` opt-in (single trusted Docker host) |
+| `AUTH_STRICT_MODE` | `false` | `false` | `false` | optionally `true` for fail-closed Redis ops |
+
+**Dev-only stacks.** The examples below are development/learning templates and must not be used
+as-is for production deployments:
+
+| Stack | Why dev-only |
+| --- | --- |
+| `quickstart_m8` | HS256, no hardening layer, loopback DB/Redis |
+| `postgres_m8` | No hardening layer, loopback DB |
+| `rs256_m8` | RS256 demo, no hardening layer |
+| `metrics_m8` | Observability demo, no hardening layer |
+| `vault_dev_m8` | HashiCorp Vault in **dev mode** with root token — never production |
+
+`hardened_m8` is the only stack with a production path — apply `docker-compose.production.yml` as
+documented in [Going to production](#8-going-to-production-hardened_m8-overlay). See
+[`examples/docker_compose/SECURITY.md`](https://github.com/mano8/fa-auth-m8/tree/main/examples/docker_compose/SECURITY.md)
+for the full operational security runbook (trust model, route inventory, secret inventory, attacker
+paths, production checklist, and incident response playbooks).
+
+For the complete cross-layer table including fastapi-m8 consumer defaults, see the
+[auth-sdk-m8 Defaults by layer](https://github.com/mano8/auth-sdk-m8#defaults-by-layer) section.
+
+---
+
 ## API Key Authentication
 
 API keys are created by authenticated users and validated by consumer services via the `GET /profile/api-keys/verify` endpoint (or the `get_current_api_key` FastAPI dependency in the SDK).
@@ -757,7 +814,7 @@ Response headers on every API key request:
 Endpoints under `/user/private/` are for inter-service calls only:
 
 - Must not be exposed to the public internet — enforce at the reverse proxy / Docker network level.
-- Every request must include `X-Internal-Token: <PRIVATE_API_SECRET>`.
+- Every request must present a per-consumer credential — `X-Internal-Client: <consumer-id>` + `X-Internal-Token: <consumer-secret>` matching a `PRIVATE_API_CONSUMERS` entry (or a short-TTL `Authorization: Bearer <service-token>`), and carry the scope the route requires. The legacy shared `X-Internal-Token: <PRIVATE_API_SECRET>` gate was retired in v1.0.0.
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
@@ -813,12 +870,15 @@ JWKS_CACHE_TTL_SECONDS=300
 ### Revocation check (stateful mode)
 
 Consumer services check revocation via an HTTP call to the auth service private API —
-auth Redis is never shared with consumers. Set `INTROSPECTION_URL` and `PRIVATE_API_SECRET`
-(both must match the auth service) when `TOKEN_MODE=stateful`:
+auth Redis is never shared with consumers. Set `INTROSPECTION_URL`, `INTERNAL_CLIENT_ID`, and
+`PRIVATE_API_SECRET` (the consumer's per-consumer bootstrap secret) when `TOKEN_MODE=stateful`. The
+client id + secret must match an entry in the auth service `PRIVATE_API_CONSUMERS` map (the legacy
+shared-secret gate was retired in v1.0.0):
 
 ```ini
 INTROSPECTION_URL=http://auth_user_service:8000/user/private/v1/jti-status
-PRIVATE_API_SECRET=<same as auth service PRIVATE_API_SECRET>
+INTERNAL_CLIENT_ID=example-api
+PRIVATE_API_SECRET=<this consumer's secret, matching its PRIVATE_API_CONSUMERS entry>
 ```
 
 `fastapi-m8`'s `build_auth_deps` wires `RemoteRevocationClient` automatically and honours

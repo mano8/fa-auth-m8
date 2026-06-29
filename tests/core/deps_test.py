@@ -15,7 +15,6 @@ from auth_user_service.core.deps import (
     get_current_user,
     get_redis_client,
     get_redis_degraded_since,
-    verify_private_api_secret,
 )
 from auth_user_service.core.security import SecurityHelper
 from auth_sdk_m8.schemas.auth import TokenAccessData, TokenSecret
@@ -24,7 +23,7 @@ from auth_sdk_m8.schemas.user import UserModel
 
 
 def _make_valid_token(user_id: str | None = None) -> str:
-    """Create a signed access token that passes decode_access_token validation."""
+    """Create a signed access token that passes TokenValidator validation."""
     import re
 
     _pattern = re.compile(
@@ -244,26 +243,6 @@ class TestGetRedisClient:
         ):
             result = get_redis_client()
         assert result is None
-
-
-class TestVerifyPrivateApiSecret:
-    def test_correct_secret_passes(self):
-        from auth_user_service.core.config import settings
-
-        correct = settings.PRIVATE_API_SECRET.get_secret_value()
-        verify_private_api_secret(x_internal_token=correct)  # should not raise
-
-    def test_wrong_secret_raises_401(self):
-        with pytest.raises(HTTPException) as exc_info:
-            verify_private_api_secret(x_internal_token="completely_wrong_secret")
-
-        assert exc_info.value.status_code == 401
-
-    def test_missing_header_raises_401(self):
-        with pytest.raises(HTTPException) as exc_info:
-            verify_private_api_secret(x_internal_token=None)
-
-        assert exc_info.value.status_code == 401
 
 
 class TestGetRedisDegradedSince:

@@ -22,12 +22,18 @@ Six ready-to-run stacks, each targeting a distinct use case. Each runs the same 
 
 | Stack | Database | Algorithm | Token mode | Secrets | Monitoring | Hardening | Best for |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| [quickstart_m8](quickstart_m8/) | MariaDB | HS256 | `stateful` | env file | — | — | **Start here** — fastest onboarding |
-| [postgres_m8](postgres_m8/) | PostgreSQL 18 | HS256 | `stateful` | env file | — | — | PostgreSQL projects |
-| [rs256_m8](rs256_m8/) | MariaDB | RS256 | `hybrid` | env file | — | — | Asymmetric signing + JWKS |
-| [metrics_m8](metrics_m8/) | PostgreSQL 18 | HS256 | `stateful` | env file | Prometheus + Grafana | — | Metrics dashboards |
-| [hardened_m8](hardened_m8/) | PostgreSQL 18 | RS256 | `stateful` | env file | Prometheus + Grafana | container + network | Hardened posture without Vault |
-| [vault_dev_m8](vault_dev_m8/) | PostgreSQL 18 | RS256 | `stateful` | **HashiCorp Vault** (dev mode) | Prometheus + Grafana | container + network | Vault injection pattern — dev/learning only |
+| [quickstart_m8](quickstart_m8/) | MariaDB | HS256 | `stateful` | env file | — | — | **Start here** — fastest onboarding (**dev-only**) |
+| [postgres_m8](postgres_m8/) | PostgreSQL 18 | HS256 | `stateful` | env file | — | — | PostgreSQL projects (**dev-only**) |
+| [rs256_m8](rs256_m8/) | MariaDB | RS256 | `hybrid` | env file | — | — | Asymmetric signing + JWKS (**dev-only**) |
+| [metrics_m8](metrics_m8/) | PostgreSQL 18 | HS256 | `stateful` | env file | Prometheus + Grafana | — | Metrics dashboards (**dev-only**) |
+| [hardened_m8](hardened_m8/) | PostgreSQL 18 | RS256 | `stateful` | env file | Prometheus + Grafana | container + network | Hardened posture — **production-capable via overlay** |
+| [vault_dev_m8](vault_dev_m8/) | PostgreSQL 18 | RS256 | `stateful` | **HashiCorp Vault** (dev mode) | Prometheus + Grafana | container + network | Vault injection pattern (**dev/learning only**) |
+
+> **Security note:** `quickstart_m8`, `postgres_m8`, `rs256_m8`, `metrics_m8`, and `vault_dev_m8`
+> are development/learning templates — they carry no hardening layer and must not be used as-is
+> for internet-facing production deployments. `hardened_m8` is the only stack with a
+> production path: apply `docker-compose.production.yml` as documented in its
+> [README](hardened_m8/) and [SECURITY.md](SECURITY.md).
 
 **Decision guide:**
 

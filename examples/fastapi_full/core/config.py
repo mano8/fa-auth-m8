@@ -7,7 +7,6 @@ all inherited via the base class.
 
 from pathlib import Path
 
-from auth_sdk_m8.core.config import settings_customise_sources
 from auth_sdk_m8.utils.paths import find_dotenv
 from fastapi_m8 import ConsumerServiceSettings
 from pydantic_settings import SettingsConfigDict
@@ -29,14 +28,15 @@ class Settings(ConsumerServiceSettings):
 
     SERVICE_VERSION: str = __version__
     CONTRACT_VERSION: str = "0.9"
-    CONTRACT_RANGE: str = ">=0.9.9 <0.10.0"
+    CONTRACT_RANGE: str = ">=1.0.0 <2.0.0"
 
+    # Vault/`_FILE` source ordering is handled by the inherited
+    # CommonSettings.settings_customise_sources classmethod — no override needed.
     model_config = SettingsConfigDict(
         env_file=find_dotenv(Path(__file__).resolve().parent.parent),
         env_file_encoding="utf-8",
         env_ignore_empty=True,
         extra="forbid",
-        settings_customise_sources=settings_customise_sources,  # type: ignore[typeddict-unknown-key]
     )
 
 

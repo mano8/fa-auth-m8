@@ -144,6 +144,9 @@ rabbitmq-data/
 # ActiveMQ
 activemq-data/
 
+# Postgres volume data from example compose stacks
+**/db_data/
+
 # SageMath parsed files
 *.sage.py
 
@@ -227,3 +230,6 @@ __marimo__/
 **/keys/private.*
 **/keys/public.*
 *README_DEV*
+
+Claude.md
+Agents.md

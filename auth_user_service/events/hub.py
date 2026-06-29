@@ -32,7 +32,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
-from auth_sdk_m8.redis_events._signing import serialize
+from auth_sdk_m8.events._signing import serialize
 
 from auth_user_service.events import metrics as _event_metrics
 

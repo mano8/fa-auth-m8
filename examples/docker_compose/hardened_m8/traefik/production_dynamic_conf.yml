@@ -61,7 +61,7 @@ http:
         - ip-allowlist
       tls: {}
 
-    # Auth-User-Service: public API routes on HTTPS (health and metrics are internal-only)
+    # Auth-User-Service: public API routes on HTTPS (health is public-shallow; metrics internal-only)
     # PRODUCTION: docs are disabled via ENVIRONMENT=production — no CSP/docs conflict.
     auth-public-router:
       entryPoints:
@@ -69,8 +69,9 @@ http:
       # Pinned to the real FQDN — replace auth.example.com with your domain.
       # Deleting the `Host(...) && ` prefix matches any hostname/IP (not advised).
       # The path exclusions are the SECURITY CONTRACT and MUST stay regardless —
-      # /user/health|metrics|private are never publicly routable.
-      rule: "Host(`auth.example.com`) && PathPrefix(`/user`) && !(PathPrefix(`/user/health`) || PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
+      # /user/metrics + /user/private are never publicly routable. /user/health is
+      # public-shallow (its deep detail stays app-gated, fail-closed).
+      rule: "Host(`auth.example.com`) && PathPrefix(`/user`) && !(PathPrefix(`/user/metrics`) || PathPrefix(`/user/private`))"
       service: auth-service
       middlewares:
         - security-headers-prod

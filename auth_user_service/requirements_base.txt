@@ -6,7 +6,7 @@ sqlalchemy>=2.0.50
 alembic>=1.18.4
 
 pydantic>=2.13.4
-pydantic_settings>=2.14.1
+pydantic_settings>=2.14.2
 
 tenacity>=9.1.4
 
@@ -24,7 +24,7 @@ httpx>=0.28.1
 
 google-auth>=2.53.0
 requests>=2.34.2
-auth-sdk-m8>=1.5.0,<2.0.0
+auth-sdk-m8>=2.1.0,<3.0.0
 
 # Optional observability (required when METRICS_ENABLED=true)
 prometheus-client>=0.25.0

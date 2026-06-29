@@ -72,8 +72,21 @@ FIRST_SUPERUSER="changethis"
 FIRST_SUPERUSER_PASSWORD="changethis"
 
 # ── Inter-service & encryption secrets ────────────────────────────────────────
-# Shared secret for inter-service calls to /private/* endpoints.
+# Service-owned key that SIGNS short-TTL service tokens (HS256) and gates the
+# /health detail + /metrics scrape (1.4). It is NO LONGER a private-API gate:
+# the legacy single-secret X-Internal-Token path was retired in v1.0.0. Still
+# required (no default).
 PRIVATE_API_SECRET="changethis"
+
+# Per-consumer private-API credentials (v1.0.0 — the only private-API auth model;
+# the legacy single-PRIVATE_API_SECRET gate is retired). JSON map of consumer id →
+# {secret, scopes}; each consumer presents X-Internal-Client + X-Internal-Token (or
+# exchanges it for a short-TTL service token) and is authorized only for its
+# granted scopes (introspection / event-stream / user-create; deny-by-default).
+# `secret` may be plaintext (dev) or the hashed-at-rest `sha256$<salt>$<digest>`
+# form (prod). REQUIRED for any inter-service traffic: when empty every /private/*
+# call fails closed (401) and the service-token exchange is disabled (404).
+#PRIVATE_API_CONSUMERS='{"media-service":{"secret":"changethis","scopes":["introspection"]}}'
 
 # Dedicated signing key for the Starlette session cookie. Required (no default);
 # kept separate from TOKENS_ENCRYPTION_KEY so rotating one does not invalidate
@@ -82,6 +95,11 @@ SESSION_SECRET="changethis"
 
 # Symmetric key used to encrypt Google OAuth tokens at rest.
 TOKENS_ENCRYPTION_KEY="changethis"
+# Set only during a TOKENS_ENCRYPTION_KEY rotation: the previous key, kept so
+# tokens encrypted under it stay decryptable (MultiFernet new→old fallback).
+# Remove once every stored token has been re-encrypted under / expired past the
+# new key. Leave commented in steady state.
+#TOKENS_ENCRYPTION_KEY_OLD="changethis"
 
 # ── Event signing (Redis Pub/Sub) ─────────────────────────────────────────────
 # Secure-by-default (auth-sdk-m8 >= 1.0.0): event-bus payloads are HMAC-signed

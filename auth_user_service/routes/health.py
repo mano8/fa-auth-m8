@@ -72,20 +72,25 @@ def _collect_health() -> dict[str, Any]:
 
 @router.get("/", summary="Service health and infrastructure status")
 def health_check(request: Request) -> dict[str, Any]:
-    """Return service health, gating the infrastructure detail at the app layer.
+    """Return service liveness, gating the infrastructure detail at the app layer.
 
-    Shallow ``{"status": ...}`` answers every caller so liveness/readiness probes
-    and load balancers keep working. The full infrastructure detail (token mode,
-    Redis/DB reachability, degradation modes) is revealed only to internal
-    callers presenting the ``X-Internal-Token`` shared secret (1.4). The guard
-    lives here, in the app, so it survives a reverse-proxy swap; proxy
-    route-hiding stays defense-in-depth. ``{API_PREFIX}/ping`` remains the
-    dependency-free public liveness route.
+    The ungated response is a **constant, dependency-independent liveness body** —
+    always ``{"status": "ok"}``, identical whether Redis/DB are healthy or
+    ``degraded`` (plan 9.4, Design B). It never reflects degradation, so a public
+    caller cannot use it as a timing/state oracle for fail-open degradation; this
+    is what makes the route safe to route over public HTTPS. Readiness /
+    degradation detection becomes **credential-only**: the full infrastructure
+    detail (token mode, Redis/DB reachability, degradation modes) is revealed only
+    to internal callers presenting the dedicated ``HEALTH_DETAIL_CREDENTIAL`` via
+    the ``X-Internal-Token`` header (plan 9.3). When ``HEALTH_DETAIL_CREDENTIAL``
+    is unset the gate **fails closed** — no detail body is ever revealed
+    regardless of any presented token. The guard lives here, in the app, so it
+    survives a reverse-proxy swap; proxy route-hiding stays defense-in-depth.
+    ``{API_PREFIX}/ping`` remains the dependency-free public liveness route.
     """
-    detail = _collect_health()
-    authorize = make_internal_token_authorizer(
-        settings.PRIVATE_API_SECRET.get_secret_value()
-    )
-    if authorize(request):
-        return detail
-    return {"status": detail["status"]}
+    credential = settings.HEALTH_DETAIL_CREDENTIAL
+    if credential is not None:
+        authorize = make_internal_token_authorizer(credential.get_secret_value())
+        if authorize(request):
+            return _collect_health()
+    return {"status": "ok"}

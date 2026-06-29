@@ -151,9 +151,11 @@ def test_production_traefik_uses_fqdn_host_rules() -> None:
     auth_rule = routers["auth-public-router"]["rule"]
     assert "auth.example.com" in auth_rule
     assert "Host(`localhost`)" not in auth_rule
-    # security contract: internal paths are never publicly routable
-    for path in ("/user/health", "/user/metrics", "/user/private"):
+    # security contract: metrics + private are never publicly routable
+    for path in ("/user/metrics", "/user/private"):
         assert path in auth_rule
+    # plan 9.4 Design B: /user/health is public-shallow — never route-excluded
+    assert "/user/health" not in auth_rule
     assert "api.example.com" in routers["fastapi-public-router"]["rule"]
 
 

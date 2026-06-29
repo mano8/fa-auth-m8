@@ -11,6 +11,220 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+_Nothing yet._
+
+---
+
+## [1.0.0] — 2026-06-25 · First stable line — per-consumer private-API auth (legacy `PRIVATE_API_SECRET` gate retired), short-TTL service tokens, dual-key token encryption
+
+> **First `1.x` release.** `1.0.0` is the first stable line of `fa-auth-m8`,
+> reclaiming the version after the security-remediation `0.9.x` baseline. It
+> supersedes the abandoned early `1.x`/`2.x` tags, which were never real
+> `fa-auth-m8` releases. The package `__version__`, the issuer `/meta`
+> `CONTRACT_RANGE` (now `>=1.0.0 <2.0.0`), and the `fastapi_full` / `fastapi_minimal`
+> example consumers are all aligned to `1.0.0`.
+>
+> **Requires `auth-sdk-m8 >= 2.1.0` (and `< 3.0.0`)** — pin bumped in
+> `auth_user_service/requirements_base.txt`. This consumes the SDK's 9.1
+> verification primitives (`ConsumerCredentialRegistry`, `make_consumer_authorizer`)
+> and keeps the issuer on the **same SDK version the example consumers resolve**:
+> their `fastapi-m8 >= 3.2.0` floor requires `auth-sdk-m8 >= 2.1.0`, so a shared
+> virtualenv installs one consistent SDK across issuer and consumers. The `2.1.0`
+> floor also carries the `pydantic-settings >= 2.14.2` security patch
+> (symlink-traversal hardening in the nested-secrets source). 2.0.0 already
+> **single-mounts** the liveness `/ping` route (served only at
+> `{API_PREFIX}/ping` and advertised in the schema; the root `/ping` is no longer
+> mounted) — a breaking change vs the 1.5.0 dual-mount; the `/ping` test is
+> updated accordingly.
+
+### Removed — BREAKING
+
+- **Legacy single-`PRIVATE_API_SECRET` private-API gate retired** (plan item —
+  `PRIVATE_API_SECRET` retirement, fa-auth-m8 side). The `/private/*` routes no
+  longer accept a single shared `X-Internal-Token` matching `PRIVATE_API_SECRET`.
+  Per-consumer credentials (`X-Internal-Client` + `X-Internal-Token`, authorized
+  against `PRIVATE_API_CONSUMERS`) or short-TTL service tokens are now the **only**
+  way to pass `require_private_scope`. With no `PRIVATE_API_CONSUMERS` configured
+  every `/private/*` call fails closed (`401`) and the service-token exchange stays
+  disabled (`404`); startup logs the misconfiguration loudly (`main.py`).
+  `verify_private_api_secret` is removed from `auth_user_service.core.deps`.
+  **Migration:** every internal caller must present a per-consumer credential —
+  the retirement gate was cleared by every live consumer adopting them (fastapi-m8
+  3.1.0 + media-service-m8). `PRIVATE_API_SECRET` itself stays required: it still
+  signs the short-TTL service tokens and backs `/health` detail-gating + `/metrics`
+  (1.4). `test_consumer_private_auth.py` now asserts the no-registry-denies-all
+  fail-closed posture in place of the retired legacy-fallback test.
+
+### Added
+
+- **Per-consumer scoped private-API credentials** (plan item 9.1, near-term —
+  issuer side). New `PRIVATE_API_CONSUMERS` setting maps consumer ids → scoped,
+  hashed-at-rest secrets. When configured it **replaces** the single shared
+  `PRIVATE_API_SECRET` on the private routes: each consumer presents
+  `X-Internal-Client` + `X-Internal-Token` and is authorized only for its granted
+  scopes (`introspection` / `event-stream` / `user-create`; **deny-by-default**),
+  bounding the blast radius to one consumer. `auth_user_service/core/consumer_registry.py`
+  builds an `auth_sdk_m8` `ConsumerCredentialRegistry` from config, auto-detecting
+  plaintext vs the portable `sha256$<salt>$<digest>` hashed form. The `/private`
+  routes are gated per-route by scope via the new
+  `auth_user_service.core.deps.require_private_scope`.
+
+- **Short-TTL scoped service tokens** (plan item 9.1, medium-term). New
+  `{API_PREFIX}/private/v1/service-token` exchange: a consumer authenticates with
+  its bootstrap credential and receives an OAuth-client-credentials-style JWT
+  carrying a (narrowable) subset of its granted scopes, presented as
+  `Authorization: Bearer <token>` on subsequent private calls. Tokens are signed
+  with `PRIVATE_API_SECRET` (HS256), isolated from user tokens by a dedicated
+  audience + `type=service` claim, and expire after `SERVICE_TOKEN_TTL_SECONDS`
+  (default 300). Rotation comes from the short TTL; the per-consumer bootstrap
+  secret rotates rarely. `/metrics` keeps its static scrape credential (no token
+  model). `auth_user_service/services/service_token.py`.
+
+- Tests (`tests/security/test_consumer_private_auth.py`) cover the plan's
+  required matrix — wrong consumer secret rejected, consumer A cannot use
+  consumer B's secret, expired service token rejected, scope violation denied —
+  plus the **no-registry fail-closed** posture (every credential shape denied
+  `401` once the legacy fallback is retired), the encoded/plaintext loader paths,
+  and the exchange route (mint / narrow / escalation-denied / disabled-without-registry).
+
+- **No-downtime `TOKENS_ENCRYPTION_KEY` rotation** (plan item 6.2-pre — the code
+  prerequisite that unblocks the 6.2 rotation playbooks). New optional
+  `TOKENS_ENCRYPTION_KEY_OLD` setting: when present, `SecurityHelper` builds a
+  `MultiFernet([new, old])` so external OAuth token payloads encrypted under the
+  previous key stay decryptable (new→old fallback) while new writes use the
+  current key — a Fernet key rotation no longer invalidates persisted tokens. The
+  key is strength-validated (`secret_keys`) and redacted from debug output
+  (`secret_fields`) only when set; unset (the default) keeps single-key behaviour.
+  Wired through both persistence call sites (`services/auth.py`,
+  `routes/sessions.py`). **`SESSION_SECRET` rotation decision:** accept the
+  bounded re-auth window — Starlette's `SessionMiddleware` has no native key-list,
+  and the cookie `max_age=3600` already caps a rotation's blast radius to ≤1h of
+  re-auth, so no fallback-capable signer is shipped (documented in
+  `core/config.py` and `examples/docker_compose/SECURITY.md`). New tests in
+  `tests/core/security_test.py` (cross-key decrypt, primary-key-on-write,
+  no-fallback failure, single-key `MultiFernet`) and
+  `tests/security/test_settings_validators.py` (optional default, strength
+  enforcement, `changethis` rejection, debug-output redaction). README env table,
+  `.example_env`, every compose `auth.env*` example, and the SECURITY.md secret
+  inventory + leaked-key playbook document the dual-key path.
+
+### Changed
+
+- **Example stacks migrated to the per-consumer `1.0.0` issuer image + live-test
+  harness alignment (security-tests-m8 ≥ 0.2.0).**
+  - `hardened_m8` (base + production overlay) and `vault_dev_m8` now pin the issuer
+    image `tepochtli/fa-auth-m8:1.0.0` (was `0.9.9`), so every example stack runs a
+    per-consumer issuer (the source-built stacks already did). `1.0.0` ignores the
+    legacy single `X-Internal-Token` gate — `PRIVATE_API_CONSUMERS` + per-consumer
+    `X-Internal-Client` (or short-TTL service tokens) is the only private-API path.
+  - `rs256_m8`: activated the per-consumer config it previously shipped commented —
+    `PRIVATE_API_CONSUMERS={"example-api":…}` in `auth.env.example` and
+    `INTERNAL_CLIENT_ID=example-api` in `api.env.example`.
+  - All stack `test.env` / `test.env.example` and `shared_live_tests/env.example`
+    gain `LIVE_TEST_PRIVATE_API_CLIENT_ID=example-api` (sent as `X-Internal-Client`;
+    enables the harness F06 legacy-detection check) and a documented, opt-in
+    `LIVE_TEST_HEALTH_DETAIL_CREDENTIAL` (unlocks the deep `/health` detail via the
+    dedicated credential decoupled from `PRIVATE_API_SECRET`). `shared_live_tests`
+    README env table aligned.
+- **Dependency floors raised for the `auth-sdk-m8 2.1.0` / `fastapi-m8 3.x`
+  alignment.** `auth_user_service/requirements_base.txt` now pins
+  `auth-sdk-m8>=2.1.0,<3.0.0` (was `>=2.0.0`) and `pydantic_settings>=2.14.2`
+  (was `>=2.14.1`). The example consumers move to `fastapi-m8>=3.1.0,<4.0.0`
+  (was `>=2.1.0,<3.0.0`; see the per-consumer floor note below) in
+  `examples/fastapi_full/requirements_base.txt` (also `pydantic_settings>=2.14.2`)
+  and `examples/fastapi_minimal/requirements.txt`.
+  `fastapi-m8 3.x` requires `auth-sdk-m8>=2.0.1,<3.0.0` (the consumer floor of
+  `3.2.0` raises it to `>=2.1.0`), so the whole stack pins to the single-mount
+  `/ping` SDK and the `pydantic-settings 2.14.2` security patch on a single
+  shared SDK version. No consumer code changes: the public `fastapi_m8` API surface
+  used by the examples is unchanged across the major. Docs aligned to the SDK
+  2.0.x single-mount `/ping` (root `README.md` route table + service-triad note,
+  and `examples/docker_compose/SECURITY.md` public-route table + bring-up check
+  now reference `{API_PREFIX}/ping`). The removed `TOKEN_ALGORITHM` knob was
+  already migrated to `ACCESS_TOKEN_ALGORITHM` across every compose stack.
+- **Per-consumer credentials are now mandatory for the private API.** The 9.1
+  issuer side originally landed additively (legacy single-`PRIVATE_API_SECRET`
+  gate kept as an opt-out default); `1.0.0` **retires that fallback** (see
+  _Removed — BREAKING_). `PRIVATE_API_CONSUMERS` must be configured for any
+  `/private/*` traffic; `PRIVATE_API_SECRET` remains required for service-token
+  signing and `/health` + `/metrics` gating.
+- **Version bumped to `1.0.0`** across `auth_user_service` (`__version__`), the
+  issuer `/meta` `CONTRACT_RANGE` (`>=1.0.0 <2.0.0`, was `>=0.9.9 <0.10.0`), and
+  the `fastapi_full` / `fastapi_minimal` example consumers (`__version__` +
+  `CONTRACT_RANGE`). `tests/core/test_service_meta.py` asserts the new range.
+- **Env examples rewired to the per-consumer model.** Every stateful compose
+  stack now ships an **active** issuer `PRIVATE_API_CONSUMERS` entry (`auth.env*`)
+  matched by a consumer `INTERNAL_CLIENT_ID` + bootstrap secret (`api.env*`);
+  `rs256_m8` (hybrid, revocation off) documents it commented. The `.example_env`,
+  the hardened production overlay (`auth.env.production.example` /
+  `api.env.production.example`, file-mounted), and the vault prod example are
+  aligned. The stale "homelab default / single-secret gate" guidance is removed.
+- **Example consumer floor raised to `fastapi-m8>=3.2.0,<4.0.0`** (was `>=3.0.0`)
+  in `examples/fastapi_full/requirements_base.txt` and
+  `examples/fastapi_minimal/requirements.txt`. The `3.1.0` surface added
+  `INTERNAL_CLIENT_ID` + the per-consumer internal-auth path; `3.2.0` adds the
+  item-9.4 Design B constant-ungated-`/health` consumer hardening, which the
+  example stacks need because `fastapi-public-router` routes `/fastapi/health`
+  publicly (no Traefik exclusion) — without the `3.2.0` floor that public body
+  would still leak `degraded`. `3.2.0` requires `auth-sdk-m8>=2.1.0,<3.0.0`,
+  matched by the issuer's own `>=2.1.0,<3.0.0` pin (one shared SDK version).
+- **Docs aligned** (`README.md` route table + env table + Private-API + revocation
+  sections; `examples/docker_compose/SECURITY.md` rotation, threat-model, and
+  leaked-secret playbook) to the retired gate and the per-consumer model.
+- **Public-HTTPS `/health` hardening — constant ungated liveness body** (plan item
+  9.4, Design B). The ungated `/health` response is now a constant,
+  dependency-independent `{"status":"ok"}` — identical whether Redis/DB are healthy
+  or `degraded` (`routes/health.py`). Previously the ungated branch echoed
+  `detail["status"]`, which reflected `degraded` and acted as a public timing/state
+  oracle for fail-open degradation. Readiness/degradation detection is now
+  **credential-only** via the 9.3 `HEALTH_DETAIL_CREDENTIAL` detail gate (unchanged,
+  still fail-closed). With the body safe to expose, the Traefik **SECURITY CONTRACT**
+  drops `/user/health` from the `auth-public-router` exclusion in all six stacks
+  (`dynamic_conf.yml` + `production_dynamic_conf.yml`) so the shallow status is
+  publicly reachable; `/user/metrics` + `/user/private` stay internal-only. README +
+  `SECURITY.md` route tables, threat model, and bring-up checklist aligned. The
+  `fastapi_full` / `fastapi_minimal` example consumers are floored to
+  `fastapi-m8>=3.2.0` (the consumer-side Design B release) so their publicly-routed
+  `/fastapi/health` is the same constant body — see the dependency-floor note below.
+- **User deletion now cascades to owned rows.** `cascade_delete=True` on
+  `User → api_keys / rate_limits / sessions` (and `ApiKey → rate_limits`) means
+  deleting a user — self-service (`DELETE /profile/delete/me/`) or admin
+  (`DELETE /users/delete/{user_id}/`) — removes its owned child rows in the same
+  operation instead of leaving orphans or tripping a foreign-key violation
+  (`db_models/users.py`, `db_models/api_keys.py`; the FKs already declared
+  `ondelete="CASCADE"`). Covered by new cases in `tests/routes/test_profile.py`
+  (self-delete) and `tests/routes/test_users.py` (admin delete); the live-test
+  suite documents its automatic teardown of throwaway `redteam_*` users.
+- **`examples/addon` Chrome-extension template removed.** The browser-extension
+  auth example is superseded by the dedicated Vite plugin shipped from the
+  `vite-auth-m8` repo; the stale Preact/Vite tree is dropped from this repository.
+
+### Tests
+
+- **Degradation-policy regression suite** (plan item 5.5). New
+  `tests/security/test_degradation_policy.py` (7 tests) locks the auth service's
+  fail-open/fail-closed contract. Existing resilience suites only verify each
+  enforcement point honours a **mocked** `effective_failure_mode`; this suite
+  exercises the **real** `AUTH_STRICT_MODE` override on a genuine `Settings`
+  instance and proves it drives fail-closed end to end: strict forces every
+  per-control mode (`refresh_validation`, `session_write`, `rate_limit`,
+  `access_revocation`) to `fail_closed` over explicit `fail_open` settings; with
+  Redis down `_check_jti_revocation` returns 503 under strict even when
+  `ACCESS_REVOCATION_FAILURE_MODE=fail_open`; a non-strict `fail_open` opt-out
+  proceeds but is recorded via `degraded_decision_total` labelled with the real
+  effective mode; and the `/health` body's `degradation_modes` reflect the real
+  posture (all `fail_closed` under strict). No production code changed.
+- **Public-`/health` Design B coverage** (plan item 9.4). `tests/routes/health_test.py`
+  adds cases proving the ungated body stays the constant `{"status":"ok"}` even when
+  Redis is down (never `degraded`, no detail keys), while the credential-gated detail
+  still surfaces `degraded`. `tests/security/test_compose_policy.py` asserts
+  `/user/health` is NOT route-excluded (publicly reachable) while `/user/metrics` +
+  `/user/private` stay excluded; `tests/security/test_production_overlay.py` updated to
+  match. The live `TestF_HealthAPI` (f3) flips from "blocked by Traefik (404)" to
+  "public shallow-constant, no detail leak".
+
 ## [0.9.9] — 2026-06-22 · Security remediation: hardened compose, app-layer guards, Redis ACLs
 
 > **Requires `auth-sdk-m8 >= 1.5.0` (and `< 2.0.0`)** — pin bumped in

@@ -141,6 +141,18 @@ def _startup_checks() -> None:
 
     check_config_health(settings, _logger)
 
+    # The legacy single-PRIVATE_API_SECRET gate is retired: the private API now
+    # authenticates only per-consumer credentials / short-TTL service tokens. With
+    # no PRIVATE_API_CONSUMERS configured every /private/* call fails closed (401)
+    # and the service-token exchange is disabled — flag the misconfiguration loudly.
+    if not settings.PRIVATE_API_CONSUMERS:
+        _logger.critical(  # nosec B106
+            "STARTUP: PRIVATE_API_CONSUMERS is empty — the legacy "
+            "PRIVATE_API_SECRET gate is retired, so every /private/* call will be "
+            "rejected (401). Configure per-consumer credentials to enable "
+            "inter-service calls."
+        )
+
     if settings.requires_redis:
         redis = get_redis_client()
         if redis is None:

@@ -100,7 +100,10 @@ class ApiKey(ApiKeyBase, SQLModel, table=True):
     )
 
     user: "User" = Relationship(back_populates="api_keys")
-    rate_limits: List["RateLimit"] = Relationship(back_populates="api_key")
+    rate_limits: List["RateLimit"] = Relationship(
+        back_populates="api_key",
+        cascade_delete=True,
+    )
 
 
 class ApiKeyPublic(ApiKeyBase, SQLModel):

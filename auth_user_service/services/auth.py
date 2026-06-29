@@ -228,11 +228,16 @@ class AuthController:
         external_access, external_refresh, external_expires = None, None, None
         if external_token is not None:
             enc_key = settings.TOKENS_ENCRYPTION_KEY.get_secret_value()
+            old_enc_key = (
+                settings.TOKENS_ENCRYPTION_KEY_OLD.get_secret_value()
+                if settings.TOKENS_ENCRYPTION_KEY_OLD
+                else None
+            )
             external_access = SecurityHelper.encrypt_token(
-                external_token.access.get_secret_value(), enc_key
+                external_token.access.get_secret_value(), enc_key, old_enc_key
             )
             external_refresh = SecurityHelper.encrypt_token(
-                external_token.refresh.get_secret_value(), enc_key
+                external_token.refresh.get_secret_value(), enc_key, old_enc_key
             )
             external_expires = datetime.now(timezone.utc) + timedelta(
                 seconds=external_token.expires

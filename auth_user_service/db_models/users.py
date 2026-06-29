@@ -388,12 +388,15 @@ class User(UserBase, table=True):
     )
     api_keys: List["ApiKey"] = Relationship(
         back_populates="user",
+        cascade_delete=True,
     )
     rate_limits: List["RateLimit"] = Relationship(
         back_populates="user",
+        cascade_delete=True,
     )
     sessions: List["ClientSession"] = Relationship(
         back_populates="user",
+        cascade_delete=True,
     )
 
 

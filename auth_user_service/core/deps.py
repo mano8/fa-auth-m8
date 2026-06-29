@@ -6,11 +6,12 @@ and role/privilege guards for auth_user_service routes.
 """
 
 import logging
-import secrets
 from datetime import datetime, timezone
 from typing import Annotated, Optional
 
-from fastapi import Depends, Header, HTTPException, Response, status
+from typing import Callable
+
+from fastapi import Depends, Header, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer
 from redis import ConnectionPool, Redis
 from sqlmodel import Session
@@ -21,9 +22,21 @@ from auth_sdk_m8.security import (
     ValidationHooks,
     build_access_validator,
 )
+from auth_sdk_m8.security.consumer_auth import (
+    INTERNAL_CLIENT_HEADER,
+    ConsumerAuthenticationError,
+    ConsumerScope,
+    ConsumerScopeError,
+)
+from auth_sdk_m8.security.guards import INTERNAL_TOKEN_HEADER, extract_bearer_token
 
 from auth_user_service.core.client import RedisSessionManager
 from auth_user_service.core.config import settings
+from auth_user_service.core.consumer_registry import get_consumer_registry
+from auth_user_service.services.service_token import (
+    ServiceTokenError,
+    decode_service_token,
+)
 from auth_sdk_m8.observability.metrics import get as _get_metrics
 from auth_user_service.core.engine_sync import SessionDep  # noqa: F401 (re-exported)
 from auth_user_service.db_models.api_keys import ApiKey
@@ -233,20 +246,74 @@ def get_current_active_superuser(current_user: CurrentUser) -> UserModel:
     return current_user
 
 
-def verify_private_api_secret(
-    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
-) -> None:
-    """Reject requests that do not carry the correct inter-service secret.
+def require_private_scope(
+    scope: ConsumerScope | str,
+) -> Callable[[Request], None]:
+    """Build the private-route auth dependency for a required *scope* (9.1).
 
-    Uses Optional header (not required) so a missing header returns 401, not
-    FastAPI's 422 Unprocessable Entity which would leak endpoint structure.
+    Authorizes a private call by one of two paths:
+
+    1. **Short-TTL service token** — an ``Authorization: Bearer <token>`` minted
+       at ``/private/v1/service-token``. Verified and required to carry *scope*
+       (``401`` invalid/expired, ``403`` missing scope).
+    2. **Per-consumer bootstrap credential** — ``X-Internal-Client`` +
+       ``X-Internal-Token`` authorized against the registry for *scope*
+       (``401`` unknown client / wrong secret — indistinguishable, no
+       enumeration oracle; ``403`` authenticated but unscoped).
+
+    The per-consumer registry (``PRIVATE_API_CONSUMERS``) is **required**: the
+    legacy single shared ``PRIVATE_API_SECRET`` gate has been **retired**. When no
+    registry is configured no caller can be authenticated, so every private call
+    is denied (``401``, fail-closed) and startup logs the misconfiguration loudly.
+    ``PRIVATE_API_SECRET`` itself stays — it signs the short-TTL service tokens and
+    backs ``/health`` detail-gating + ``/metrics`` (1.4).
+
+    The verification primitives are reused from ``auth-sdk-m8``; this is the
+    issuer-side wiring plus the service-token branch.
     """
-    if x_internal_token is None or not secrets.compare_digest(
-        x_internal_token, settings.PRIVATE_API_SECRET.get_secret_value()
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
-        )
+
+    def _dependency(request: Request) -> None:
+        registry = get_consumer_registry()
+        if registry is None:
+            # Legacy single-secret gate retired: with no per-consumer registry
+            # there is no identity to authenticate against — deny by default.
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
+            )
+
+        bearer = extract_bearer_token(request)
+        if bearer is not None:
+            try:
+                claims = decode_service_token(
+                    bearer,
+                    signing_secret=settings.PRIVATE_API_SECRET.get_secret_value(),
+                )
+            except ServiceTokenError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
+                ) from exc
+            if str(scope) not in claims.scopes:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
+                )
+            return
+
+        try:
+            registry.authorize(
+                request.headers.get(INTERNAL_CLIENT_HEADER),
+                request.headers.get(INTERNAL_TOKEN_HEADER),
+                scope,
+            )
+        except ConsumerScopeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
+            ) from exc
+        except ConsumerAuthenticationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
+            ) from exc
+
+    return _dependency
 
 
 def _apply_rate_limit(

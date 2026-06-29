@@ -139,6 +139,63 @@ def test_weak_secret_key_rejected(field: str, weak: str) -> None:
         _make(**{field: weak})
 
 
+# ── TOKENS_ENCRYPTION_KEY_OLD rotation key (plan item 6.2-pre) ────────────────
+
+
+def test_tokens_encryption_key_old_defaults_to_none() -> None:
+    """The rotation key is optional and unset in the steady state."""
+    s = _make()
+    assert s.TOKENS_ENCRYPTION_KEY_OLD is None
+
+
+def test_tokens_encryption_key_old_accepts_valid_key() -> None:
+    """When set during a rotation it must be a strong, distinct secret key."""
+    s = _make(TOKENS_ENCRYPTION_KEY_OLD="Aa1-previous-encryption-key-32chars!!")
+    assert s.TOKENS_ENCRYPTION_KEY_OLD is not None
+    assert (
+        s.TOKENS_ENCRYPTION_KEY_OLD.get_secret_value()
+        == "Aa1-previous-encryption-key-32chars!!"
+    )
+
+
+@pytest.mark.parametrize(
+    "weak",
+    [
+        "short",
+        "a" * 32,
+        "Abcdef1234567890123456789012345",
+    ],
+)
+def test_weak_tokens_encryption_key_old_rejected(weak: str) -> None:
+    """A supplied rotation key is strength-validated like the current key."""
+    with pytest.raises(
+        (ValidationError, ValueError, RuntimeError), match="valid secret key"
+    ):
+        _make(TOKENS_ENCRYPTION_KEY_OLD=weak)
+
+
+def test_changethis_rejected_for_tokens_encryption_key_old() -> None:
+    """The rotation key must not accept the 'changethis' placeholder when set."""
+    with pytest.raises(
+        (ValidationError, ValueError, RuntimeError),
+        match="valid secret key|Insecure default",
+    ):
+        _make(TOKENS_ENCRYPTION_KEY_OLD="changethis")
+
+
+def test_tokens_encryption_key_old_excluded_from_debug_output() -> None:
+    """The rotation key is a secret_field and never leaks via the debug dump."""
+    sentinel = "Aa1-rotation-sentinel-value-32chars!!"
+    s = _make(TOKENS_ENCRYPTION_KEY_OLD=sentinel)
+    assert "TOKENS_ENCRYPTION_KEY_OLD" in s.secret_fields
+    assert "TOKENS_ENCRYPTION_KEY_OLD" in s.secret_keys
+    public = s.model_dump()
+    for field in s.secret_fields:
+        public.pop(field, None)
+    assert "TOKENS_ENCRYPTION_KEY_OLD" not in public
+    assert sentinel not in str(public)
+
+
 # ── operator-actionable error messages ────────────────────────────────────────
 
 
@@ -202,3 +259,65 @@ def test_event_signing_key_value_not_exposed_in_debug_output() -> None:
     public = s.model_dump()
     # Raw value must not appear anywhere in the stringified output.
     assert sentinel not in str(public)
+
+
+# ── HEALTH_DETAIL_CREDENTIAL (plan 9.3) ──────────────────────────────────────
+
+
+def test_health_detail_credential_defaults_to_none() -> None:
+    """HEALTH_DETAIL_CREDENTIAL is optional and unset in the steady state."""
+    s = _make()
+    assert s.HEALTH_DETAIL_CREDENTIAL is None
+
+
+def test_health_detail_credential_accepts_valid_value() -> None:
+    """When set it is stored as SecretStr and the value is retrievable."""
+    cred = "Aa1-test-health-detail-credential-32!!"
+    s = _make(HEALTH_DETAIL_CREDENTIAL=cred)
+    assert s.HEALTH_DETAIL_CREDENTIAL is not None
+    assert s.HEALTH_DETAIL_CREDENTIAL.get_secret_value() == cred
+
+
+def test_health_detail_credential_excluded_from_debug_output() -> None:
+    """HEALTH_DETAIL_CREDENTIAL is a secret_field and never leaks via debug dump."""
+    sentinel = "Aa1-health-detail-sentinel-value-32!!"
+    s = _make(HEALTH_DETAIL_CREDENTIAL=sentinel)
+    assert "HEALTH_DETAIL_CREDENTIAL" in s.secret_fields
+    public = s.model_dump()
+    for field in s.secret_fields:
+        public.pop(field, None)
+    assert "HEALTH_DETAIL_CREDENTIAL" not in public
+    assert sentinel not in str(public)
+
+
+# ── No-reuse assertions (plan 9.3) ───────────────────────────────────────────
+
+
+def test_health_detail_credential_reuse_of_private_api_secret_rejected() -> None:
+    """HEALTH_DETAIL_CREDENTIAL must not equal PRIVATE_API_SECRET."""
+    secret = _VALID_SETTINGS["PRIVATE_API_SECRET"]
+    with pytest.raises(
+        (ValidationError, ValueError, RuntimeError),
+        match="HEALTH_DETAIL_CREDENTIAL",
+    ):
+        _make(HEALTH_DETAIL_CREDENTIAL=secret)
+
+
+def test_metrics_scrape_credential_reuse_of_private_api_secret_rejected() -> None:
+    """METRICS_SCRAPE_CREDENTIAL must not equal PRIVATE_API_SECRET."""
+    secret = _VALID_SETTINGS["PRIVATE_API_SECRET"]
+    with pytest.raises(
+        (ValidationError, ValueError, RuntimeError),
+        match="METRICS_SCRAPE_CREDENTIAL",
+    ):
+        _make(METRICS_SCRAPE_CREDENTIAL=secret)
+
+
+def test_distinct_operational_credentials_are_accepted() -> None:
+    """Distinct HEALTH_DETAIL_CREDENTIAL and METRICS_SCRAPE_CREDENTIAL are valid."""
+    s = _make(
+        HEALTH_DETAIL_CREDENTIAL="Aa1-health-detail-credential-32chars!",
+        METRICS_SCRAPE_CREDENTIAL="Aa1-metrics-scrape-credential-32char!",
+    )
+    assert s.HEALTH_DETAIL_CREDENTIAL is not None
+    assert s.METRICS_SCRAPE_CREDENTIAL is not None

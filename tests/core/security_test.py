@@ -289,3 +289,74 @@ class TestSecurityHelper:
         enc = f1.encrypt(sample)
         dec = f2.decrypt(enc)
         assert dec == sample
+
+    # ── TOKENS_ENCRYPTION_KEY dual-key rotation (plan item 6.2-pre) ──────────────
+
+    def test_decrypt_old_key_token_with_rotated_keys(self):
+        """A token encrypted under the previous key decrypts after rotation.
+
+        Simulates a no-downtime rotation: ``new`` becomes the primary key and the
+        retired key is passed as ``old_encryption_key``. Tokens persisted before
+        the rotation (encrypted under ``old``) must still decrypt.
+        """
+        old_key = "old_32byte_encryption_key_value!"
+        new_key = "new_32byte_encryption_key_value!"
+        plaintext = "stored_external_oauth_token"
+
+        # Persisted before rotation, under the old key only.
+        legacy_ciphertext = SecurityHelper.encrypt_token(plaintext, old_key)
+
+        # After rotation: primary=new, fallback=old.
+        decrypted = SecurityHelper.decrypt_token(
+            legacy_ciphertext, new_key, old_encryption_key=old_key
+        )
+        assert decrypted == plaintext
+
+    def test_encrypt_uses_primary_key_during_rotation(self):
+        """During rotation new writes use the primary key, not the old one."""
+        old_key = "old_32byte_encryption_key_value!"
+        new_key = "new_32byte_encryption_key_value!"
+        plaintext = "freshly_stored_token"
+
+        ciphertext = SecurityHelper.encrypt_token(
+            plaintext, new_key, old_encryption_key=old_key
+        )
+
+        # Decryptable with the new key alone …
+        assert SecurityHelper.decrypt_token(ciphertext, new_key) == plaintext
+        # … and NOT with the old key alone (it was encrypted under new).
+        with pytest.raises(Exception):
+            SecurityHelper.decrypt_token(ciphertext, old_key)
+
+    def test_decrypt_new_key_token_with_rotation_fallback(self):
+        """A token written under the new key still decrypts with old fallback set."""
+        old_key = "old_32byte_encryption_key_value!"
+        new_key = "new_32byte_encryption_key_value!"
+        plaintext = "token_written_after_rotation"
+
+        ciphertext = SecurityHelper.encrypt_token(plaintext, new_key)
+        decrypted = SecurityHelper.decrypt_token(
+            ciphertext, new_key, old_encryption_key=old_key
+        )
+        assert decrypted == plaintext
+
+    def test_decrypt_fails_when_old_key_not_supplied(self):
+        """Without the old key, a pre-rotation token is undecryptable (no fallback)."""
+        old_key = "old_32byte_encryption_key_value!"
+        new_key = "new_32byte_encryption_key_value!"
+
+        legacy_ciphertext = SecurityHelper.encrypt_token("secret", old_key)
+
+        with pytest.raises(Exception):
+            SecurityHelper.decrypt_token(legacy_ciphertext, new_key)
+
+    def test_multifernet_single_key_when_old_is_none(self):
+        """``_multifernet`` with no old key round-trips on the primary key only."""
+        key = "a_strong_32byte_encryption_key!!"
+        mf = SecurityHelper._multifernet(key)
+        token = mf.encrypt(b"payload")
+        assert mf.decrypt(token) == b"payload"
+        # A different key cannot decrypt it.
+        other = SecurityHelper._multifernet("different_32byte_encryption_key!")
+        with pytest.raises(Exception):
+            other.decrypt(token)

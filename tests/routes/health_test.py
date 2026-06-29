@@ -149,7 +149,8 @@ class TestCollectHealth:
         assert result["circuit_breaker"] == "closed"
 
 
-_INTERNAL_SECRET = "Aa1-test-private-api-secret-32chars!!"
+_HEALTH_CREDENTIAL = "Aa1-test-health-detail-credential-32!!"
+_PRIVATE_API_SECRET = "Aa1-test-private-api-secret-32chars!!"
 
 # Keys present only in the gated infrastructure detail body, never in the
 # shallow public response.
@@ -167,10 +168,13 @@ _DETAIL_ONLY_KEYS = (
 
 
 class TestHealthDetailGating:
-    """1.4 — deep /health detail is token-gated at the app layer.
+    """9.3 — deep /health detail is gated on a dedicated HEALTH_DETAIL_CREDENTIAL.
 
     Shallow ``{"status": ...}`` answers everyone; the infrastructure detail is
-    revealed only to callers presenting the ``X-Internal-Token`` shared secret.
+    revealed only to callers presenting ``HEALTH_DETAIL_CREDENTIAL`` via
+    ``X-Internal-Token``. When ``HEALTH_DETAIL_CREDENTIAL`` is unset the gate
+    fails closed — no detail regardless of any presented token.
+    ``PRIVATE_API_SECRET`` no longer opens the detail body.
     """
 
     def _client(self) -> TestClient:
@@ -178,12 +182,18 @@ class TestHealthDetailGating:
         app.include_router(router)
         return TestClient(app, raise_server_exceptions=False)
 
-    def _patched_settings(self):
+    def _patched_settings(self, *, credential_set: bool = True):
         mock_cfg = MagicMock()
         mock_cfg.requires_redis = True
         mock_cfg.TOKEN_MODE = "stateful"
         mock_cfg.effective_failure_mode.side_effect = lambda c: "fail_closed"
-        mock_cfg.PRIVATE_API_SECRET.get_secret_value.return_value = _INTERNAL_SECRET
+        mock_cfg.PRIVATE_API_SECRET.get_secret_value.return_value = _PRIVATE_API_SECRET
+        if credential_set:
+            mock_cfg.HEALTH_DETAIL_CREDENTIAL.get_secret_value.return_value = (
+                _HEALTH_CREDENTIAL
+            )
+        else:
+            mock_cfg.HEALTH_DETAIL_CREDENTIAL = None
         return mock_cfg
 
     def _mock_db_ok(self):
@@ -195,11 +205,11 @@ class TestHealthDetailGating:
         mock_engine.connect.return_value = mock_ctx
         return mock_engine
 
-    def _enter_patches(self, stack: ExitStack):
+    def _enter_patches(self, stack: ExitStack, *, credential_set: bool = True):
         stack.enter_context(
             patch(
                 "auth_user_service.routes.health.settings",
-                self._patched_settings(),
+                self._patched_settings(credential_set=credential_set),
             )
         )
         stack.enter_context(
@@ -228,11 +238,11 @@ class TestHealthDetailGating:
         for key in _DETAIL_ONLY_KEYS:
             assert key not in resp.json()
 
-    def test_internal_token_reveals_full_detail(self):
+    def test_dedicated_credential_reveals_full_detail(self):
         with ExitStack() as stack:
             self._enter_patches(stack)
             resp = self._client().get(
-                "/health/", headers={"X-Internal-Token": _INTERNAL_SECRET}
+                "/health/", headers={"X-Internal-Token": _HEALTH_CREDENTIAL}
             )
 
         body = resp.json()
@@ -251,3 +261,90 @@ class TestHealthDetailGating:
 
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
+
+    def test_private_api_secret_no_longer_opens_detail(self):
+        """PRIVATE_API_SECRET must not open the health detail body (plan 9.3)."""
+        with ExitStack() as stack:
+            self._enter_patches(stack)
+            resp = self._client().get(
+                "/health/", headers={"X-Internal-Token": _PRIVATE_API_SECRET}
+            )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+        for key in _DETAIL_ONLY_KEYS:
+            assert key not in resp.json()
+
+    def test_credential_unset_always_returns_shallow(self):
+        """When HEALTH_DETAIL_CREDENTIAL is None the gate fails closed."""
+        with ExitStack() as stack:
+            self._enter_patches(stack, credential_set=False)
+            # Even if caller sends the old PRIVATE_API_SECRET — still shallow.
+            resp = self._client().get(
+                "/health/", headers={"X-Internal-Token": _PRIVATE_API_SECRET}
+            )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+        for key in _DETAIL_ONLY_KEYS:
+            assert key not in resp.json()
+
+    def test_credential_unset_anonymous_returns_shallow(self):
+        """When HEALTH_DETAIL_CREDENTIAL is None, anonymous calls also get shallow."""
+        with ExitStack() as stack:
+            self._enter_patches(stack, credential_set=False)
+            resp = self._client().get("/health/")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+    def _enter_patches_degraded(self, stack: ExitStack) -> None:
+        """Patch the route with Redis unavailable (status would be degraded)."""
+        stack.enter_context(
+            patch(
+                "auth_user_service.routes.health.settings",
+                self._patched_settings(credential_set=True),
+            )
+        )
+        stack.enter_context(
+            patch("auth_user_service.routes.health.get_redis_client", return_value=None)
+        )
+        stack.enter_context(
+            patch(
+                "auth_user_service.routes.health.get_redis_degraded_since",
+                return_value=None,
+            )
+        )
+        stack.enter_context(
+            patch("auth_user_service.routes.health.engine", self._mock_db_ok())
+        )
+
+    def test_ungated_body_is_constant_ok_even_when_degraded(self):
+        """Plan 9.4 Design B: the ungated body is a constant, not a state oracle.
+
+        Even when Redis is down (status would be ``degraded``), the anonymous /
+        unauthorised response must stay ``{"status": "ok"}`` — it never reflects
+        degradation, so it cannot leak that fail-open degradation is active.
+        """
+        with ExitStack() as stack:
+            self._enter_patches_degraded(stack)
+            resp = self._client().get("/health/")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+        for key in _DETAIL_ONLY_KEYS:
+            assert key not in resp.json()
+
+    def test_authorized_detail_still_reflects_degradation(self):
+        """Degradation detection stays credential-only: the gated detail shows it."""
+        with ExitStack() as stack:
+            self._enter_patches_degraded(stack)
+            resp = self._client().get(
+                "/health/", headers={"X-Internal-Token": _HEALTH_CREDENTIAL}
+            )
+
+        body = resp.json()
+        assert resp.status_code == 200
+        assert body["status"] == "degraded"
+        assert body["redis"] == "unavailable"
+        assert body["circuit_breaker"] == "open"
