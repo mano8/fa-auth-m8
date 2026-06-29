@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 
 #: ``aud`` claim isolating service tokens from user-facing access/refresh tokens.
-SERVICE_TOKEN_AUDIENCE = "fa-auth-m8/internal-service"
+SERVICE_TOKEN_AUDIENCE = "fa-auth-m8/internal-service"  # nosec B105 — audience claim value, not a secret
 #: ``type`` claim; mirrors the "access"/"refresh" tagging on user tokens.
 SERVICE_TOKEN_TYPE = "service"  # nosec B105 — claim name, not a secret
 _ALGORITHM = "HS256"

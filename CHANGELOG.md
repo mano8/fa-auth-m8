@@ -147,7 +147,7 @@ _Nothing yet._
 - **Per-consumer credentials are now mandatory for the private API.** The 9.1
   issuer side originally landed additively (legacy single-`PRIVATE_API_SECRET`
   gate kept as an opt-out default); `1.0.0` **retires that fallback** (see
-  *Removed — BREAKING*). `PRIVATE_API_CONSUMERS` must be configured for any
+  _Removed — BREAKING_). `PRIVATE_API_CONSUMERS` must be configured for any
   `/private/*` traffic; `PRIVATE_API_SECRET` remains required for service-token
   signing and `/health` + `/metrics` gating.
 - **Version bumped to `1.0.0`** across `auth_user_service` (`__version__`), the

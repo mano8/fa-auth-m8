@@ -48,7 +48,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: gitleaks/gitleaks-action@v2.3.0
+      - uses: gitleaks/gitleaks-action@1938557f6a58837331b99822ab17b8e536e7bef9 # v2.3.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
