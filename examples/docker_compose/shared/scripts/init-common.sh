@@ -100,7 +100,15 @@ if [[ "$RESET_DB" == "true" ]]; then
         [[ "$confirm" == "y" || "$confirm" == "Y" ]] || { echo "Aborted."; exit 0; }
     fi
     docker compose down
-    rm -rf db_data/
+    # db_data is created by the postgres container as its own uid (e.g. 70,
+    # mode 0700), so a host-side `rm` fails with "Permission denied" on
+    # WSL2/Linux bind mounts. Try the host rm first, then fall back to a
+    # throwaway root container to delete the container-owned data.
+    if ! rm -rf db_data/ 2>/dev/null; then
+        echo "==> db_data/ is owned by the DB container user; removing via a root container…"
+        docker run --rm -v "$(pwd):/work" alpine rm -rf /work/db_data \
+            || { echo "ERROR: could not remove db_data/. Try: sudo rm -rf db_data/"; exit 1; }
+    fi
     echo "==> db_data/ removed — DB will reinitialize on next: docker compose up -d"
 fi
 

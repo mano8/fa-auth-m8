@@ -17,6 +17,22 @@ _Nothing yet._
 
 ---
 
+## [1.0.1] — 2026-06-29 · Safe `db_data/` reset in the shared compose `init-common.sh`
+
+### Fixed
+
+- **`examples/docker_compose/shared/scripts/init-common.sh` — `--reset-db` now
+  removes a container-owned `db_data/`.** PostgreSQL creates `db_data/` as its own
+  container uid (e.g. `70`, mode `0700`), so a host-side `rm -rf db_data/` fails
+  with "Permission denied" on WSL2/Linux bind mounts, leaving stale data that
+  silently blocks re-init. The reset now tries the host `rm` first and falls back
+  to a throwaway root `alpine` container (`docker run --rm -v "$(pwd):/work" alpine
+  rm -rf /work/db_data`) to delete the container-owned directory, erroring out with
+  a `sudo` hint only if both fail. Backported from `media-service-m8`'s stack
+  tooling; the two repos' `init-common.sh` are now byte-identical.
+
+---
+
 ## [1.0.0] — 2026-06-25 · First stable line — per-consumer private-API auth (legacy `PRIVATE_API_SECRET` gate retired), short-TTL service tokens, dual-key token encryption
 
 > **First `1.x` release.** `1.0.0` is the first stable line of `fa-auth-m8`,
