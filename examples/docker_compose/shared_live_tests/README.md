@@ -156,6 +156,7 @@ The example defaults are defined in `tests/live/conftest.py` and can be overridd
 | Variable | Example value |
 | --- | --- |
 | `LIVE_TEST_AUTH_BASE` | `http://localhost:9000/user` |
+| `LIVE_TEST_INTERNAL_AUTH_BASE` | `http://localhost:9000/user` (internal entrypoint exposing `/private/*`; F06 targets it) |
 | `LIVE_TEST_SVC_BASE` | `http://localhost:9000/fastapi` |
 | `LIVE_TEST_ADMIN_EMAIL` | `tester@example.com` |
 | `LIVE_TEST_ADMIN_PASSWORD` | `change-this-test-password` |
@@ -174,6 +175,7 @@ The example defaults are defined in `tests/live/conftest.py` and can be overridd
 `LIVE_TEST_REPO_ROOT` lets asymmetric-key tests inspect the hardened stack's generated `keys/private.pem` and `keys/public.pem` files.
 `LIVE_TEST_PRIVATE_API_SECRET` and `LIVE_TEST_REFRESH_SECRET_KEY` are opt-in secret-exposure checks. If they are unset, those specific tests skip.
 `LIVE_TEST_PRIVATE_API_CLIENT_ID` is the issuer's consumer id (`example-api` here) sent as `X-Internal-Client`; the hardened/quickstart/postgres/metrics/vault stacks now run a per-consumer issuer (`fa-auth-m8:1.0.0`, `PRIVATE_API_CONSUMERS` active), so set it together with `LIVE_TEST_PRIVATE_API_SECRET` to enable the F06 legacy-detection check (token-only must be rejected `401`).
+`LIVE_TEST_INTERNAL_AUTH_BASE` is the internal service-to-service entrypoint that exposes `/private/*`. Hardened stacks block `/private` at the public edge (Traefik → 404), so the F06 legacy-shape rejection can only be observed on the internal entrypoint. Set it when `LIVE_TEST_AUTH_BASE` points at the public edge (e.g. `https://localhost:4430/user`); it falls back to `LIVE_TEST_AUTH_BASE` when unset.
 `LIVE_TEST_HEALTH_DETAIL_CREDENTIAL` unlocks the deep `/health` detail (token mode, Redis/DB). fa-auth-m8 ≥ 1.0.0 gates it on a dedicated credential decoupled from `PRIVATE_API_SECRET` (opt-in/fail-closed; must differ from it); set it to the stack's `HEALTH_DETAIL_CREDENTIAL` once enabled in `auth.env`. Without it, `require_redis` and `require_token_mode` suites skip with an explicit reason instead of running blind on defaults.
 
 ## Adapting To Another Stack
