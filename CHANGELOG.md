@@ -26,11 +26,14 @@ _Nothing yet._
 > `CONTRACT_RANGE` (now `>=1.0.0 <2.0.0`), and the `fastapi_full` / `fastapi_minimal`
 > example consumers are all aligned to `1.0.0`.
 >
-> **Requires `auth-sdk-m8 >= 2.0.1` (and `< 3.0.0`)** — pin bumped in
+> **Requires `auth-sdk-m8 >= 2.1.0` (and `< 3.0.0`)** — pin bumped in
 > `auth_user_service/requirements_base.txt`. This consumes the SDK's 9.1
-> verification primitives (`ConsumerCredentialRegistry`, `make_consumer_authorizer`).
-> The `2.0.1` floor pulls in the `pydantic-settings >= 2.14.2` security patch
-> (symlink-traversal hardening in the nested-secrets source). 2.0.0 also
+> verification primitives (`ConsumerCredentialRegistry`, `make_consumer_authorizer`)
+> and keeps the issuer on the **same SDK version the example consumers resolve**:
+> their `fastapi-m8 >= 3.2.0` floor requires `auth-sdk-m8 >= 2.1.0`, so a shared
+> virtualenv installs one consistent SDK across issuer and consumers. The `2.1.0`
+> floor also carries the `pydantic-settings >= 2.14.2` security patch
+> (symlink-traversal hardening in the nested-secrets source). 2.0.0 already
 > **single-mounts** the liveness `/ping` route (served only at
 > `{API_PREFIX}/ping` and advertised in the schema; the root `/ping` is no longer
 > mounted) — a breaking change vs the 1.5.0 dual-mount; the `/ping` test is
@@ -125,16 +128,17 @@ _Nothing yet._
     `LIVE_TEST_HEALTH_DETAIL_CREDENTIAL` (unlocks the deep `/health` detail via the
     dedicated credential decoupled from `PRIVATE_API_SECRET`). `shared_live_tests`
     README env table aligned.
-- **Dependency floors raised for the `auth-sdk-m8 2.0.1` / `fastapi-m8 3.0.0`
+- **Dependency floors raised for the `auth-sdk-m8 2.1.0` / `fastapi-m8 3.x`
   alignment.** `auth_user_service/requirements_base.txt` now pins
-  `auth-sdk-m8>=2.0.1,<3.0.0` (was `>=2.0.0`) and `pydantic_settings>=2.14.2`
+  `auth-sdk-m8>=2.1.0,<3.0.0` (was `>=2.0.0`) and `pydantic_settings>=2.14.2`
   (was `>=2.14.1`). The example consumers move to `fastapi-m8>=3.1.0,<4.0.0`
   (was `>=2.1.0,<3.0.0`; see the per-consumer floor note below) in
   `examples/fastapi_full/requirements_base.txt` (also `pydantic_settings>=2.14.2`)
   and `examples/fastapi_minimal/requirements.txt`.
-  `fastapi-m8 3.0.0` requires `auth-sdk-m8>=2.0.1,<3.0.0`, so the whole stack
-  pins to the single-mount `/ping` SDK and the `pydantic-settings 2.14.2`
-  security patch. No consumer code changes: the public `fastapi_m8` API surface
+  `fastapi-m8 3.x` requires `auth-sdk-m8>=2.0.1,<3.0.0` (the consumer floor of
+  `3.2.0` raises it to `>=2.1.0`), so the whole stack pins to the single-mount
+  `/ping` SDK and the `pydantic-settings 2.14.2` security patch on a single
+  shared SDK version. No consumer code changes: the public `fastapi_m8` API surface
   used by the examples is unchanged across the major. Docs aligned to the SDK
   2.0.x single-mount `/ping` (root `README.md` route table + service-triad note,
   and `examples/docker_compose/SECURITY.md` public-route table + bring-up check
@@ -165,7 +169,7 @@ _Nothing yet._
   example stacks need because `fastapi-public-router` routes `/fastapi/health`
   publicly (no Traefik exclusion) — without the `3.2.0` floor that public body
   would still leak `degraded`. `3.2.0` requires `auth-sdk-m8>=2.1.0,<3.0.0`,
-  compatible with the issuer's `>=2.0.1,<3.0.0` pin.
+  matched by the issuer's own `>=2.1.0,<3.0.0` pin (one shared SDK version).
 - **Docs aligned** (`README.md` route table + env table + Private-API + revocation
   sections; `examples/docker_compose/SECURITY.md` rotation, threat-model, and
   leaked-secret playbook) to the retired gate and the per-consumer model.
@@ -184,6 +188,18 @@ _Nothing yet._
   `fastapi_full` / `fastapi_minimal` example consumers are floored to
   `fastapi-m8>=3.2.0` (the consumer-side Design B release) so their publicly-routed
   `/fastapi/health` is the same constant body — see the dependency-floor note below.
+- **User deletion now cascades to owned rows.** `cascade_delete=True` on
+  `User → api_keys / rate_limits / sessions` (and `ApiKey → rate_limits`) means
+  deleting a user — self-service (`DELETE /profile/delete/me/`) or admin
+  (`DELETE /users/delete/{user_id}/`) — removes its owned child rows in the same
+  operation instead of leaving orphans or tripping a foreign-key violation
+  (`db_models/users.py`, `db_models/api_keys.py`; the FKs already declared
+  `ondelete="CASCADE"`). Covered by new cases in `tests/routes/test_profile.py`
+  (self-delete) and `tests/routes/test_users.py` (admin delete); the live-test
+  suite documents its automatic teardown of throwaway `redteam_*` users.
+- **`examples/addon` Chrome-extension template removed.** The browser-extension
+  auth example is superseded by the dedicated Vite plugin shipped from the
+  `vite-auth-m8` repo; the stale Preact/Vite tree is dropped from this repository.
 
 ### Tests
 

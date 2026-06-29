@@ -136,7 +136,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | profile | GET | `/profile/get/me/` | JWT | Read own profile |
 | profile | PATCH | `/profile/update/me/` | JWT | Update own profile (`email`, `full_name`, `avatar` only — explicit allowlist) |
 | profile | PATCH | `/profile/me/password/` | JWT | Change own password |
-| profile | DELETE | `/profile/delete/me/` | JWT | Delete own account |
+| profile | DELETE | `/profile/delete/me/` | JWT | Delete own account (cascades to the user's sessions, API keys, and rate-limit rows) |
 | api-keys | GET | `/profile/api-keys/verify` | X-API-Key | Validate key header, enforce rate limits, return key metadata |
 | api-keys | POST | `/profile/api-keys/` | JWT | Create API key — plaintext returned once, never stored |
 | api-keys | GET | `/profile/api-keys/` | JWT | List own API keys (metadata only) |
@@ -154,7 +154,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | users | POST | `/users/signup/` | superuser | Register user (no password set) |
 | users | GET | `/users/get/{user_id}/` | superuser | Get user by ID |
 | users | PATCH | `/users/update/{user_id}/` | superuser | Update user |
-| users | DELETE | `/users/delete/{user_id}/` | superuser | Delete user |
+| users | DELETE | `/users/delete/{user_id}/` | superuser | Delete user (cascades to the user's sessions, API keys, and rate-limit rows) |
 | dashboard | GET | `/dashboard/users/activity/` | JWT | All-user activity stats (monthly) |
 | dashboard | GET | `/dashboard/users/activity/current/` | JWT | Own activity stats (monthly) |
 | metrics | GET | `/metrics` | — | Prometheus metrics (`METRICS_ENABLED=true` only) |
