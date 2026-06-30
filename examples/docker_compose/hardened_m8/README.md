@@ -360,6 +360,11 @@ curl http://localhost:9000/user/.well-known/jwks.json | python -m json.tool
 bash init.sh --reset-db
 ```
 
+`--reset-db` removes `db_data/` even when the database container owns it as its
+own uid — it falls back to a throwaway root container, so no manual `sudo rm` is
+needed on WSL2/Linux bind mounts. `init.sh` also enforces `chmod 600` on runtime
+`*.env` files and private keys on every run.
+
 ---
 
 ## Live testing
