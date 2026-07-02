@@ -17,9 +17,11 @@ gap between static analysis and what FastAPI actually registers.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from fastapi.routing import APIRoute
+from starlette.routing import BaseRoute
 
 from auth_user_service.main import app
 
@@ -37,20 +39,45 @@ def _load_inventory() -> list[dict]:
     return json.loads(_INVENTORY_FILE.read_text(encoding="utf-8"))
 
 
-def _app_routes() -> list[dict]:
-    """Return (path, method) pairs for every APIRoute registered in the app."""
-    result = []
-    for route in app.routes:
+def _iter_api_routes(
+    routes: Iterable[BaseRoute], prefix: str = "", in_schema: bool = True
+) -> Iterator[tuple[str, str, bool]]:
+    """Yield ``(full_path, method, include_in_schema)`` for every APIRoute.
+
+    Robust to FastAPI's lazy router inclusion (>= 0.137): ``include_router`` no
+    longer flattens sub-routes into ``app.routes`` — it inserts an opaque
+    ``_IncludedRouter`` wrapping the ``original_router`` and its
+    ``include_context`` (prefix + schema flags). Older FastAPI flattened routes
+    as top-level ``APIRoute``s. Descend through both shapes so the inventory
+    reconciles identically regardless of the resolved FastAPI version.
+    """
+    for route in routes:
         if isinstance(route, APIRoute):
+            effective = in_schema and route.include_in_schema
             for method in sorted(route.methods or {"GET"}):
-                result.append(
-                    {
-                        "path": route.path,
-                        "method": method,
-                        "include_in_schema": route.include_in_schema,
-                    }
-                )
-    return result
+                yield prefix + route.path, method, effective
+        elif type(route).__name__ == "_IncludedRouter":
+            ctx = getattr(route, "include_context", None)
+            original = getattr(route, "original_router", None)
+            yield from _iter_api_routes(
+                getattr(original, "routes", []),
+                prefix + getattr(ctx, "prefix", ""),
+                in_schema and getattr(ctx, "include_in_schema", True),
+            )
+        elif hasattr(route, "routes"):  # Mount / sub-application
+            yield from _iter_api_routes(
+                getattr(route, "routes", []),
+                prefix + getattr(route, "path", ""),
+                in_schema,
+            )
+
+
+def _app_routes() -> list[dict]:
+    """Return (path, method, include_in_schema) for every APIRoute in the app."""
+    return [
+        {"path": path, "method": method, "include_in_schema": in_schema}
+        for path, method, in_schema in _iter_api_routes(app.routes)
+    ]
 
 
 class TestInventoryFile:

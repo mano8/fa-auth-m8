@@ -928,6 +928,7 @@ pytest tests/live/test_private_api_live.py -v
 ```
 
 The suite covers:
+
 - Bootstrap credential acceptance (`X-Internal-Client` + `X-Internal-Token`).
 - Service-token exchange and scoped endpoint access.
 - Legacy `X-Internal-Token`-only shape rejected (no `X-Internal-Client`).

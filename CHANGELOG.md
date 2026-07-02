@@ -73,6 +73,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Route-inventory test is robust to FastAPI ≥ 0.137 lazy router inclusion.**
+  `include_router` no longer flattens sub-routes into `app.routes` (it inserts an
+  opaque `_IncludedRouter`), which made `tests/security/test_route_inventory.py`
+  report every inventory entry as stale under a freshly resolved FastAPI. The
+  test now descends through both the flattened (≤ 0.136) and nested (≥ 0.137)
+  shapes to reconstruct the full route surface. The two `api_key.rate_limit_*`
+  degraded-mode log lines carry an explicit `# nosec B106` (the `ref` field is
+  the opaque key id, not a secret), matching the existing logger suppressions.
 - **rs256 stack could not run the per-consumer private-API live checks.**
   `rs256_m8/auth.env` was missing `PRIVATE_API_CONSUMERS` (and `api.env` its
   `INTERNAL_CLIENT_ID`), so the `example-api` consumer the security suite
