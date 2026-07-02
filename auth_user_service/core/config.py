@@ -179,13 +179,69 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _require_consumers_in_prod_strict(self) -> "Settings":
+        """Fail startup when production or strict mode has an empty PRIVATE_API_CONSUMERS.
+
+        The legacy single-secret private-API gate is retired (v1.0.0). With no
+        per-consumer registry, every /private/* call fails closed (401) and the
+        service-token exchange is unavailable. In development this is a loud
+        misconfiguration warning; in production/strict it is a deployment fault
+        that must prevent startup (plan 11.2a).
+
+        Permitted modes:
+        - ENVIRONMENT != "production" AND STRICT_PRODUCTION_MODE=False AND
+          AUTH_STRICT_MODE=False → warning at runtime, no startup failure.
+        - Any production/strict condition → startup raises here.
+        """
+        is_prod_or_strict = (
+            self.ENVIRONMENT == "production"
+            or self.STRICT_PRODUCTION_MODE
+            or self.AUTH_STRICT_MODE
+        )
+        if is_prod_or_strict and not self.PRIVATE_API_CONSUMERS:
+            raise ValueError(
+                "PRIVATE_API_CONSUMERS is required in production/strict mode "
+                "(ENVIRONMENT=production, STRICT_PRODUCTION_MODE=true, or "
+                "AUTH_STRICT_MODE=true). Mount the registry via "
+                "PRIVATE_API_CONSUMERS_FILE=/run/secrets/private_api_consumers.json "
+                "or set PRIVATE_API_CONSUMERS directly. "
+                "Without this every /private/* call is rejected (401) and the "
+                "service-token exchange is unavailable — this is a deployment fault, "
+                "not a safe runtime mode."
+            )
+        return self
+
     # API key rate limiting defaults (0 = disabled for that period)
+    # API_KEY_STRICT_RATE_LIMIT is an explicit opt-in, but production/strict
+    # deployments inherit strict behaviour regardless — see
+    # effective_api_key_strict_rate_limit below (plan 11.3).
     API_KEY_STRICT_RATE_LIMIT: bool = False
     API_KEY_DEFAULT_LIMIT_MINUTE: int = 60
     API_KEY_DEFAULT_LIMIT_HOUR: int = 1_000
     API_KEY_DEFAULT_LIMIT_DAY: int = 10_000
     API_KEY_DEFAULT_LIMIT_MONTH: int = 200_000
     API_KEY_MAX_PER_USER: int = 10
+
+    @property
+    def effective_api_key_strict_rate_limit(self) -> bool:
+        """Whether API-key verification must fail closed when Redis is unavailable.
+
+        API-key rate limiting is a Redis-backed abuse control. When Redis is
+        down a valid key would otherwise be admitted with no minute/hour/day
+        ceiling. Strict behaviour refuses the key with 503 instead. It is active
+        when explicitly opted in via ``API_KEY_STRICT_RATE_LIMIT`` **or** implied
+        by any production/strict posture — ``AUTH_STRICT_MODE`` (which forces
+        every Redis-dependent control fail-closed), ``ENVIRONMENT=production`` or
+        ``STRICT_PRODUCTION_MODE``. Only non-production, non-strict development
+        stays fail-open, and that admission is logged as unsafe (plan 11.3).
+        """
+        return (
+            self.API_KEY_STRICT_RATE_LIMIT
+            or self.AUTH_STRICT_MODE
+            or self.ENVIRONMENT == "production"
+            or self.STRICT_PRODUCTION_MODE
+        )
 
     # Declare only service-specific fields
     FIRST_SUPERUSER: EmailStr

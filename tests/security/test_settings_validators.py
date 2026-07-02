@@ -321,3 +321,136 @@ def test_distinct_operational_credentials_are_accepted() -> None:
     )
     assert s.HEALTH_DETAIL_CREDENTIAL is not None
     assert s.METRICS_SCRAPE_CREDENTIAL is not None
+
+
+# ── PRIVATE_API_CONSUMERS required in production/strict (plan 11.2a) ──────────
+
+
+def test_production_empty_consumers_raises() -> None:
+    """ENVIRONMENT=production with empty PRIVATE_API_CONSUMERS must fail at construction."""
+    with pytest.raises(
+        (ValidationError, ValueError, RuntimeError), match="PRIVATE_API_CONSUMERS"
+    ):
+        _make(
+            ENVIRONMENT="production",
+            STRICT_PRODUCTION_MODE=False,
+            AUTH_STRICT_MODE=False,
+        )
+
+
+def test_strict_production_mode_empty_consumers_raises() -> None:
+    """STRICT_PRODUCTION_MODE=True with empty PRIVATE_API_CONSUMERS must fail at construction."""
+    with pytest.raises(
+        (ValidationError, ValueError, RuntimeError), match="PRIVATE_API_CONSUMERS"
+    ):
+        _make(STRICT_PRODUCTION_MODE=True, AUTH_STRICT_MODE=False)
+
+
+def test_auth_strict_mode_empty_consumers_raises() -> None:
+    """AUTH_STRICT_MODE=True with empty PRIVATE_API_CONSUMERS must fail at construction."""
+    with pytest.raises(
+        (ValidationError, ValueError, RuntimeError), match="PRIVATE_API_CONSUMERS"
+    ):
+        _make(AUTH_STRICT_MODE=True)
+
+
+def test_development_empty_consumers_allowed() -> None:
+    """Non-production/non-strict mode with empty PRIVATE_API_CONSUMERS must not raise."""
+    s = _make(ENVIRONMENT="local", STRICT_PRODUCTION_MODE=False, AUTH_STRICT_MODE=False)
+    assert s.PRIVATE_API_CONSUMERS == {}
+
+
+def test_production_with_consumers_constructs() -> None:
+    """ENVIRONMENT=production with a non-empty PRIVATE_API_CONSUMERS must succeed."""
+    from auth_user_service.core.config import ConsumerCredentialConfig
+    from pydantic import SecretStr
+
+    consumers = {
+        "media-service": ConsumerCredentialConfig(
+            secret=SecretStr("plain-test-secret"), scopes=["introspection"]
+        )
+    }
+    s = _make(ENVIRONMENT="production", PRIVATE_API_CONSUMERS=consumers)
+    assert "media-service" in s.PRIVATE_API_CONSUMERS
+
+
+def test_empty_consumers_error_excludes_secret_material() -> None:
+    """The validation error for empty consumers must not include registry secret values."""
+    try:
+        _make(ENVIRONMENT="production")
+    except (ValidationError, ValueError, RuntimeError) as exc:
+        error_text = str(exc)
+        assert "PRIVATE_API_CONSUMERS" in error_text
+        assert "sha256$" not in error_text
+    else:
+        pytest.fail("Expected a validation error for production with empty consumers")
+
+
+def test_hardened_env_example_has_consumers_registry_source() -> None:
+    """hardened auth.env.production.example must include an uncommented registry source."""
+    import re
+    from pathlib import Path
+
+    example = (
+        Path(__file__).parents[2]
+        / "examples"
+        / "docker_compose"
+        / "hardened_m8"
+        / "auth.env.production.example"
+    )
+    content = example.read_text(encoding="utf-8")
+    has_file = bool(
+        re.search(r"^PRIVATE_API_CONSUMERS_FILE=\S+", content, re.MULTILINE)
+    )
+    has_inline = bool(re.search(r"^PRIVATE_API_CONSUMERS=\S+", content, re.MULTILINE))
+    assert has_file or has_inline, (
+        "auth.env.production.example must contain an uncommented "
+        "PRIVATE_API_CONSUMERS_FILE= or PRIVATE_API_CONSUMERS= directive"
+    )
+
+
+# ── effective_api_key_strict_rate_limit (plan 11.3) ───────────────────────────
+
+
+def _prod_consumers() -> dict:
+    """A minimal non-empty consumer registry so production/strict Settings build."""
+    from auth_user_service.core.config import ConsumerCredentialConfig
+    from pydantic import SecretStr
+
+    return {
+        "media-service": ConsumerCredentialConfig(
+            secret=SecretStr("plain-test-secret"), scopes=["introspection"]
+        )
+    }
+
+
+def test_api_key_strict_default_off_in_local() -> None:
+    """Local, non-strict, no explicit opt-in stays fail-open for API-key limits."""
+    s = _make(ENVIRONMENT="local", STRICT_PRODUCTION_MODE=False, AUTH_STRICT_MODE=False)
+    assert s.API_KEY_STRICT_RATE_LIMIT is False
+    assert s.effective_api_key_strict_rate_limit is False
+
+
+def test_api_key_strict_explicit_opt_in() -> None:
+    """API_KEY_STRICT_RATE_LIMIT=true forces strict even in local mode."""
+    s = _make(ENVIRONMENT="local", API_KEY_STRICT_RATE_LIMIT=True)
+    assert s.effective_api_key_strict_rate_limit is True
+
+
+def test_api_key_strict_inherited_from_production() -> None:
+    """ENVIRONMENT=production implies strict API-key rate limiting."""
+    s = _make(ENVIRONMENT="production", PRIVATE_API_CONSUMERS=_prod_consumers())
+    assert s.API_KEY_STRICT_RATE_LIMIT is False
+    assert s.effective_api_key_strict_rate_limit is True
+
+
+def test_api_key_strict_inherited_from_strict_production_mode() -> None:
+    """STRICT_PRODUCTION_MODE=true implies strict API-key rate limiting."""
+    s = _make(STRICT_PRODUCTION_MODE=True, PRIVATE_API_CONSUMERS=_prod_consumers())
+    assert s.effective_api_key_strict_rate_limit is True
+
+
+def test_api_key_strict_inherited_from_auth_strict_mode() -> None:
+    """AUTH_STRICT_MODE=true implies strict API-key rate limiting."""
+    s = _make(AUTH_STRICT_MODE=True, PRIVATE_API_CONSUMERS=_prod_consumers())
+    assert s.effective_api_key_strict_rate_limit is True

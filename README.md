@@ -545,7 +545,7 @@ A startup warning is logged if the effective rate (requests ÷ window) exceeds 5
 
 | Variable | Required | Default | Description |
 | -------- | -------- | ------- | ----------- |
-| `API_KEY_STRICT_RATE_LIMIT` | no | `false` | When `true`, return 503 instead of allowing requests when Redis is unavailable |
+| `API_KEY_STRICT_RATE_LIMIT` | no | `false` | Force fail-closed (503) API-key verification when Redis is unavailable. **Auto-enabled** in production/strict (`ENVIRONMENT=production`, `STRICT_PRODUCTION_MODE=true`, or `AUTH_STRICT_MODE=true`); this flag only forces it on elsewhere |
 | `API_KEY_DEFAULT_LIMIT_MINUTE` | no | `60` | Default requests per minute (`0` = disabled) |
 | `API_KEY_DEFAULT_LIMIT_HOUR` | no | `1000` | Default requests per hour |
 | `API_KEY_DEFAULT_LIMIT_DAY` | no | `10000` | Default requests per day |
@@ -642,7 +642,7 @@ The transient regime is observable — it does not enable a specific exploit, bu
 
 The asymmetric posture (refresh + session writes fail-closed; rate limit + access revocation fail-open) is intentional: the highest-value targets for an attacker (token replay, unrevoked sessions) are hard-rejected; availability controls are preserved.
 
-API key rate limiting: when Redis is unavailable and `API_KEY_STRICT_RATE_LIMIT=false` (default), requests are allowed through. With `API_KEY_STRICT_RATE_LIMIT=true`, the endpoint returns 503.
+API key rate limiting: when Redis is unavailable, strict deployments return 503 rather than admit a valid key with no rate-limit ceiling. Strict behaviour is inherited from any production/strict posture (`ENVIRONMENT=production`, `STRICT_PRODUCTION_MODE=true`, or `AUTH_STRICT_MODE=true`) and can also be forced anywhere with `API_KEY_STRICT_RATE_LIMIT=true`. Only non-production, non-strict development fails open, and that admission is logged as unsafe. Either path emits a `degraded_decision_total{control="api_key_rate_limit"}` sample; logs never contain the raw key.
 
 ### Database unavailable
 
@@ -821,6 +821,118 @@ Endpoints under `/user/private/` are for inter-service calls only:
 | POST | `/private/users/` | Create a user account (called by other microservices) |
 | POST | `/private/v1/jti-status` | Check whether a JTI is revoked (`stateful` mode only; fails-open when Redis unavailable) |
 | GET | `/private/v1/events/stream` | SSE bridge — pushes `session-revoked` / `user-deleted` events to consumers (best-effort accelerator; `jti-status` remains the revocation authority) |
+| POST | `/private/v1/service-token` | Exchange bootstrap credential for a short-TTL service token (scoped to granted scopes) |
+
+### Bootstrap and rotation runbook
+
+#### Generating `PRIVATE_API_CONSUMERS`
+
+Each consumer gets a unique client ID and a strong secret. Generate one
+per consumer and build the JSON map:
+
+```bash
+# Generate a strong secret per consumer (32+ bytes, URL-safe base64).
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+The consumers map is a JSON object keyed by consumer ID. Scopes are
+deny-by-default: list only the scopes the consumer actually needs.
+
+```json
+{
+  "media-service": {
+    "secret": "<generated-secret>",
+    "scopes": ["introspection", "event-stream"]
+  },
+  "worker-service": {
+    "secret": "<generated-secret>",
+    "scopes": ["user-create"]
+  }
+}
+```
+
+Store the map as a Docker secret and reference it via
+`PRIVATE_API_CONSUMERS_FILE` (preferred) or inline via `PRIVATE_API_CONSUMERS`:
+
+```ini
+# docker-compose hardened: mount as a Docker secret
+PRIVATE_API_CONSUMERS_FILE=/run/secrets/private_api_consumers.json
+```
+
+```yaml
+# docker-compose.yml
+secrets:
+  private_api_consumers:
+    file: ./secrets/private_api_consumers.json
+services:
+  auth_user_service:
+    secrets:
+      - private_api_consumers
+```
+
+Each consumer sets its own side of the credential — the client ID must
+match a key in the issuer's `PRIVATE_API_CONSUMERS` map:
+
+```ini
+# consumer env (api.env / media.env)
+INTERNAL_CLIENT_ID=media-service
+PRIVATE_API_SECRET=<the secret for media-service in PRIVATE_API_CONSUMERS>
+```
+
+#### Rotating a consumer secret
+
+Rolling rotation (no downtime):
+
+1. Add a `<consumer-id>-new` entry to the issuer's `PRIVATE_API_CONSUMERS`
+   with the new secret and the same scopes.
+2. Reload the issuer (signal `SIGHUP` or restart). Both entries are now
+   valid.
+3. Update the consumer's `PRIVATE_API_SECRET` to the new secret and restart
+   the consumer.
+4. Remove the old `<consumer-id>` entry from `PRIVATE_API_CONSUMERS` and
+   reload the issuer again.
+
+If the consumer uses the service-token exchange (`/private/v1/service-token`),
+its short-TTL tokens expire within `SERVICE_TOKEN_TTL_SECONDS` (default 300 s)
+after the bootstrap credential is revoked — no additional invalidation step is
+needed.
+
+#### Emergency rotation for a stolen service token
+
+A stolen short-TTL service token expires naturally within
+`SERVICE_TOKEN_TTL_SECONDS`. To force-invalidate before expiry:
+
+1. Immediately rotate the consumer's bootstrap secret (see above) — the
+   issuer will reject all new token exchanges from the compromised credential.
+2. Restart the affected consumer service so it re-exchanges for a new token.
+3. If the stolen token's `jti` is known, add it to the JTI blacklist via
+   the internal session-revocation path (requires a superuser call to
+   `DELETE /sessions/delete/{session_id}/`).
+
+For a stolen bootstrap credential (`X-Internal-Token`), rotate immediately:
+remove the old entry from `PRIVATE_API_CONSUMERS`, reload the issuer, then
+add the new entry. The issuer rejects the old credential the moment the
+registry is updated.
+
+#### Verification with `security-tests-m8`
+
+After any rotation or environment change, run the private API live suite to
+confirm the issuer accepts the new credential and rejects the old one:
+
+```bash
+# Inside the security-tests-m8 repo
+LIVE_TEST_PRIVATE_API_CLIENT_ID=media-service \
+LIVE_TEST_PRIVATE_API_SECRET=<new-secret> \
+AUTH_BASE_URL=http://auth-service:8000 \
+pytest tests/live/test_private_api_live.py -v
+```
+
+The suite covers:
+
+- Bootstrap credential acceptance (`X-Internal-Client` + `X-Internal-Token`).
+- Service-token exchange and scoped endpoint access.
+- Legacy `X-Internal-Token`-only shape rejected (no `X-Internal-Client`).
+- Revocation check via `POST /private/v1/jti-status`.
 
 ---
 
@@ -1026,6 +1138,34 @@ Alert rules for `metrics_m8` and `vault_dev_m8` stacks (`prometheus/alerts.yml`)
 - [Redis](https://redis.io/) — session revocation, refresh token allowlist, rate limiting, PKCE store, write-behind queue
 - [PyJWT](https://pyjwt.readthedocs.io/) + [passlib](https://passlib.readthedocs.io/) + [cryptography](https://cryptography.io/)
 - [google-auth](https://google-auth.readthedocs.io/) — Google OAuth2
+
+### Reproducible release builds
+
+Release (non-development) Docker images do **not** resolve the loose lower-bound
+ranges in `requirements_base.txt` / `requirements_prod.txt` at build time. They
+install from `auth_user_service/requirements_prod.lock` — a fully pinned,
+`sha256`-hashed lock — with `pip install --require-hashes`. This guarantees that
+rebuilding the same source cannot silently pull a different dependency graph, and
+that the published SBOM describes exactly what shipped.
+
+- The loose ranges remain the source of truth for *what* the service depends on.
+- The lock is the pinned, hashed *resolution* of those ranges for release images.
+- All packages (including the internal `auth-sdk-m8`) resolve from public PyPI
+  only — the lock carries no custom index URL.
+
+Regenerate the lock whenever a range in `requirements_base.txt` or
+`requirements_prod.txt` changes, then re-run the audit gate:
+
+```bash
+cd auth_user_service
+pip-compile --generate-hashes --no-emit-index-url \
+    --output-file=requirements_prod.lock requirements_prod.txt
+pip-audit -r requirements_prod.lock          # must report no known vulnerabilities
+```
+
+The lock, the Dockerfile `--require-hashes` install, and the
+"SBOM reflects the locked environment" invariant are enforced by
+`tests/security/test_dependency_lock.py`.
 
 ---
 

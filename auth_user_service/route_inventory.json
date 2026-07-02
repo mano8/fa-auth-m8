@@ -1,0 +1,353 @@
+[
+  {
+    "path": "/user/.well-known/jwks.json",
+    "method": "GET",
+    "tag": "well-known",
+    "exposure": "public",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "JWKS endpoint — public, no auth required"
+  },
+  {
+    "path": "/user/dashboard/users/activity/",
+    "method": "GET",
+    "tag": "dashboard",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Dashboard activity summary — requires valid bearer token"
+  },
+  {
+    "path": "/user/dashboard/users/activity/current/",
+    "method": "GET",
+    "tag": "dashboard",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Current user activity summary — requires valid bearer token"
+  },
+  {
+    "path": "/user/google-api/exchange/",
+    "method": "POST",
+    "tag": "google-api",
+    "exposure": "public",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "OAuth2 code exchange — public, no prior auth required"
+  },
+  {
+    "path": "/user/google-api/login-url/",
+    "method": "GET",
+    "tag": "google-api",
+    "exposure": "public",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Build OAuth2 authorization URL — public"
+  },
+  {
+    "path": "/user/google-auth/oauth-callback/",
+    "method": "GET",
+    "tag": "google-auth",
+    "exposure": "public",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Google OAuth callback — public redirect target"
+  },
+  {
+    "path": "/user/health/",
+    "method": "GET",
+    "tag": "health",
+    "exposure": "health",
+    "in_openapi": false,
+    "traefik_router": "public",
+    "note": "Health check — shallow body public; detail body gated by HEALTH_DETAIL_CREDENTIAL"
+  },
+  {
+    "path": "/user/login/access-token",
+    "method": "POST",
+    "tag": "login",
+    "exposure": "public",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Username/password login — public, rate-limited"
+  },
+  {
+    "path": "/user/login/logout/",
+    "method": "POST",
+    "tag": "login",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Logout — requires valid bearer token"
+  },
+  {
+    "path": "/user/login/refresh-token/",
+    "method": "POST",
+    "tag": "login",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Refresh token rotation — requires refresh token"
+  },
+  {
+    "path": "/user/login/test-token/",
+    "method": "POST",
+    "tag": "login",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Token introspection — requires valid bearer token"
+  },
+  {
+    "path": "/user/meta",
+    "method": "GET",
+    "tag": "meta",
+    "exposure": "public",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Service metadata and SDK compat check — public"
+  },
+  {
+    "path": "/user/ping",
+    "method": "GET",
+    "tag": "meta",
+    "exposure": "public",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Liveness probe — public"
+  },
+  {
+    "path": "/user/private/users/",
+    "method": "POST",
+    "tag": "private",
+    "exposure": "internal",
+    "in_openapi": false,
+    "traefik_router": "internal",
+    "note": "Create user — internal only; requires per-consumer credential + user-create scope"
+  },
+  {
+    "path": "/user/private/v1/events/stream",
+    "method": "GET",
+    "tag": "private",
+    "exposure": "internal",
+    "in_openapi": false,
+    "traefik_router": "internal",
+    "note": "Auth-event SSE bridge — internal only; requires event-stream scope"
+  },
+  {
+    "path": "/user/private/v1/jti-status",
+    "method": "POST",
+    "tag": "private",
+    "exposure": "internal",
+    "in_openapi": false,
+    "traefik_router": "internal",
+    "note": "JTI revocation check — internal only; requires introspection scope"
+  },
+  {
+    "path": "/user/private/v1/service-token",
+    "method": "POST",
+    "tag": "private",
+    "exposure": "internal",
+    "in_openapi": false,
+    "traefik_router": "internal",
+    "note": "Service-token exchange — internal only; bootstrap credential required"
+  },
+  {
+    "path": "/user/profile/api-keys/",
+    "method": "GET",
+    "tag": "api-keys",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "List API keys — requires valid bearer token"
+  },
+  {
+    "path": "/user/profile/api-keys/",
+    "method": "POST",
+    "tag": "api-keys",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Create API key — requires valid bearer token"
+  },
+  {
+    "path": "/user/profile/api-keys/verify",
+    "method": "GET",
+    "tag": "api-keys",
+    "exposure": "api-key",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Verify API key — authenticated via X-API-Key header + rate limiting"
+  },
+  {
+    "path": "/user/profile/api-keys/{key_id}",
+    "method": "DELETE",
+    "tag": "api-keys",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Delete API key — requires valid bearer token"
+  },
+  {
+    "path": "/user/profile/api-keys/{key_id}",
+    "method": "GET",
+    "tag": "api-keys",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Get API key detail — requires valid bearer token"
+  },
+  {
+    "path": "/user/profile/delete/me/",
+    "method": "DELETE",
+    "tag": "profile",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Delete own account — requires valid bearer token"
+  },
+  {
+    "path": "/user/profile/get/me/",
+    "method": "GET",
+    "tag": "profile",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Get own profile — requires valid bearer token"
+  },
+  {
+    "path": "/user/profile/me/password/",
+    "method": "PATCH",
+    "tag": "profile",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Change own password — requires valid bearer token"
+  },
+  {
+    "path": "/user/profile/update/me/",
+    "method": "PATCH",
+    "tag": "profile",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Update own profile — requires valid bearer token"
+  },
+  {
+    "path": "/user/sessions/",
+    "method": "GET",
+    "tag": "sessions",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "List all sessions — requires superuser"
+  },
+  {
+    "path": "/user/sessions/delete-by-user/{user_id}/",
+    "method": "DELETE",
+    "tag": "sessions",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Delete sessions by user — requires superuser"
+  },
+  {
+    "path": "/user/sessions/delete/{session_id}/",
+    "method": "DELETE",
+    "tag": "sessions",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Delete a session — requires superuser"
+  },
+  {
+    "path": "/user/sessions/get-by-user/{user_id}/",
+    "method": "GET",
+    "tag": "sessions",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Get sessions by user — requires superuser"
+  },
+  {
+    "path": "/user/sessions/get-current/",
+    "method": "GET",
+    "tag": "sessions",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Get current session — requires valid bearer token"
+  },
+  {
+    "path": "/user/sessions/get/{session_id}/",
+    "method": "GET",
+    "tag": "sessions",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Get session by id — requires superuser"
+  },
+  {
+    "path": "/user/sessions/refresh-google-tokens/",
+    "method": "POST",
+    "tag": "sessions",
+    "exposure": "authenticated",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Refresh Google OAuth tokens — requires valid bearer token"
+  },
+  {
+    "path": "/user/users/",
+    "method": "GET",
+    "tag": "users",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "List users — requires superuser"
+  },
+  {
+    "path": "/user/users/delete/{user_id}/",
+    "method": "DELETE",
+    "tag": "users",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Delete user — requires superuser"
+  },
+  {
+    "path": "/user/users/get/{user_id}/",
+    "method": "GET",
+    "tag": "users",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Get user by id — requires superuser"
+  },
+  {
+    "path": "/user/users/new_user/",
+    "method": "POST",
+    "tag": "users",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Create user — requires superuser"
+  },
+  {
+    "path": "/user/users/signup/",
+    "method": "POST",
+    "tag": "users",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Register user — requires superuser"
+  },
+  {
+    "path": "/user/users/update/{user_id}/",
+    "method": "PATCH",
+    "tag": "users",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Update user — requires superuser"
+  }
+]

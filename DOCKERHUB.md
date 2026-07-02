@@ -187,7 +187,7 @@ services:
 Install the consumer helper package:
 
 ```sh
-pip install "fastapi-m8>=3.2.0,<4.0.0"
+pip install "fastapi-m8>=3.3.0,<4.0.0"
 ```
 
 Minimal auth dependency setup:

@@ -95,6 +95,9 @@ class TestStrictModeOverridesFailureModes:
         """AUTH_STRICT_MODE=true overrides explicit per-control fail_open."""
         settings = _make(
             AUTH_STRICT_MODE=True,
+            PRIVATE_API_CONSUMERS={
+                "test-svc": {"secret": "plain-test-secret", "scopes": ["introspection"]}
+            },
             REFRESH_VALIDATION_FAILURE_MODE="fail_open",
             SESSION_WRITE_FAILURE_MODE="fail_open",
             RATE_LIMIT_FAILURE_MODE="fail_open",
@@ -122,7 +125,11 @@ class TestStrictModeEnforcedAtRevocation:
     def test_strict_redis_down_revocation_raises_503_over_fail_open(self):
         """Strict + Redis down → 503 even though ACCESS_REVOCATION_FAILURE_MODE=fail_open."""
         settings = _make(
-            AUTH_STRICT_MODE=True, ACCESS_REVOCATION_FAILURE_MODE="fail_open"
+            AUTH_STRICT_MODE=True,
+            PRIVATE_API_CONSUMERS={
+                "test-svc": {"secret": "plain-test-secret", "scopes": ["introspection"]}
+            },
+            ACCESS_REVOCATION_FAILURE_MODE="fail_open",
         )
         mock_metrics = MagicMock()
         with (
@@ -171,6 +178,9 @@ class TestHealthReportsDegradationPolicy:
         """Under strict, the health body reports every control as fail_closed."""
         settings = _make(
             AUTH_STRICT_MODE=True,
+            PRIVATE_API_CONSUMERS={
+                "test-svc": {"secret": "plain-test-secret", "scopes": ["introspection"]}
+            },
             RATE_LIMIT_FAILURE_MODE="fail_open",
             ACCESS_REVOCATION_FAILURE_MODE="fail_open",
         )

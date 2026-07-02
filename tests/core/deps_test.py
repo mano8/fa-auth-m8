@@ -379,7 +379,7 @@ class TestGetCurrentApiKey:
             patch("auth_user_service.core.deps.settings") as mock_cfg,
             pytest.raises(HTTPException) as exc_info,
         ):
-            mock_cfg.API_KEY_STRICT_RATE_LIMIT = True
+            mock_cfg.effective_api_key_strict_rate_limit = True
             get_current_api_key(
                 session=db_session,
                 redis=None,
@@ -388,6 +388,57 @@ class TestGetCurrentApiKey:
             )
 
         assert exc_info.value.status_code == 503
+
+    def test_circuit_breaker_open_strict_mode_raises_503(self, db_session):
+        """Circuit-breaker-open surfaces as redis=None; strict must still 503."""
+        api_key = self._make_api_key()
+
+        with (
+            patch(
+                "auth_user_service.core.deps.ApiKeyService.get_active_key",
+                return_value=api_key,
+            ),
+            patch(
+                "auth_user_service.core.deps.get_redis_client",
+                return_value=None,
+            ),
+            patch("auth_user_service.core.deps.settings") as mock_cfg,
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            mock_cfg.effective_api_key_strict_rate_limit = True
+            get_current_api_key(
+                session=db_session,
+                redis=get_redis_client(),
+                response=self._make_response(),
+                x_api_key="ak_valid",
+            )
+
+        assert exc_info.value.status_code == 503
+
+    def test_no_redis_strict_mode_emits_degraded_metric(self, db_session):
+        api_key = self._make_api_key()
+        mock_m = MagicMock()
+
+        with (
+            patch(
+                "auth_user_service.core.deps.ApiKeyService.get_active_key",
+                return_value=api_key,
+            ),
+            patch("auth_user_service.core.deps.settings") as mock_cfg,
+            patch("auth_user_service.core.deps._get_metrics", return_value=mock_m),
+            pytest.raises(HTTPException),
+        ):
+            mock_cfg.effective_api_key_strict_rate_limit = True
+            get_current_api_key(
+                session=db_session,
+                redis=None,
+                response=self._make_response(),
+                x_api_key="ak_valid",
+            )
+
+        mock_m.degraded_decision_total.labels.assert_called_once_with(
+            control="api_key_rate_limit", mode="fail_closed", reason="redis_unavailable"
+        )
 
     def test_no_redis_non_strict_returns_key(self, db_session):
         api_key = self._make_api_key()
@@ -399,7 +450,7 @@ class TestGetCurrentApiKey:
             ),
             patch("auth_user_service.core.deps.settings") as mock_cfg,
         ):
-            mock_cfg.API_KEY_STRICT_RATE_LIMIT = False
+            mock_cfg.effective_api_key_strict_rate_limit = False
             result = get_current_api_key(
                 session=db_session,
                 redis=None,
@@ -408,6 +459,58 @@ class TestGetCurrentApiKey:
             )
 
         assert result is api_key
+
+    def test_no_redis_non_strict_emits_fail_open_metric(self, db_session):
+        api_key = self._make_api_key()
+        mock_m = MagicMock()
+
+        with (
+            patch(
+                "auth_user_service.core.deps.ApiKeyService.get_active_key",
+                return_value=api_key,
+            ),
+            patch("auth_user_service.core.deps.settings") as mock_cfg,
+            patch("auth_user_service.core.deps._get_metrics", return_value=mock_m),
+        ):
+            mock_cfg.effective_api_key_strict_rate_limit = False
+            get_current_api_key(
+                session=db_session,
+                redis=None,
+                response=self._make_response(),
+                x_api_key="ak_valid",
+            )
+
+        mock_m.degraded_decision_total.labels.assert_called_once_with(
+            control="api_key_rate_limit", mode="fail_open", reason="redis_unavailable"
+        )
+
+    def test_degraded_never_logs_raw_api_key(self, db_session, caplog):
+        """The raw X-API-Key value must never reach the logs (strict or open)."""
+        api_key = self._make_api_key()
+        raw_key = "ak_super_secret_raw_value_123456"
+
+        for strict in (True, False):
+            caplog.clear()
+            with (
+                patch(
+                    "auth_user_service.core.deps.ApiKeyService.get_active_key",
+                    return_value=api_key,
+                ),
+                patch("auth_user_service.core.deps.settings") as mock_cfg,
+                caplog.at_level("WARNING"),
+            ):
+                mock_cfg.effective_api_key_strict_rate_limit = strict
+                try:
+                    get_current_api_key(
+                        session=db_session,
+                        redis=None,
+                        response=self._make_response(),
+                        x_api_key=raw_key,
+                    )
+                except HTTPException:
+                    pass
+
+            assert raw_key not in caplog.text
 
     def test_redis_rate_limited_with_reset_at_raises_429(self, db_session):
         api_key = self._make_api_key()

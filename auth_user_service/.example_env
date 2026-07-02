@@ -130,6 +130,11 @@ TRUSTED_PROXY_COUNT=0
 #REFRESH_RATE_LIMIT_WINDOW_MINUTES=5
 
 # ── API key rate limiting (optional) ──────────────────────────────────────────
+# When Redis is unavailable, strict behaviour refuses valid keys with 503 rather
+# than admit them without a rate-limit ceiling. It is auto-enabled in
+# production/strict (ENVIRONMENT=production, STRICT_PRODUCTION_MODE=true, or
+# AUTH_STRICT_MODE=true); this flag only forces it on in other environments and
+# is UNSAFE to leave off in production. Non-strict dev fails open (logged).
 #API_KEY_STRICT_RATE_LIMIT=false
 #API_KEY_DEFAULT_LIMIT_MINUTE=60
 #API_KEY_DEFAULT_LIMIT_HOUR=1000
@@ -144,6 +149,12 @@ METRICS_GROUPS=all
 # to keep metrics internal-only (the network boundary is the control). When set,
 # scrapers must send `Authorization: Bearer <credential>` (constant-time match).
 #METRICS_SCRAPE_CREDENTIAL=changethis
+# Dedicated credential for the deep /health detail gate (9.3). When set, callers
+# presenting this value via X-Internal-Token receive the full infrastructure body
+# (token mode, Redis/DB); when unset the gate fails closed (no detail regardless of
+# token). Must differ from PRIVATE_API_SECRET (startup rejects reuse).
+# HEALTH_DETAIL_CREDENTIAL_FILE is also accepted for Docker/K8s file-mounted secrets.
+#HEALTH_DETAIL_CREDENTIAL=changethis
 
 # ── Google OAuth (optional — uncomment to enable) ─────────────────────────────
 # GOOGLE_CLIENT_ID="changethis"

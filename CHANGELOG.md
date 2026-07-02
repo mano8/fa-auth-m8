@@ -13,23 +13,95 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-_Nothing yet._
-
 ---
 
-## [1.0.1] — 2026-06-29 · Safe `db_data/` reset in the shared compose `init-common.sh`
+## [1.1.0] — 2026-07-02 · Security-remediation hardening + toolchain/env alignment
+
+> **Consolidates the never-tagged `1.0.1` fix.** The `1.0.1` `db_data/` reset fix
+> (below, under _Fixed_) was drafted but never published as a git tag; it ships as
+> part of `1.1.0`. The package `__version__` and the `fastapi_full` /
+> `fastapi_minimal` example consumers are aligned to `1.1.0`; the issuer `/meta`
+> `CONTRACT_RANGE` stays `>=1.0.0 <2.0.0` (no contract break).
+>
+> **Toolchain floors raised.** The example consumers move to
+> `fastapi-m8 >= 3.3.0` (was `>= 3.2.0`) and the issuer to `auth-sdk-m8 >= 2.1.1`
+> (was `>= 2.1.0`) in `auth_user_service/requirements_base.txt`. `fastapi-m8 3.3.0`
+> itself requires `auth-sdk-m8 >= 2.1.1`, so the whole chain converges on one SDK
+> version in a shared virtualenv. The pinned `requirements_prod.lock` already
+> resolves `auth-sdk-m8==2.1.1`, so the floor bump needs no lock regeneration.
+
+### Security
+
+- **API-key rate limiting now fails closed in production/strict (11.3).** When
+  Redis is unavailable, valid API keys were previously admitted with no
+  rate-limit ceiling unless `API_KEY_STRICT_RATE_LIMIT=true` was set separately.
+  Strict behaviour is now **inherited** from any production/strict posture
+  (`ENVIRONMENT=production`, `STRICT_PRODUCTION_MODE=true`, or
+  `AUTH_STRICT_MODE=true`) via the new
+  `Settings.effective_api_key_strict_rate_limit` — such deployments return `503`
+  instead. Non-production, non-strict development still fails open but now logs
+  the admission as unsafe. Both paths emit a `degraded_decision_total`
+  (`control="api_key_rate_limit"`) metric sample; logs carry only the opaque key
+  id, never the raw key. Hardened production env example sets
+  `API_KEY_STRICT_RATE_LIMIT=true` explicitly for auditability.
+- **Release images now install a hash-locked dependency set (11.8).** Non-development
+  Docker builds no longer resolve the loose lower-bound ranges in
+  `requirements_base.txt` / `requirements_prod.txt` at build time. They install
+  from the new fully pinned, `sha256`-hashed `auth_user_service/requirements_prod.lock`
+  via `pip install --require-hashes`, so rebuilding the same source cannot silently
+  pull a different dependency graph and the published SBOM matches what shipped. All
+  packages (including the internal `auth-sdk-m8`) resolve from public PyPI only. The
+  development build path is unchanged. Regeneration and audit steps are documented in
+  the README; the lock, the Dockerfile `--require-hashes` install, and the
+  SBOM-reflects-locked-env invariant are enforced by
+  `tests/security/test_dependency_lock.py`.
+
+### Changed
+
+- **Example-consumer dependency floors raised** to `fastapi-m8 >= 3.3.0,<4.0.0`
+  in `examples/fastapi_full/requirements_base.txt` and
+  `examples/fastapi_minimal/requirements.txt`, with the issuer moved to
+  `auth-sdk-m8 >= 2.1.1,<3.0.0`. The DOCKERHUB integration snippet is bumped to
+  match.
+- **Env examples aligned and documented across the service, `fastapi_full`, and
+  every `examples/docker_compose/*` stack.** `examples/fastapi_full/.example_env`
+  now documents the keys its runnable `.env` already used (`SECRET_KEY`,
+  `GFORM_PREFIX`, `PROMPTS_PREFIX`, `TOKEN_STRICT_VALIDATION`,
+  `EVENT_SIGNING_ENABLED`/`EVENT_SIGNING_KEY`, `REVOCATION_CACHE_TTL_SECONDS`);
+  the issuer `.example_env` documents the opt-in `HEALTH_DETAIL_CREDENTIAL` gate;
+  and every stack's live-test config gained an explicit `LIVE_TEST_AUTH_HEALTH_URL`.
 
 ### Fixed
 
+- **Route-inventory test is robust to FastAPI ≥ 0.137 lazy router inclusion.**
+  `include_router` no longer flattens sub-routes into `app.routes` (it inserts an
+  opaque `_IncludedRouter`), which made `tests/security/test_route_inventory.py`
+  report every inventory entry as stale under a freshly resolved FastAPI. The
+  test now descends through both the flattened (≤ 0.136) and nested (≥ 0.137)
+  shapes to reconstruct the full route surface. The two `api_key.rate_limit_*`
+  degraded-mode log lines carry an explicit `# nosec B106` (the `ref` field is
+  the opaque key id, not a secret), matching the existing logger suppressions.
+- **rs256 stack could not run the per-consumer private-API live checks.**
+  `rs256_m8/auth.env` was missing `PRIVATE_API_CONSUMERS` (and `api.env` its
+  `INTERNAL_CLIENT_ID`), so the `example-api` consumer the security suite
+  authenticates as was never registered — every `/private/*` call failed closed.
+  Both are now set, matching the other stacks and the stack's own `*.env.example`.
+- **Per-stack live-test root variable was a copy-paste of `HARDENED_M8_STACK_ROOT`.**
+  The `metrics`/`postgres`/`quickstart`/`rs256`/`vault_dev` `test.env` and
+  `test.env.example` files referenced the hardened stack's variable name; each now
+  uses its own `<STACK>_M8_STACK_ROOT` (the runner keys off
+  `LIVE_TEST_DEPLOYMENT_ROOT`/`LIVE_TEST_REPO_ROOT`, so behaviour is unchanged —
+  the fix is documentation correctness).
 - **`examples/docker_compose/shared/scripts/init-common.sh` — `--reset-db` now
-  removes a container-owned `db_data/`.** PostgreSQL creates `db_data/` as its own
-  container uid (e.g. `70`, mode `0700`), so a host-side `rm -rf db_data/` fails
-  with "Permission denied" on WSL2/Linux bind mounts, leaving stale data that
-  silently blocks re-init. The reset now tries the host `rm` first and falls back
-  to a throwaway root `alpine` container (`docker run --rm -v "$(pwd):/work" alpine
-  rm -rf /work/db_data`) to delete the container-owned directory, erroring out with
-  a `sudo` hint only if both fail. Backported from `media-service-m8`'s stack
-  tooling; the two repos' `init-common.sh` are now byte-identical.
+  removes a container-owned `db_data/`** (originally staged for the never-tagged
+  `1.0.1`). PostgreSQL creates `db_data/` as its own container uid (e.g. `70`,
+  mode `0700`), so a host-side `rm -rf db_data/` fails with "Permission denied" on
+  WSL2/Linux bind mounts, leaving stale data that silently blocks re-init. The
+  reset now tries the host `rm` first and falls back to a throwaway root `alpine`
+  container (`docker run --rm -v "$(pwd):/work" alpine rm -rf /work/db_data`) to
+  delete the container-owned directory, erroring out with a `sudo` hint only if
+  both fail. Backported from `media-service-m8`'s stack tooling; the two repos'
+  `init-common.sh` are now byte-identical.
 
 ---
 
