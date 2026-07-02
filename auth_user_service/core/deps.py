@@ -357,6 +357,39 @@ def _apply_rate_limit(
         _logger.warning("luat.write_failed ref=%s", ref)
 
 
+def _handle_api_key_redis_degraded(api_key: ApiKey) -> None:
+    """Decide API-key admission when Redis rate limiting is unavailable.
+
+    Strict posture (production, ``AUTH_STRICT_MODE``, ``STRICT_PRODUCTION_MODE``,
+    or explicit ``API_KEY_STRICT_RATE_LIMIT``) fails closed with 503 so a valid
+    key cannot be used without a rate-limit ceiling. Non-production, non-strict
+    development fails open but the admission is logged as unsafe. Either way a
+    ``degraded_decision_total`` metric sample is emitted. Never logs the raw key —
+    only the opaque key id reference (plan 11.3).
+    """
+    strict = settings.effective_api_key_strict_rate_limit
+    mode = "fail_closed" if strict else "fail_open"
+    _m = _get_metrics()
+    if _m and _m.degraded_decision_total:
+        _m.degraded_decision_total.labels(
+            control="api_key_rate_limit", mode=mode, reason="redis_unavailable"
+        ).inc()
+    ref = str(api_key.id)
+    if strict:
+        _logger.warning(
+            "api_key.rate_limit_unavailable decision=deny mode=fail_closed ref=%s",
+            ref,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Rate limiting service unavailable",
+        )
+    _logger.warning(
+        "api_key.rate_limit_unavailable decision=allow mode=fail_open unsafe=true ref=%s",
+        ref,
+    )
+
+
 def get_current_api_key(
     session: SessionDep,
     redis: RedisDep,
@@ -367,12 +400,14 @@ def get_current_api_key(
 
     Reads the ``X-API-Key`` header, validates the key, runs rate limit checks
     when Redis is available, and queues a write-behind ``last_used_at`` update.
-    Sets ``X-RateLimit-*`` response headers when limits are enforced.
+    Sets ``X-RateLimit-*`` response headers when limits are enforced. When Redis
+    is unavailable admission is decided by ``_handle_api_key_redis_degraded``:
+    fail-closed (503) in production/strict, fail-open (logged) in development.
 
     Raises:
         HTTPException 401: Key missing, invalid, expired, or revoked.
         HTTPException 429: Rate limit exceeded (includes ``Retry-After`` header).
-        HTTPException 503: Strict mode and Redis unavailable.
+        HTTPException 503: Redis unavailable under strict/production posture.
     """
     api_key = ApiKeyService.get_active_key(session, x_api_key)
     if api_key is None:
@@ -383,11 +418,8 @@ def get_current_api_key(
 
     if redis is not None:
         _apply_rate_limit(redis, session, api_key, response)
-    elif settings.API_KEY_STRICT_RATE_LIMIT:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Rate limiting service unavailable",
-        )
+    else:
+        _handle_api_key_redis_degraded(api_key)
 
     return api_key
 

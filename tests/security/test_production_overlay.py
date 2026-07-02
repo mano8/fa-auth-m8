@@ -112,6 +112,10 @@ def test_auth_production_env_posture() -> None:
     assert env["TOKEN_ISSUER"].startswith("https://")
     assert env["TOKEN_AUDIENCE"].startswith("https://")
     assert "localhost" not in env["BACKEND_CORS_ORIGINS"]
+    # API-key verification must fail closed when Redis rate limiting is down
+    # (inherited from AUTH_STRICT_MODE/production; set explicitly here) (11.3).
+    assert env["AUTH_STRICT_MODE"] == "true"
+    assert env["API_KEY_STRICT_RATE_LIMIT"] == "true"
 
 
 def test_auth_production_secrets_are_fail_closed_placeholders() -> None:

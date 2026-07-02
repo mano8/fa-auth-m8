@@ -407,3 +407,50 @@ def test_hardened_env_example_has_consumers_registry_source() -> None:
         "auth.env.production.example must contain an uncommented "
         "PRIVATE_API_CONSUMERS_FILE= or PRIVATE_API_CONSUMERS= directive"
     )
+
+
+# ── effective_api_key_strict_rate_limit (plan 11.3) ───────────────────────────
+
+
+def _prod_consumers() -> dict:
+    """A minimal non-empty consumer registry so production/strict Settings build."""
+    from auth_user_service.core.config import ConsumerCredentialConfig
+    from pydantic import SecretStr
+
+    return {
+        "media-service": ConsumerCredentialConfig(
+            secret=SecretStr("plain-test-secret"), scopes=["introspection"]
+        )
+    }
+
+
+def test_api_key_strict_default_off_in_local() -> None:
+    """Local, non-strict, no explicit opt-in stays fail-open for API-key limits."""
+    s = _make(ENVIRONMENT="local", STRICT_PRODUCTION_MODE=False, AUTH_STRICT_MODE=False)
+    assert s.API_KEY_STRICT_RATE_LIMIT is False
+    assert s.effective_api_key_strict_rate_limit is False
+
+
+def test_api_key_strict_explicit_opt_in() -> None:
+    """API_KEY_STRICT_RATE_LIMIT=true forces strict even in local mode."""
+    s = _make(ENVIRONMENT="local", API_KEY_STRICT_RATE_LIMIT=True)
+    assert s.effective_api_key_strict_rate_limit is True
+
+
+def test_api_key_strict_inherited_from_production() -> None:
+    """ENVIRONMENT=production implies strict API-key rate limiting."""
+    s = _make(ENVIRONMENT="production", PRIVATE_API_CONSUMERS=_prod_consumers())
+    assert s.API_KEY_STRICT_RATE_LIMIT is False
+    assert s.effective_api_key_strict_rate_limit is True
+
+
+def test_api_key_strict_inherited_from_strict_production_mode() -> None:
+    """STRICT_PRODUCTION_MODE=true implies strict API-key rate limiting."""
+    s = _make(STRICT_PRODUCTION_MODE=True, PRIVATE_API_CONSUMERS=_prod_consumers())
+    assert s.effective_api_key_strict_rate_limit is True
+
+
+def test_api_key_strict_inherited_from_auth_strict_mode() -> None:
+    """AUTH_STRICT_MODE=true implies strict API-key rate limiting."""
+    s = _make(AUTH_STRICT_MODE=True, PRIVATE_API_CONSUMERS=_prod_consumers())
+    assert s.effective_api_key_strict_rate_limit is True

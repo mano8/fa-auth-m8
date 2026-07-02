@@ -545,7 +545,7 @@ A startup warning is logged if the effective rate (requests ÷ window) exceeds 5
 
 | Variable | Required | Default | Description |
 | -------- | -------- | ------- | ----------- |
-| `API_KEY_STRICT_RATE_LIMIT` | no | `false` | When `true`, return 503 instead of allowing requests when Redis is unavailable |
+| `API_KEY_STRICT_RATE_LIMIT` | no | `false` | Force fail-closed (503) API-key verification when Redis is unavailable. **Auto-enabled** in production/strict (`ENVIRONMENT=production`, `STRICT_PRODUCTION_MODE=true`, or `AUTH_STRICT_MODE=true`); this flag only forces it on elsewhere |
 | `API_KEY_DEFAULT_LIMIT_MINUTE` | no | `60` | Default requests per minute (`0` = disabled) |
 | `API_KEY_DEFAULT_LIMIT_HOUR` | no | `1000` | Default requests per hour |
 | `API_KEY_DEFAULT_LIMIT_DAY` | no | `10000` | Default requests per day |
@@ -642,7 +642,7 @@ The transient regime is observable — it does not enable a specific exploit, bu
 
 The asymmetric posture (refresh + session writes fail-closed; rate limit + access revocation fail-open) is intentional: the highest-value targets for an attacker (token replay, unrevoked sessions) are hard-rejected; availability controls are preserved.
 
-API key rate limiting: when Redis is unavailable and `API_KEY_STRICT_RATE_LIMIT=false` (default), requests are allowed through. With `API_KEY_STRICT_RATE_LIMIT=true`, the endpoint returns 503.
+API key rate limiting: when Redis is unavailable, strict deployments return 503 rather than admit a valid key with no rate-limit ceiling. Strict behaviour is inherited from any production/strict posture (`ENVIRONMENT=production`, `STRICT_PRODUCTION_MODE=true`, or `AUTH_STRICT_MODE=true`) and can also be forced anywhere with `API_KEY_STRICT_RATE_LIMIT=true`. Only non-production, non-strict development fails open, and that admission is logged as unsafe. Either path emits a `degraded_decision_total{control="api_key_rate_limit"}` sample; logs never contain the raw key.
 
 ### Database unavailable
 

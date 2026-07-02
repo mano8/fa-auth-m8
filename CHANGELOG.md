@@ -13,7 +13,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Security
+
+- **API-key rate limiting now fails closed in production/strict (11.3).** When
+  Redis is unavailable, valid API keys were previously admitted with no
+  rate-limit ceiling unless `API_KEY_STRICT_RATE_LIMIT=true` was set separately.
+  Strict behaviour is now **inherited** from any production/strict posture
+  (`ENVIRONMENT=production`, `STRICT_PRODUCTION_MODE=true`, or
+  `AUTH_STRICT_MODE=true`) via the new
+  `Settings.effective_api_key_strict_rate_limit` — such deployments return `503`
+  instead. Non-production, non-strict development still fails open but now logs
+  the admission as unsafe. Both paths emit a `degraded_decision_total`
+  (`control="api_key_rate_limit"`) metric sample; logs carry only the opaque key
+  id, never the raw key. Hardened production env example sets
+  `API_KEY_STRICT_RATE_LIMIT=true` explicitly for auditability.
 
 ---
 

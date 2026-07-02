@@ -213,12 +213,35 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
         return self
 
     # API key rate limiting defaults (0 = disabled for that period)
+    # API_KEY_STRICT_RATE_LIMIT is an explicit opt-in, but production/strict
+    # deployments inherit strict behaviour regardless — see
+    # effective_api_key_strict_rate_limit below (plan 11.3).
     API_KEY_STRICT_RATE_LIMIT: bool = False
     API_KEY_DEFAULT_LIMIT_MINUTE: int = 60
     API_KEY_DEFAULT_LIMIT_HOUR: int = 1_000
     API_KEY_DEFAULT_LIMIT_DAY: int = 10_000
     API_KEY_DEFAULT_LIMIT_MONTH: int = 200_000
     API_KEY_MAX_PER_USER: int = 10
+
+    @property
+    def effective_api_key_strict_rate_limit(self) -> bool:
+        """Whether API-key verification must fail closed when Redis is unavailable.
+
+        API-key rate limiting is a Redis-backed abuse control. When Redis is
+        down a valid key would otherwise be admitted with no minute/hour/day
+        ceiling. Strict behaviour refuses the key with 503 instead. It is active
+        when explicitly opted in via ``API_KEY_STRICT_RATE_LIMIT`` **or** implied
+        by any production/strict posture — ``AUTH_STRICT_MODE`` (which forces
+        every Redis-dependent control fail-closed), ``ENVIRONMENT=production`` or
+        ``STRICT_PRODUCTION_MODE``. Only non-production, non-strict development
+        stays fail-open, and that admission is logged as unsafe (plan 11.3).
+        """
+        return (
+            self.API_KEY_STRICT_RATE_LIMIT
+            or self.AUTH_STRICT_MODE
+            or self.ENVIRONMENT == "production"
+            or self.STRICT_PRODUCTION_MODE
+        )
 
     # Declare only service-specific fields
     FIRST_SUPERUSER: EmailStr
