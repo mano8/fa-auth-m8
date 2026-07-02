@@ -276,6 +276,7 @@ docker compose stop
 docker compose down
 
 # Full reset — stops containers and wipes the database (prompts for confirmation)
+# (removes db_data/ even when the DB container owns it — root-container fallback)
 bash init.sh --reset-db
 
 # Rebuild one service after dependency changes

@@ -189,7 +189,7 @@ Add any `PREFIX_DB_{USER,PASSWORD,NAME}` triplet. Prefixes must be `UPPERCASE`, 
 
 **Validation**: `init-db.sh` detects and rejects: missing/empty fields, duplicate `DB_NAME` or `DB_USER` across prefixes (silent isolation collapse), invalid identifier characters, and mixed bare+prefixed configuration. Weak or reused passwords produce warnings without blocking startup.
 
-**Stale volume**: Database provisioning runs **once** on first volume creation. If DB config changes after the volume exists, reset with `bash init.sh --reset-db`.
+**Stale volume**: Database provisioning runs **once** on first volume creation. If DB config changes after the volume exists, reset with `bash init.sh --reset-db`. `--reset-db` removes a container-owned `db_data/` via a throwaway root container, so no manual `sudo rm` is needed on WSL2/Linux bind mounts.
 
 ---
 
