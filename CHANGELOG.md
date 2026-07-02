@@ -27,6 +27,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   (`control="api_key_rate_limit"`) metric sample; logs carry only the opaque key
   id, never the raw key. Hardened production env example sets
   `API_KEY_STRICT_RATE_LIMIT=true` explicitly for auditability.
+- **Release images now install a hash-locked dependency set (11.8).** Non-development
+  Docker builds no longer resolve the loose lower-bound ranges in
+  `requirements_base.txt` / `requirements_prod.txt` at build time. They install
+  from the new fully pinned, `sha256`-hashed `auth_user_service/requirements_prod.lock`
+  via `pip install --require-hashes`, so rebuilding the same source cannot silently
+  pull a different dependency graph and the published SBOM matches what shipped. All
+  packages (including the internal `auth-sdk-m8`) resolve from public PyPI only. The
+  development build path is unchanged. Regeneration and audit steps are documented in
+  the README; the lock, the Dockerfile `--require-hashes` install, and the
+  SBOM-reflects-locked-env invariant are enforced by
+  `tests/security/test_dependency_lock.py`.
 
 ---
 

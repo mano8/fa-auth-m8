@@ -9,13 +9,21 @@ ENV PIP_ROOT_USER_ACTION=ignore
 COPY auth_user_service/requirements_base.txt .
 COPY auth_user_service/requirements_dev.txt .
 COPY auth_user_service/requirements_prod.txt .
+COPY auth_user_service/requirements_prod.lock .
 
+# Release images install from a hash-locked, fully pinned dependency set so a
+# rebuild of the same source cannot silently resolve a different graph
+# (finding 11.8). `--require-hashes` is enforced for every non-development
+# build. Regenerate the lock with:
+#   pip-compile --generate-hashes --no-emit-index-url \
+#     --output-file=requirements_prod.lock requirements_prod.txt
 RUN pip install --upgrade "pip==26.1.1" && \
-    pip install --prefix=/install --no-cache-dir -r requirements_base.txt && \
     if [ "$ENVIRONMENT" = "development" ]; then \
+        pip install --prefix=/install --no-cache-dir -r requirements_base.txt && \
         pip install --prefix=/install --no-cache-dir -r requirements_dev.txt ; \
     else \
-        pip install --prefix=/install --no-cache-dir -r requirements_prod.txt ; \
+        pip install --prefix=/install --no-cache-dir \
+            --require-hashes -r requirements_prod.lock ; \
     fi
 
 
