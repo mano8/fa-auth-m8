@@ -25,6 +25,10 @@ BACKEND_CORS_ORIGINS=http://localhost,http://localhost:5173,http://localhost:900
 AUTH_SERVICE_ROLE=consumer
 # Must match the API_PREFIX of auth_user_service (default: /user)
 AUTH_PREFIX=/user
+# Route prefixes for sibling services this consumer links to (optional — only
+# needed when this app proxies/links to the gform and prompts services).
+GFORM_PREFIX=gform
+PROMPTS_PREFIX=prompts
 
 # ── Database ──────────────────────────────────────────────────────────────────
 SELECTED_DB=Mysql
@@ -33,6 +37,11 @@ DB_PORT=3306
 DB_DATABASE=api_db
 DB_USER=changethis
 DB_PASSWORD=changethis
+
+# ── App secret ────────────────────────────────────────────────────────────────
+# Starlette session/CSRF signing key for this consumer app. Required (no default);
+# kept distinct from the token signing keys below.
+SECRET_KEY=changethis
 
 # ── Token verification ────────────────────────────────────────────────────────
 # HS256 mode: share the same ACCESS_SECRET_KEY with auth_user_service
@@ -61,6 +70,10 @@ REFRESH_TOKEN_EXPIRE_MINUTES=3600
 # Must match auth_user_service TOKEN_ISSUER / TOKEN_AUDIENCE exactly.
 # When set, tokens with a different iss or aud claim are rejected.
 # In production with STRICT_PRODUCTION_MODE=true these become required (startup fatal).
+# auth-sdk-m8 >= 1.0.0 turns TOKEN_STRICT_VALIDATION on by default (iss/aud enforced,
+# algorithm pinned). For local dev without a cross-service boundary, opt out with
+# false — match auth_user_service exactly.
+TOKEN_STRICT_VALIDATION=false
 #TOKEN_ISSUER=https://auth.example.com
 #TOKEN_AUDIENCE=https://api.example.com
 
@@ -69,6 +82,17 @@ REFRESH_TOKEN_EXPIRE_MINUTES=3600
 # The auth service exposes this endpoint on its Docker-internal network only.
 INTROSPECTION_URL=http://auth_user_service:8000/user/private/v1/jti-status
 PRIVATE_API_SECRET=changethis
+
+# ── Event signing (auth event stream) ─────────────────────────────────────────
+# auth-sdk-m8 >= 1.0.0 secure-by-default: the AuthEventStreamClient verifies each
+# SSE payload's HMAC signature. Must match auth_user_service EVENT_SIGNING_KEY.
+# Set EVENT_SIGNING_ENABLED=false to opt out (also disables the signed stream).
+EVENT_SIGNING_ENABLED=true
+EVENT_SIGNING_KEY=changethis
+# Local revocation cache TTL for the event-stream accelerator. 0 = disabled (the
+# consumer always hits INTROSPECTION_URL); > 0 caches jti-status for N seconds
+# and flushes on a stream gap. Only relevant in stateful mode.
+REVOCATION_CACHE_TTL_SECONDS=0
 
 # ── Observability ─────────────────────────────────────────────────────────────
 # Master switch — false = zero overhead, /metrics endpoint not registered
