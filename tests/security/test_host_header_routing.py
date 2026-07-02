@@ -59,10 +59,15 @@ _BASE: dict = {
 }
 
 # Production-safe CORS (no localhost) for tests that set ENVIRONMENT=production.
+# Also includes a minimal consumer so the 11.2a production-required registry
+# validator does not fail when constructing Settings in production mode.
 _PROD_CORS = {
     "BACKEND_CORS_ORIGINS": "https://auth.example.com",
     "FRONTEND_HOST": "https://auth.example.com",
     "BACKEND_HOST": "https://api.example.com",
+    "PRIVATE_API_CONSUMERS": {
+        "test-svc": {"secret": "plain-test-secret", "scopes": ["introspection"]}
+    },
 }
 
 
@@ -163,19 +168,38 @@ def test_production_testserver_not_auto_injected() -> None:
 # ── ALLOWED_HOSTS under STRICT_PRODUCTION_MODE ────────────────────────────────
 
 
+_STRICT_CONSUMERS = {
+    "PRIVATE_API_CONSUMERS": {
+        "test-svc": {"secret": "plain-test-secret", "scopes": ["introspection"]}
+    }
+}
+
+
 def test_strict_mode_listed_host_accepted() -> None:
     """A listed host passes under STRICT_PRODUCTION_MODE."""
-    client = _client(STRICT_PRODUCTION_MODE=True, ALLOWED_HOSTS=["auth.example.com"])
+    client = _client(
+        STRICT_PRODUCTION_MODE=True,
+        ALLOWED_HOSTS=["auth.example.com"],
+        **_STRICT_CONSUMERS,
+    )
     assert client.get("/ping", headers={"Host": "auth.example.com"}).status_code == 200
 
 
 def test_strict_mode_unlisted_host_rejected() -> None:
     """Unlisted hosts are rejected under STRICT_PRODUCTION_MODE."""
-    client = _client(STRICT_PRODUCTION_MODE=True, ALLOWED_HOSTS=["auth.example.com"])
+    client = _client(
+        STRICT_PRODUCTION_MODE=True,
+        ALLOWED_HOSTS=["auth.example.com"],
+        **_STRICT_CONSUMERS,
+    )
     assert client.get("/ping", headers={"Host": "evil.example.com"}).status_code == 400
 
 
 def test_strict_mode_testserver_not_auto_injected() -> None:
     """Under STRICT_PRODUCTION_MODE, testserver is NOT auto-added → 400."""
-    client = _client(STRICT_PRODUCTION_MODE=True, ALLOWED_HOSTS=["auth.example.com"])
+    client = _client(
+        STRICT_PRODUCTION_MODE=True,
+        ALLOWED_HOSTS=["auth.example.com"],
+        **_STRICT_CONSUMERS,
+    )
     assert client.get("/ping", headers={"Host": "testserver"}).status_code == 400

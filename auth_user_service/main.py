@@ -141,10 +141,10 @@ def _startup_checks() -> None:
 
     check_config_health(settings, _logger)
 
-    # The legacy single-PRIVATE_API_SECRET gate is retired: the private API now
-    # authenticates only per-consumer credentials / short-TTL service tokens. With
-    # no PRIVATE_API_CONSUMERS configured every /private/* call fails closed (401)
-    # and the service-token exchange is disabled — flag the misconfiguration loudly.
+    # Development-only warning: production and strict mode already fail closed at
+    # Settings construction (_require_consumers_in_prod_strict). This path is only
+    # reached for non-production, non-strict deployments where an empty registry is
+    # legal but operationally surprising — flag it loudly so the operator notices.
     if not settings.PRIVATE_API_CONSUMERS:
         _logger.critical(  # nosec B106
             "STARTUP: PRIVATE_API_CONSUMERS is empty — the legacy "
