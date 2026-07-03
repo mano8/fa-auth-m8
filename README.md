@@ -348,7 +348,7 @@ auth_user_service:
 
 # With this:
 auth_user_service:
-  image: tepochtli/fa-auth-m8:1.0.0   # pin to a specific release for production
+  image: tepochtli/fa-auth-m8:1.1.0   # pin to a specific release for production
 ```
 
 All env files, volumes, labels, and `depends_on` entries remain unchanged —

@@ -13,6 +13,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **CT-1 CONTRACT_VERSION 0.9→1.0.** `auth_user_service/core/service_meta.py` and the
+  two example consumers (`fastapi_full`, `fastapi_minimal`) now declare
+  `CONTRACT_VERSION = "1.0"`. The CONTRACT_RANGE (`>=1.0.0 <2.0.0`) and the service
+  version are unchanged. Aligns the declared contract to the 1.x stable line that
+  retired the legacy single-`PRIVATE_API_SECRET` private-API gate.
+- **Live-test harness aligned to security-tests-m8 0.3.0.** All per-stack
+  `test.env(.example)` files and `shared_live_tests` now carry `LIVE_TEST_INTERNAL_AUTH_BASE`
+  (F06 fix — targets the internal service-to-service entrypoint for per-consumer
+  legacy-shape probes on hardened stacks that block `/private` at the public edge) and
+  document `LIVE_TEST_HEALTH_DETAIL_CREDENTIAL` (9.3 / Design-B opt-in for deep
+  `/health` detail; ungated body is always the constant liveness response).
+
 ---
 
 ## [1.1.0] — 2026-07-02 · Security-remediation hardening + toolchain/env alignment

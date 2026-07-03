@@ -136,7 +136,7 @@ services:
     restart: unless-stopped
 
   auth_user_service:
-    image: tepochtli/fa-auth-m8:1.0.0
+    image: tepochtli/fa-auth-m8:1.1.0
     security_opt:
       - no-new-privileges:true
     cap_drop:
