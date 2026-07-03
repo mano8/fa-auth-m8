@@ -11,6 +11,7 @@ HARDENED_STACK_ROOT = EXAMPLE_ROOT.parent / "hardened_m8"
 
 configure_from_env(
     auth_base_url="http://localhost:9000/user",
+    internal_auth_base_url="http://localhost:9000/user",
     service_base_url="http://localhost:9000/fastapi",
     service_base_urls={"fastapi": "http://localhost:9000/fastapi"},
     default_service="fastapi",
