@@ -24,7 +24,7 @@ class Settings(ConsumerServiceSettings):
 
     SERVICE_VERSION: str = __version__
     CONTRACT_VERSION: str = "1.0"
-    CONTRACT_RANGE: str = ">=1.0.0 <2.0.0"
+    CONTRACT_RANGE: str = ">=1.1.0 <2.0.0"
 
     model_config = SettingsConfigDict(
         env_file=find_dotenv(Path(__file__).resolve().parent.parent),

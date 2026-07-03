@@ -23,7 +23,7 @@ CONTRACT_VERSION = "1.0"
 #: gate in favour of per-consumer scoped credentials / short-TTL service tokens
 #: (on top of the 0.9.x security-remediation baseline). Consumers should pin to
 #: the 1.x line.
-CONTRACT_RANGE = ">=1.0.0 <2.0.0"
+CONTRACT_RANGE = ">=1.1.0 <2.0.0"
 
 
 def build_service_meta() -> ServiceMeta:
