@@ -8,18 +8,23 @@ older generation is treated as revoked (3.5.1 ``REV-GEN-01``).
 
 This module owns the framework-neutral primitives (start value, ceiling,
 fail-closed increment, staleness predicate) plus the DB-facing
-:class:`GenerationController` that reads/writes the generation and the durable
-deletion tombstone. The route-owned role-change transaction, the transactional
-outbox, and the v2 ``/private/v1/jti-status`` decision endpoint are separate plan
-items that *compose* these primitives; nothing here acquires the superuser-set
-lock, drains an outbox, or changes the introspection wire contract.
+:class:`GenerationController` that reads/writes the generation, the durable
+deletion tombstone, and the DB-authoritative subject-bound v2
+``/private/v1/jti-status`` decision (3.5.2). The route composes that decision with
+the Redis-blacklist accelerator and the ``503``-on-DB-unavailable rule and owns
+the wire contract; the route-owned role-change transaction/lock and the
+transactional outbox are separate plan items that *compose* these primitives.
+Nothing here acquires the superuser-set lock or drains an outbox.
 """
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Final, Optional
 
 from sqlmodel import Session, col, select
+
+from auth_sdk_m8.authorization import privilege_claims_are_consistent
 
 from auth_user_service.core.config import settings
 from auth_user_service.db_models.sessions import ClientSession
@@ -90,6 +95,25 @@ def _as_aware_utc(value: datetime) -> datetime:
     return value
 
 
+@dataclass(frozen=True)
+class JtiStatusDecision:
+    """Outcome of the DB-authoritative subject-bound v2 JTI-status decision.
+
+    A generic inactive result carries only ``active=False``; an active result
+    additionally carries the ``user_id`` the caller asserted and the owner's
+    current ``auth_generation`` so the consumer can tag its cache entry (3.5.2).
+    """
+
+    active: bool
+    user_id: Optional[uuid.UUID] = None
+    auth_generation: Optional[int] = None
+
+
+#: Shared singleton returned for every inactive cause, so the endpoint answers
+#: one indistinguishable generic result (no enumeration oracle, 3.5.2).
+_INACTIVE_JTI_STATUS: Final[JtiStatusDecision] = JtiStatusDecision(active=False)
+
+
 class GenerationController:
     """DB-facing operations over the authorization generation and tombstones.
 
@@ -158,6 +182,51 @@ class GenerationController:
             return True
         return is_session_generation_stale(
             client_session.auth_generation, owner.auth_generation
+        )
+
+    @staticmethod
+    def decide_jti_status(
+        session: Session, jti: str, expected_user_id: uuid.UUID
+    ) -> JtiStatusDecision:
+        """DB-authoritative subject-bound v2 JTI-status decision (3.5.2).
+
+        Evaluates the ordered algorithm and returns one generic inactive result
+        for every failing cause — deletion tombstone, missing/revoked session,
+        subject mismatch, missing/inactive/claim-inconsistent owner, and stale
+        generation. Only a current session owned by *expected_user_id* behind a
+        canonical, active, current-generation owner is active; that result
+        carries the owner id and current generation for cache tagging. The Redis
+        blacklist step and the ``503``-on-DB-unavailable rule are the route's,
+        composed around this database-authoritative decision — the generation
+        decision itself never falls open.
+        """
+        # 1. Durable deletion tombstone → every token for the subject is revoked.
+        if GenerationController.subject_is_tombstoned(session, expected_user_id):
+            return _INACTIVE_JTI_STATUS
+        # 2. Session row missing or explicitly revoked.
+        client_session = session.exec(
+            select(ClientSession).where(col(ClientSession.jwt_jti) == jti)
+        ).first()
+        if client_session is None or client_session.revoked:
+            return _INACTIVE_JTI_STATUS
+        # 3. Session owner differs from the asserted subject.
+        if client_session.user_id != expected_user_id:
+            return _INACTIVE_JTI_STATUS
+        # 4. Owner missing, inactive, or holding a claim-inconsistent pair.
+        owner = session.get(User, client_session.user_id)
+        if owner is None or not owner.is_active:
+            return _INACTIVE_JTI_STATUS
+        if not privilege_claims_are_consistent(owner.role, owner.is_superuser):
+            return _INACTIVE_JTI_STATUS
+        # 5. Session generation stale relative to the owner's current generation.
+        if is_session_generation_stale(
+            client_session.auth_generation, owner.auth_generation
+        ):
+            return _INACTIVE_JTI_STATUS
+        return JtiStatusDecision(
+            active=True,
+            user_id=owner.id,
+            auth_generation=owner.auth_generation,
         )
 
     @staticmethod

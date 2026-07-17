@@ -12,13 +12,17 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
+
 from auth_user_service.db_models.sessions import ClientSession
 from auth_user_service.db_models.tombstones import AuthTombstone
+from auth_user_service.db_models.users import User
 from auth_user_service.services.generation import (
     GENERATION_MAX,
     GENERATION_START,
     GenerationController,
     GenerationOverflowError,
+    JtiStatusDecision,
     is_session_generation_stale,
     next_generation,
     tombstone_retention_seconds,
@@ -286,3 +290,175 @@ class TestCleanupExpiredTombstones:
     def test_defaults_now_to_current_time(self, db_session):
         # No rows → nothing deleted, and the default ``now`` branch is exercised.
         assert GenerationController.cleanup_expired_tombstones(db_session) == 0
+
+
+class _StubExec:
+    """Minimal ``session.exec(...)`` result exposing ``.first()``."""
+
+    def __init__(self, row):
+        self._row = row
+
+    def first(self):
+        return self._row
+
+
+class _StubSession:
+    """In-memory ``Session`` stand-in for decision branches a real DB can't reach.
+
+    The ``ck_user_superuser_role_consistency`` CHECK constraint forbids persisting
+    a claim-inconsistent owner, and the session→user foreign key forbids a session
+    whose owner row is absent, so those two ordered branches (3.5.2) are exercised
+    against hand-built ORM objects instead.
+    """
+
+    def __init__(self, *, session_row, owner):
+        self._session_row = session_row
+        self._owner = owner
+
+    def get(self, model, _key):
+        if model is User:
+            return self._owner
+        return None  # no tombstone
+
+    def exec(self, *_args, **_kwargs):
+        return _StubExec(self._session_row)
+
+
+class TestDecideJtiStatus:
+    """The DB-authoritative subject-bound v2 decision (3.5.2, ``JTI-DECISION-01``)."""
+
+    def test_active_current_session_canonical_owner(self, db_session, sample_user):
+        cs = _stamp_session(
+            db_session,
+            sample_user,
+            jti=str(uuid.uuid4()),
+            generation=sample_user.auth_generation,
+        )
+        decision = GenerationController.decide_jti_status(
+            db_session, cs.jwt_jti, sample_user.id
+        )
+        assert decision == JtiStatusDecision(
+            active=True,
+            user_id=sample_user.id,
+            auth_generation=sample_user.auth_generation,
+        )
+
+    def test_tombstoned_subject_is_inactive(self, db_session, sample_user):
+        cs = _stamp_session(
+            db_session,
+            sample_user,
+            jti=str(uuid.uuid4()),
+            generation=sample_user.auth_generation,
+        )
+        GenerationController.write_deletion_tombstone(
+            session=db_session, user=sample_user
+        )
+        db_session.commit()
+        decision = GenerationController.decide_jti_status(
+            db_session, cs.jwt_jti, sample_user.id
+        )
+        assert decision.active is False
+
+    def test_missing_session_is_inactive(self, db_session, sample_user):
+        decision = GenerationController.decide_jti_status(
+            db_session, "no-such-jti", sample_user.id
+        )
+        assert decision.active is False
+
+    def test_revoked_session_is_inactive(self, db_session, sample_user):
+        cs = _stamp_session(
+            db_session,
+            sample_user,
+            jti=str(uuid.uuid4()),
+            generation=sample_user.auth_generation,
+        )
+        cs.revoked = True
+        db_session.add(cs)
+        db_session.commit()
+        decision = GenerationController.decide_jti_status(
+            db_session, cs.jwt_jti, sample_user.id
+        )
+        assert decision.active is False
+
+    def test_owner_mismatch_is_inactive(self, db_session, sample_user, superuser):
+        cs = _stamp_session(
+            db_session,
+            sample_user,
+            jti=str(uuid.uuid4()),
+            generation=sample_user.auth_generation,
+        )
+        # Session belongs to sample_user; asserting a different subject fails.
+        decision = GenerationController.decide_jti_status(
+            db_session, cs.jwt_jti, superuser.id
+        )
+        assert decision.active is False
+
+    def test_inactive_owner_is_inactive(self, db_session, inactive_user):
+        cs = _stamp_session(
+            db_session,
+            inactive_user,
+            jti=str(uuid.uuid4()),
+            generation=inactive_user.auth_generation,
+        )
+        decision = GenerationController.decide_jti_status(
+            db_session, cs.jwt_jti, inactive_user.id
+        )
+        assert decision.active is False
+
+    def test_stale_generation_is_inactive(self, db_session, sample_user):
+        cs = _stamp_session(
+            db_session,
+            sample_user,
+            jti=str(uuid.uuid4()),
+            generation=sample_user.auth_generation,
+        )
+        sample_user.auth_generation += 1
+        db_session.add(sample_user)
+        db_session.commit()
+        decision = GenerationController.decide_jti_status(
+            db_session, cs.jwt_jti, sample_user.id
+        )
+        assert decision.active is False
+
+    def test_missing_owner_is_inactive(self):
+        # A session whose owner row is absent (FK-impossible in a real DB) is
+        # revoked. Exercised with an in-memory session pointing at a missing owner.
+        subject = uuid.uuid4()
+        session_row = ClientSession(
+            id=str(uuid.uuid4()),
+            user_id=subject,
+            provider=AuthProviderType.PASSWORD,
+            jwt_jti="j" * 16,
+            refresh_token_hash="s" * 64,
+            revoked=False,
+            auth_generation=1,
+        )
+        stub = _StubSession(session_row=session_row, owner=None)
+        decision = GenerationController.decide_jti_status(stub, "j" * 16, subject)
+        assert decision.active is False
+
+    def test_claim_inconsistent_owner_is_inactive(self):
+        # is_superuser=True with role=USER is a forbidden pair the DB CHECK would
+        # reject, so build it in memory (table-model construction skips validation).
+        subject = uuid.uuid4()
+        owner = User(
+            id=subject,
+            email="inconsistent@example.com",
+            provider=AuthProviderType.PASSWORD,
+            is_active=True,
+            is_superuser=True,
+            role=RoleType.USER,
+            auth_generation=1,
+        )
+        session_row = ClientSession(
+            id=str(uuid.uuid4()),
+            user_id=subject,
+            provider=AuthProviderType.PASSWORD,
+            jwt_jti="j" * 16,
+            refresh_token_hash="s" * 64,
+            revoked=False,
+            auth_generation=1,
+        )
+        stub = _StubSession(session_row=session_row, owner=owner)
+        decision = GenerationController.decide_jti_status(stub, "j" * 16, subject)
+        assert decision.active is False

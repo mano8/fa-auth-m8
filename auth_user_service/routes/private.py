@@ -8,12 +8,20 @@ short-TTL service token, authorized against ``PRIVATE_API_CONSUMERS``. The legac
 single shared ``PRIVATE_API_SECRET`` gate has been retired.
 """
 
-from typing import Any, Optional
+import uuid
+from typing import Any, Optional, Union
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr, Field, field_validator
+from sqlalchemy.exc import SQLAlchemyError
+from sqlmodel import Session
 
+from auth_sdk_m8.schemas.jti_status import (
+    JTI_STATUS_SCHEMA_VERSION,
+    JtiStatusActiveResponse,
+    JtiStatusInactiveResponse,
+)
 from auth_sdk_m8.security.consumer_auth import (
     INTERNAL_CLIENT_HEADER,
     ConsumerAuthenticationError,
@@ -32,6 +40,7 @@ from auth_user_service.core.deps import (
 from auth_user_service.core.security import SecurityHelper
 from auth_user_service.db_models.users import User, UserPublic
 from auth_user_service.events import get_hub
+from auth_user_service.services.generation import GenerationController
 from auth_user_service.services.service_token import issue_service_token
 from auth_user_service.services.users import UserController
 
@@ -64,13 +73,34 @@ class ServiceTokenResponse(BaseModel):
 
 
 class JtiStatusRequest(BaseModel):
-    """Request body for the inter-service JTI status check."""
+    """Request body for the inter-service JTI status check.
+
+    Two shapes are accepted during the contract-2.0 rollout, distinguished by
+    whether the caller asserts the token subject:
+
+    * **v1** — ``{jti}`` only, from a not-yet-upgraded consumer.
+    * **v2** — additionally ``expected_user_id`` (the ``sub`` the caller already
+      holds, making the request subject-bound) and the ``schema_version`` it
+      speaks (3.5.2).
+    """
 
     jti: str = Field(min_length=1)
+    expected_user_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description="v2 only: the token subject the caller asserts it holds.",
+    )
+    schema_version: Optional[str] = Field(
+        default=None,
+        description="v2 only: the JTI-status contract version the caller speaks.",
+    )
 
 
 class JtiStatusResponse(BaseModel):
-    """Response for the inter-service JTI status check."""
+    """Legacy v1 response for the inter-service JTI status check.
+
+    The bare ``{active}`` shape returned to a v1 (non-subject-bound) request; it
+    carries no ``auth_generation`` and never discloses a ``user_id``.
+    """
 
     active: bool
 
@@ -128,34 +158,125 @@ def create_user(user_in: PrivateUserCreate, session: SessionDep) -> Any:
     return user
 
 
-@router.post(
-    "/v1/jti-status",
-    response_model=JtiStatusResponse,
-    include_in_schema=False,
-    dependencies=[Depends(require_private_scope(ConsumerScope.INTROSPECTION))],
-)
-async def check_jti_status(
-    body: JtiStatusRequest,
-    redis=Depends(get_redis_client),
-) -> JtiStatusResponse:
-    """Check whether a JTI has been blacklisted (inter-service use only).
+#: Bounded, secret-free detail for the fail-closed introspection 503.
+_INTROSPECTION_UNAVAILABLE = "Introspection temporarily unavailable"
+
+
+def _blacklist_hit(redis: Any, jti: str) -> bool:
+    """Whether the Redis access-token blacklist contains *jti* (accelerator)."""
+    from auth_sdk_m8.security import AccessTokenBlacklist  # noqa: PLC0415
+
+    return AccessTokenBlacklist(redis).is_revoked(jti)
+
+
+def _legacy_jti_status(jti: str, redis: Any) -> JtiStatusResponse:
+    """The pre-2.0 v1 decision: Redis blacklist only, honouring the failure mode.
 
     Only meaningful when TOKEN_MODE=stateful. In hybrid/stateless modes no
-    access token blacklist exists — returns active=True immediately.
-    When Redis is unavailable the response honours ACCESS_REVOCATION_FAILURE_MODE:
-    fail_closed → active=False (token treated as revoked, consumer returns 503);
-    fail_open → active=True (token passes, legacy behaviour).
-    Consumer services call this instead of accessing auth Redis directly.
+    access-token blacklist exists, so the token is active. When Redis is
+    unavailable the answer honours ``ACCESS_REVOCATION_FAILURE_MODE``:
+    ``fail_closed`` → ``active=False`` (consumer returns 503), ``fail_open`` →
+    ``active=True`` (legacy behaviour).
     """
     if not settings.is_stateful:
         return JtiStatusResponse(active=True)
     if redis is None:
         mode = settings.effective_failure_mode("access_revocation")
         return JtiStatusResponse(active=(mode != "fail_closed"))
-    from auth_sdk_m8.security import AccessTokenBlacklist  # noqa: PLC0415
+    return JtiStatusResponse(active=not _blacklist_hit(redis, jti))
 
-    return JtiStatusResponse(
-        active=not AccessTokenBlacklist(redis).is_revoked(body.jti)
+
+def _expiry_bounded_status(
+    session: Session, subject: uuid.UUID
+) -> Union[JtiStatusActiveResponse, JtiStatusInactiveResponse]:
+    """Hybrid/stateless v2 answer: active until natural token expiry (3.6).
+
+    Access-token revocation is not tracked in these modes, so a legitimately
+    issued token stays active. The owner's current generation is echoed for
+    cache tagging; a subject with no account cannot be vouched for and returns
+    the generic inactive shape. An unreachable database is a ``503``.
+    """
+    try:
+        owner = session.get(User, subject)
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_INTROSPECTION_UNAVAILABLE,
+        ) from exc
+    if owner is None:
+        return JtiStatusInactiveResponse()
+    return JtiStatusActiveResponse(
+        user_id=str(owner.id), auth_generation=owner.auth_generation
+    )
+
+
+@router.post(
+    "/v1/jti-status",
+    response_model=None,
+    include_in_schema=False,
+    dependencies=[Depends(require_private_scope(ConsumerScope.INTROSPECTION))],
+)
+async def check_jti_status(
+    body: JtiStatusRequest,
+    session: SessionDep,
+    redis=Depends(get_redis_client),
+) -> Any:
+    """Introspect an access-token JTI for consumer services (inter-service only).
+
+    Two request shapes are accepted during the contract-2.0 rollout, distinguished
+    by whether the caller asserts the token subject:
+
+    * **v1** — ``{jti}`` only. Returns the legacy bare ``{active}`` body,
+      consulting only the Redis access-token blacklist; no generation is
+      disclosed.
+    * **v2** — ``{jti, expected_user_id, schema_version: "2"}`` (3.5.2). In
+      stateful mode the answer is the database-authoritative, subject-bound
+      decision: tombstone → missing/revoked session → subject mismatch →
+      missing/inactive/claim-inconsistent owner → stale generation → Redis
+      blacklist, evaluated in order. Only a current session owned by the asserted
+      subject behind a canonical, active, current-generation owner is ``active``
+      — that response carries ``user_id`` and ``auth_generation`` for cache
+      tagging. **Every** inactive cause returns the same generic ``{active:
+      false}`` shape, so the endpoint is never an account-state or JTI-validity
+      enumeration oracle. An unreachable authoritative database is a ``503`` — the
+      generation decision never falls open (the legacy
+      ``ACCESS_REVOCATION_FAILURE_MODE=fail_open`` escape applies only to the
+      pre-2.0 blacklist accelerator). In hybrid/stateless modes an already-issued
+      access token is expiry-bounded (3.6), so it stays active until expiry.
+
+    Consumer services call this instead of accessing auth Redis directly.
+    """
+    if body.expected_user_id is None:
+        return _legacy_jti_status(body.jti, redis)
+
+    # v2 subject-bound. A request speaking an unsupported contract version is
+    # refused with the same generic inactive shape (fail closed, no disclosure).
+    if body.schema_version != JTI_STATUS_SCHEMA_VERSION:
+        return JtiStatusInactiveResponse()
+
+    if not settings.is_stateful:
+        return _expiry_bounded_status(session, body.expected_user_id)
+
+    try:
+        decision = GenerationController.decide_jti_status(
+            session, body.jti, body.expected_user_id
+        )
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_INTROSPECTION_UNAVAILABLE,
+        ) from exc
+
+    if not decision.active:
+        return JtiStatusInactiveResponse()
+    # Redis blacklist is an accelerator: a hit revokes, but Redis being down
+    # falls back to the authoritative DB decision that already vouched for the
+    # session (3.5.4) — never a fail-open of the generation decision.
+    if redis is not None and _blacklist_hit(redis, body.jti):
+        return JtiStatusInactiveResponse()
+    return JtiStatusActiveResponse(
+        user_id=str(decision.user_id),
+        auth_generation=decision.auth_generation,
     )
 
 

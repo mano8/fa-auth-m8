@@ -31,6 +31,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   role-change transaction/lock, the transactional outbox, and the v2
   `/private/v1/jti-status` decision endpoint compose these primitives in later
   changes; the token wire shape is unchanged (3.5.1).
+- **Subject-bound v2 `/private/v1/jti-status` introspection.** The private
+  endpoint now answers a subject-bound v2 request
+  (`{jti, expected_user_id, schema_version: "2"}`) with the database-authoritative
+  decision (`GenerationController.decide_jti_status`, 3.5.2): in `stateful` mode it
+  evaluates, in order, the deletion tombstone, a missing/revoked session, a subject
+  mismatch, a missing/inactive/claim-inconsistent owner, a stale session
+  generation, and finally the Redis blacklist. Only a current session owned by the
+  asserted subject behind a canonical, active, current-generation owner is
+  `{active: true, user_id, auth_generation, schema_version}`; **every** inactive
+  cause returns one generic `{active: false, schema_version}` (no account-state or
+  JTI-validity enumeration oracle). An unreachable authoritative database returns
+  `503` — the generation decision never falls open, so
+  `ACCESS_REVOCATION_FAILURE_MODE=fail_open` is not honoured for it; a Redis outage
+  falls back to the DB result. Hybrid/stateless keep the expiry-bounded contract
+  (3.6). A legacy `{jti}`-only request is unchanged and still receives the bare v1
+  `{active}` response, so consumers upgrade at their own pace (`JTI-DECISION-01`).
 
 ### Changed
 

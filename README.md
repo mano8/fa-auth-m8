@@ -819,7 +819,7 @@ Endpoints under `/user/private/` are for inter-service calls only:
 | Method | Path | Description |
 | ------ | ---- | ----------- |
 | POST | `/private/users/` | Create a user account (called by other microservices) |
-| POST | `/private/v1/jti-status` | Check whether a JTI is revoked (`stateful` mode only; fails-open when Redis unavailable) |
+| POST | `/private/v1/jti-status` | Introspect an access-token JTI. A subject-bound **v2** request (`{jti, expected_user_id, schema_version: "2"}`) gets the database-authoritative revocation decision in `stateful` mode — active carries `{user_id, auth_generation}`, every inactive cause is one generic `{active: false}`, and an unreachable database is `503` (never fail-open). A legacy `{jti}`-only request keeps the v1 `{active}` behaviour. |
 | GET | `/private/v1/events/stream` | SSE bridge — pushes `session-revoked` / `user-deleted` events to consumers (best-effort accelerator; `jti-status` remains the revocation authority) |
 | POST | `/private/v1/service-token` | Exchange bootstrap credential for a short-TTL service token (scoped to granted scopes) |
 
@@ -997,9 +997,13 @@ PRIVATE_API_SECRET=<this consumer's secret, matching its PRIVATE_API_CONSUMERS e
 `ACCESS_REVOCATION_FAILURE_MODE` from the consumer's settings. The **default is `fail_closed`**
 — any outage returns HTTP 503 rather than accepting a potentially-revoked token. Set
 `ACCESS_REVOCATION_FAILURE_MODE=fail_open` in `api.env` to restore availability-first behaviour,
-or `AUTH_STRICT_MODE=true` to force all failure-mode controls closed. The issuer's
-`/private/v1/jti-status` endpoint mirrors the same setting: Redis-unavailable returns
-`active=false` when `fail_closed` is effective.
+or `AUTH_STRICT_MODE=true` to force all failure-mode controls closed. For a legacy v1
+(`{jti}`-only) request the issuer's `/private/v1/jti-status` endpoint mirrors the same
+setting: Redis-unavailable returns `active=false` when `fail_closed` is effective. The
+subject-bound **v2** decision is database-authoritative instead — the Redis blacklist is only
+an accelerator, so a Redis outage falls back to the DB result, and only an unreachable
+authoritative database returns `503`; `ACCESS_REVOCATION_FAILURE_MODE=fail_open` is **not**
+honoured for that generation decision.
 
 ### Issuer / audience enforcement (secure-by-default)
 
