@@ -3,6 +3,7 @@ Users Controller
 """
 
 import uuid
+from dataclasses import dataclass
 from typing import Any, Optional
 from sqlmodel import Session, func, select
 from auth_user_service.core.security import SecurityHelper
@@ -10,10 +11,29 @@ from auth_user_service.db_models.users import User, UserCreate, UserUpdate
 from auth_user_service.services.generation import GenerationController
 from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 
-# Explicit allowlist for admin user updates — includes role, never includes is_superuser.
+# Explicit allowlist for admin user updates — includes role, never includes
+# is_superuser (server-derived) nor is_active (an authorization-state transition
+# owned exclusively by the route-owned transaction in ``services.role_admin``,
+# which must revoke sessions/keys under the superuser-set lock — never a bare
+# field write here).
 _ADMIN_UPDATE_FIELDS: frozenset[str] = frozenset(
     {"email", "full_name", "avatar", "role", "oauth_user_id", "hashed_password"}
 )
+
+
+@dataclass(frozen=True)
+class UserUpdateOutcome:
+    """What an in-memory :meth:`UserController.apply_user_update` changed.
+
+    ``role_changed`` is the authorization-state signal the caller uses to decide
+    whether to bump the generation and revoke sessions; ``previous_role`` is
+    captured before the mutation so the route-owned transaction can evaluate the
+    role-administration matrix and the last-superuser predicate.
+    """
+
+    previous_role: RoleType
+    new_role: RoleType
+    role_changed: bool
 
 
 def _derive_is_superuser(role: RoleType) -> bool:
@@ -79,23 +99,20 @@ class UserController:
         return db_obj
 
     @staticmethod
-    def update_user(*, session: Session, db_user: User, user_in: UserUpdate) -> Any:
-        """
-        Update an existing user in the database.
+    def apply_user_update(*, db_user: User, user_in: UserUpdate) -> UserUpdateOutcome:
+        """Apply allowlisted update fields to *db_user* in memory only.
 
-        Args:
-            session (Session): The database session to use for the update.
-            db_user (User): The existing user object to be updated.
-            user_in (UserUpdate): The new data for the user.
+        Transaction-neutral internal (3.5): it mutates the tracked ORM object
+        and re-derives the server-owned ``is_superuser`` flag, but it does **not**
+        commit, bump the generation, or revoke anything. The route-owned
+        transaction (``services.role_admin``) composes it so the flag derivation,
+        generation bump, session/API-key revocation, and commit all happen once
+        under the superuser-set lock; the convenience wrapper
+        :meth:`update_user` composes it for ordinary non-authorization edits.
 
-        Returns:
-            Any: The updated user object.
-
-        Notes:
-            - If the `user_in` contains a password, it will be hashed
-            and stored in the `hashed_password` field.
-            - The function commits the changes to the database
-            and refreshes the `db_user` object.
+        ``is_active`` is intentionally not in the allowlist — activation
+        transitions are authorization-state changes owned by the route-owned
+        transaction, never a bare field write here.
         """
         previous_role = db_user.role
         user_data = user_in.model_dump(exclude_unset=True)
@@ -111,12 +128,35 @@ class UserController:
         # the allowlist loop so it can never be set from a client-supplied field.
         if "role" in user_data:
             db_user.is_superuser = _derive_is_superuser(db_user.role)
-        # A real role change is an authorization-state transition: bump the
-        # generation transactionally so every session issued under the prior role
-        # is detectably stale (3.5.1). A same-role update is not a transition here
-        # (the full repair-path handling of a mismatched-flag row is a later plan
-        # item); the flag is already re-derived above regardless.
-        if db_user.role != previous_role:
+        return UserUpdateOutcome(
+            previous_role=previous_role,
+            new_role=db_user.role,
+            role_changed=db_user.role != previous_role,
+        )
+
+    @staticmethod
+    def update_user(*, session: Session, db_user: User, user_in: UserUpdate) -> Any:
+        """
+        Update an existing user in the database (convenience wrapper).
+
+        Ordinary callers that only touch non-authorization fields (or need the
+        historical single-call role-change behavior outside the superuser-set
+        transaction) use this wrapper; it composes the transaction-neutral
+        :meth:`apply_user_update` and owns the commit. A real role change is an
+        authorization-state transition, so the generation is bumped
+        transactionally (3.5.1) — a same-role update is a no-op for revocation
+        here (the repair path for a mismatched-flag row is a later plan item).
+
+        Args:
+            session (Session): The database session to use for the update.
+            db_user (User): The existing user object to be updated.
+            user_in (UserUpdate): The new data for the user.
+
+        Returns:
+            Any: The updated user object.
+        """
+        outcome = UserController.apply_user_update(db_user=db_user, user_in=user_in)
+        if outcome.role_changed:
             GenerationController.bump_user_generation(db_user)
         session.add(db_user)
         session.commit()

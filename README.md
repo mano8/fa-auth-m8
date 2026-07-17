@@ -153,8 +153,8 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | users | POST | `/users/new_user/` | superuser | Create user with password |
 | users | POST | `/users/signup/` | superuser | Register user (no password set) |
 | users | GET | `/users/get/{user_id}/` | superuser | Get user by ID |
-| users | PATCH | `/users/update/{user_id}/` | superuser | Update user |
-| users | DELETE | `/users/delete/{user_id}/` | superuser | Delete user (cascades to the user's sessions, API keys, and rate-limit rows) |
+| users | PATCH | `/users/update/{user_id}/` | superuser | Update user (role/`is_active` changes run under the superuser-set lock: revoke sessions, bump the auth generation, and — on deactivation — revoke the user's API keys; `409 last_superuser_required` if it would remove the last active superuser; `403` on self-promotion) |
+| users | DELETE | `/users/delete/{user_id}/` | superuser | Delete user (cascades to the user's sessions, API keys, and rate-limit rows; `409 last_superuser_required` if it would remove the last active superuser; self-deletion allowed subject to that rule) |
 | dashboard | GET | `/dashboard/users/activity/` | JWT | All-user activity stats (monthly) |
 | dashboard | GET | `/dashboard/users/activity/current/` | JWT | Own activity stats (monthly) |
 | metrics | GET | `/metrics` | — | Prometheus metrics (`METRICS_ENABLED=true` only) |

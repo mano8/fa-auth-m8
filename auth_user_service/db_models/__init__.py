@@ -4,3 +4,4 @@ from .users import User as User
 from .sessions import ClientSession as ClientSession
 from .api_keys import ApiKey as ApiKey, RateLimit as RateLimit
 from .tombstones import AuthTombstone as AuthTombstone
+from .security_policy import SecurityPolicy as SecurityPolicy

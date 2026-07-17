@@ -47,6 +47,33 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   falls back to the DB result. Hybrid/stateless keep the expiry-bounded contract
   (3.6). A legacy `{jti}`-only request is unchanged and still receives the bare v1
   `{active}` response, so consumers upgrade at their own pace (`JTI-DECISION-01`).
+- **Route-owned superuser-set transaction, portable lock, and centralized
+  last-superuser predicate.** New `auth_user_service/services/role_admin.py` owns
+  one transaction that serializes every mutation which can add to or remove from
+  the active canonical-superuser set — role demotion, deactivation, and hard
+  deletion, including the self- variants. It acquires a portable singleton
+  policy-row lock (`SELECT ... FOR UPDATE` on the new seeded
+  `<prefix>_security_policy` row — the cross-engine replacement for
+  `pg_advisory_xact_lock`, since MySQL/MariaDB lack advisory locks), locks the
+  target user row in a fixed order (policy → user → session/API-key rows), counts
+  active canonical superusers under the lock, enforces the invariant
+  (`409 last_superuser_required`), applies the mutation with the server-derived
+  flag and the `auth_generation` increment, revokes the user's sessions in the
+  same transaction, and bumps the policy revision — committing once (3.5.3
+  `REV-LOCK-01`). The centralized predicate
+  `is_active_canonical_superuser(user)` (`role == SUPERADMIN and is_superuser and
+  is_active`, via the shared SDK dual-evidence check) is the single definition
+  every guard routes through. `UserController` and `SessionController` gain
+  transaction-neutral internals (`apply_user_update`,
+  `capture_and_delete_user_sessions`, `apply_post_commit_revocation`) so no nested
+  helper commits during a role transition; the existing `update_user` /
+  `revoke_all_user_sessions` wrappers compose them unchanged. The durable
+  transactional outbox that replaces the best-effort post-commit Redis/event push
+  is a later change.
+- **Admin activation control on `UserUpdate` (`is_active`).** The admin update
+  schema gains an optional `is_active` flag. Applied only by the route-owned
+  transaction, an activation transition bumps the generation and revokes sessions
+  in both directions.
 
 ### Changed
 
@@ -104,6 +131,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `<user>.is_superuser` directly; the only sanctioned path is the SDK dual-evidence
   predicate `has_superuser_privileges(role, is_superuser)`. Serialization and ORM
   column use are unaffected.
+- **Last-superuser protection on demotion, deactivation, and deletion.** A role
+  change, deactivation, or deletion that would remove the last active canonical
+  superuser is now rejected with `409 last_superuser_required`, evaluated under
+  the portable superuser-set lock so a concurrent set mutation cannot slip past
+  the check (3.5.3).
+- **No self-promotion.** An actor may never raise their own role via the admin
+  update route; the attempt returns `403` (role-administration matrix, 3.10).
+  Self-demotion and self-deletion remain allowed, subject only to the
+  last-superuser rule — the previous blanket `403` "super users may not delete
+  themselves" guard on `DELETE /users/delete/{id}/` is **replaced** by that rule.
+- **Deactivation revokes the owner's API keys.** Setting `is_active=false` now
+  marks every one of the user's API keys `revoked=true` in the same transaction,
+  and reactivation never clears `revoked` — an incident-response deactivation can
+  no longer silently re-arm possibly compromised credentials when the account is
+  re-enabled (3.11). Every activation transition (both directions) also bumps the
+  authorization generation and revokes the user's sessions.
 
 ---
 

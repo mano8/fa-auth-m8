@@ -6,7 +6,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from auth_user_service.db_models.users import UserCreate, UserUpdate
-from auth_user_service.services.users import UserController, _derive_is_superuser
+from auth_user_service.services.users import (
+    UserController,
+    UserUpdateOutcome,
+    _derive_is_superuser,
+)
 from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 
 
@@ -204,6 +208,28 @@ class TestUpdateUser:
         db_session.refresh(updated)
         assert updated.is_superuser == original_superuser
         assert updated.full_name == "Injected"
+
+
+class TestApplyUserUpdate:
+    def test_neutral_apply_does_not_commit_or_bump(self, db_session, sample_user):
+        start_gen = sample_user.auth_generation
+        outcome = UserController.apply_user_update(
+            db_user=sample_user, user_in=UserUpdate(role=RoleType.ADMIN)
+        )
+        # In-memory mutation only: the flag is derived and role_changed is
+        # reported, but the generation is untouched (the caller owns that).
+        assert isinstance(outcome, UserUpdateOutcome)
+        assert outcome.previous_role == RoleType.USER
+        assert outcome.new_role == RoleType.ADMIN
+        assert outcome.role_changed is True
+        assert sample_user.is_superuser is False
+        assert sample_user.auth_generation == start_gen
+
+    def test_no_role_change_reports_unchanged(self, db_session, sample_user):
+        outcome = UserController.apply_user_update(
+            db_user=sample_user, user_in=UserUpdate(full_name="X")
+        )
+        assert outcome.role_changed is False
 
 
 class TestDeriveIsSuperuser:

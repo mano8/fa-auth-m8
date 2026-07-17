@@ -262,6 +262,14 @@ class UserUpdate(SQLModel):
         default=None,
         description="New role for the user (admin only)",
     )
+    is_active: Optional[bool] = Field(
+        default=None,
+        description="Activate/deactivate the account (admin only). An activation "
+        "transition is an authorization-state change: it bumps the generation and "
+        "revokes sessions, and deactivation additionally revokes the owner's API "
+        "keys (never un-revoked on reactivation, 3.11). Applied only by the "
+        "route-owned superuser-set transaction, never a bare field write.",
+    )
     provider: Optional[AuthProviderType] = None  # for validation context
 
     @field_validator("avatar", mode="before")

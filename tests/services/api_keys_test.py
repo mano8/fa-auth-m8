@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlmodel import select
 
 from auth_sdk_m8.schemas.base import Period
 from auth_user_service.db_models.api_keys import ApiKey, RateLimit
@@ -14,6 +15,41 @@ from auth_user_service.services.api_keys import ApiKeyService, RateLimitEnforcer
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+class TestRevokeAllUserKeysInTx:
+    def test_revokes_all_non_revoked_keys_without_commit(self, db_session, sample_user):
+        for _ in range(2):
+            db_session.add(
+                ApiKey(
+                    name="k",
+                    key_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+                    user_id=sample_user.id,
+                    revoked=False,
+                )
+            )
+        already = ApiKey(
+            name="revoked",
+            key_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            user_id=sample_user.id,
+            revoked=True,
+        )
+        db_session.add(already)
+        db_session.commit()
+
+        count = ApiKeyService.revoke_all_user_keys_in_tx(db_session, sample_user.id)
+
+        assert count == 2  # only the two non-revoked keys are flipped
+        remaining_active = db_session.exec(
+            select(ApiKey).where(
+                ApiKey.user_id == sample_user.id,
+                ApiKey.revoked == False,  # noqa: E712
+            )
+        ).all()
+        assert remaining_active == []
+
+    def test_no_keys_returns_zero(self, db_session):
+        assert ApiKeyService.revoke_all_user_keys_in_tx(db_session, uuid.uuid4()) == 0
 
 
 @pytest.fixture

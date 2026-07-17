@@ -107,6 +107,29 @@ class ApiKeyService:
         return api_key
 
     @staticmethod
+    def revoke_all_user_keys_in_tx(session: Session, user_id: uuid.UUID) -> int:
+        """Mark every non-revoked API key owned by *user_id* as revoked (3.11).
+
+        Transaction-neutral: it flips ``revoked`` on the owner's keys in memory
+        and does **not** commit, so the route-owned deactivation transaction
+        revokes the keys atomically with the ``is_active=false`` write and the
+        generation bump. Reactivation never clears ``revoked`` — an
+        incident-response deactivation must not silently re-arm possibly
+        compromised credentials — so this is only ever called on deactivation.
+        Returns the number of keys revoked.
+        """
+        keys = session.exec(
+            select(ApiKey).where(
+                ApiKey.user_id == user_id,
+                ApiKey.revoked == False,  # noqa: E712
+            )
+        ).all()
+        for key in keys:
+            key.revoked = True
+            session.add(key)
+        return len(keys)
+
+    @staticmethod
     def get_limits(
         session: Session,
         api_key_id: uuid.UUID,

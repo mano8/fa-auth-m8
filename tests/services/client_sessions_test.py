@@ -298,6 +298,116 @@ class TestDeleteSessionByJti:
         )
 
 
+class TestCaptureAndDeleteUserSessions:
+    def test_captures_active_and_deletes_all_without_commit(
+        self, db_session, sample_user, sample_client_session
+    ):
+        targets, count = SessionController.capture_and_delete_user_sessions(
+            db_session, sample_user.id
+        )
+
+        assert count >= 1
+        assert [t.jti for t in targets] == [sample_client_session.jwt_jti]
+        remaining = SessionController.get_user_active_sessions(
+            db_session, sample_user.id
+        )
+        assert remaining == []
+
+    def test_no_sessions_returns_empty(self, db_session):
+        targets, count = SessionController.capture_and_delete_user_sessions(
+            db_session, uuid.uuid4()
+        )
+        assert targets == []
+        assert count == 0
+
+
+class TestApplyPostCommitRevocation:
+    def test_blacklists_targets_and_emits_event(self, db_session, sample_user):
+        from auth_user_service.services.client_sessions import RevocationTarget
+
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        targets = [RevocationTarget(jti="jti-1", expires_at=future)]
+        access_mgr = MagicMock()
+        refresh_store = MagicMock()
+        with (
+            patch(
+                "auth_user_service.services.client_sessions.RedisSessionManager",
+                return_value=access_mgr,
+            ),
+            patch(
+                "auth_user_service.services.client_sessions.RedisRefreshStore",
+                return_value=refresh_store,
+            ),
+            patch("auth_user_service.services.client_sessions.emit") as mock_emit,
+        ):
+            SessionController.apply_post_commit_revocation(
+                targets, sample_user.id, MagicMock()
+            )
+
+        access_mgr.blacklist_jti.assert_called_once()
+        refresh_store.revoke.assert_called_once_with("jti-1")
+        mock_emit.assert_called_once()
+
+    def test_skips_blacklist_for_expired_target(self, db_session, sample_user):
+        from auth_user_service.services.client_sessions import RevocationTarget
+
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        targets = [RevocationTarget(jti="old", expires_at=past)]
+        access_mgr = MagicMock()
+        refresh_store = MagicMock()
+        with (
+            patch(
+                "auth_user_service.services.client_sessions.RedisSessionManager",
+                return_value=access_mgr,
+            ),
+            patch(
+                "auth_user_service.services.client_sessions.RedisRefreshStore",
+                return_value=refresh_store,
+            ),
+            patch("auth_user_service.services.client_sessions.emit"),
+        ):
+            SessionController.apply_post_commit_revocation(
+                targets, sample_user.id, MagicMock()
+            )
+
+        access_mgr.blacklist_jti.assert_not_called()
+        refresh_store.revoke.assert_called_once_with("old")
+
+    def test_naive_expiry_treated_as_utc(self, sample_user):
+        from auth_user_service.services.client_sessions import RevocationTarget
+
+        naive_future = datetime.now() + timedelta(hours=1)
+        targets = [RevocationTarget(jti="naive", expires_at=naive_future)]
+        access_mgr = MagicMock()
+        with (
+            patch(
+                "auth_user_service.services.client_sessions.RedisSessionManager",
+                return_value=access_mgr,
+            ),
+            patch(
+                "auth_user_service.services.client_sessions.RedisRefreshStore",
+                return_value=MagicMock(),
+            ),
+            patch("auth_user_service.services.client_sessions.emit"),
+        ):
+            SessionController.apply_post_commit_revocation(
+                targets, sample_user.id, MagicMock()
+            )
+
+        access_mgr.blacklist_jti.assert_called_once()
+
+    def test_redis_none_only_emits_event(self, sample_user):
+        from auth_user_service.services.client_sessions import RevocationTarget
+
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        targets = [RevocationTarget(jti="jti-1", expires_at=future)]
+        with patch("auth_user_service.services.client_sessions.emit") as mock_emit:
+            SessionController.apply_post_commit_revocation(
+                targets, sample_user.id, None
+            )
+        mock_emit.assert_called_once()
+
+
 class TestRevokeAllUserSessions:
     def test_revokes_active_sessions_and_returns_count(
         self, db_session, sample_user, sample_client_session

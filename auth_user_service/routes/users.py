@@ -2,18 +2,23 @@
 
 import uuid
 from typing import Any
-from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import col, delete, func, select
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlmodel import func, select
 from auth_user_service.services.users import UserController
-from auth_user_service.services.generation import GenerationController
+from auth_user_service.services.role_admin import (
+    LastSuperuserError,
+    SelfPromotionError,
+    change_user_authorization,
+    delete_user_account,
+)
 from auth_user_service.core.deps import (
     CurrentUser,
+    RedisDep,
     SessionDep,
     get_current_active_superuser,
 )
 from auth_sdk_m8.authorization import has_superuser_privileges
 from auth_sdk_m8.models.shared import Message
-from auth_user_service.db_models.sessions import ClientSession
 from auth_user_service.db_models.users import (
     User,
     UserCreate,
@@ -136,11 +141,18 @@ def read_user_by_id(
 def update_current_user(
     *,
     session: SessionDep,
+    redis: RedisDep,
+    current_user: CurrentUser,
     user_id: uuid.UUID,
     user_in: UserUpdate,
 ) -> Any:
     """
     Update a user.
+
+    Role and activation changes run through the route-owned superuser-set
+    transaction (``services.role_admin``): the last-superuser invariant and the
+    no-self-promotion rule are enforced under the lock, sessions are revoked on
+    any authorization transition, and deactivation revokes the owner's API keys.
     """
     try:
         db_user = session.get(User, user_id)
@@ -158,10 +170,24 @@ def update_current_user(
                     status_code=409, detail="User with this email already exists"
                 )
 
-        db_user = UserController.update_user(
-            session=session, db_user=db_user, user_in=user_in
+        db_user = change_user_authorization(
+            session=session,
+            actor_id=current_user.id,
+            db_user=db_user,
+            user_in=user_in,
+            redis=redis,
         )
         return db_user
+    except SelfPromotionError as ex:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="A user may not raise their own role",
+        ) from ex
+    except LastSuperuserError as ex:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="last_superuser_required",
+        ) from ex
     except Exception as ex:
         return handle_route_exception(ex=ex, session=session)
 
@@ -176,28 +202,30 @@ def delete_user(
 ) -> Message:
     """
     Delete a user.
+
+    Runs through the route-owned superuser-set transaction: the last-superuser
+    invariant is enforced under the lock and a durable deletion tombstone is
+    written so introspection treats every token ever minted for the subject as
+    revoked (3.5.1). Self-deletion is permitted subject only to the last-superuser
+    rule (3.10).
     """
     try:
         user = session.get(User, user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        if user == current_user:
-            raise HTTPException(
-                status_code=403,
-                detail="Super users are not allowed to delete themselves",
-            )
-        # Durably record a terminal generation before the row (and its cascaded
-        # sessions/api-keys) disappears, so introspection treats every token ever
-        # minted for this subject as revoked. Committed atomically with the delete
-        # (3.5.1); the upsert is idempotent under a replayed delete.
-        GenerationController.write_deletion_tombstone(session=session, user=user)
-        statement = delete(ClientSession).where(col(ClientSession.user_id) == user_id)
-        session.execute(statement)
-        session.delete(user)
-        session.commit()
+        delete_user_account(
+            session=session,
+            actor_id=current_user.id,
+            db_user=user,
+        )
         # Best-effort push so consumers drop any cached state for the deleted
         # user; the account is already gone from the DB regardless of delivery.
         emit(EVENT_USER_DELETED, UserDeletedEvent(user_id=str(user_id)).model_dump())
         return Message(message="User deleted successfully")
+    except LastSuperuserError as ex:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="last_superuser_required",
+        ) from ex
     except Exception as ex:
         return handle_route_exception(ex=ex, session=session)
