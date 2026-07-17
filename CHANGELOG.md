@@ -13,6 +13,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Per-user authorization generation (`auth_generation`).** A monotonic,
+  issuer-owned `BIGINT` revocation watermark now lands on `User` (`NOT NULL`,
+  default `1`) and `ClientSession` (nullable during Expand; a `NULL`/absent stamp
+  is treated as revoked). Sessions are stamped with the owner's current generation
+  at issuance, a real role change increments it transactionally, and a hard delete
+  first writes a durable `auth_tombstone` row (no FK cascade, idempotent
+  max-generation upsert) so introspection can treat every token minted for the
+  deleted subject as revoked. New `auth_user_service/services/generation.py` owns
+  the framework-neutral primitives (`GENERATION_START`, `GENERATION_MAX`,
+  fail-closed no-wraparound `next_generation`, the `is_session_generation_stale`
+  predicate, the retention horizon) and the DB-facing `GenerationController`
+  (generation bump, tombstone upsert/lookup, the stale-generation check used by
+  the introspection path, and horizon-guarded tombstone cleanup). The route-owned
+  role-change transaction/lock, the transactional outbox, and the v2
+  `/private/v1/jti-status` decision endpoint compose these primitives in later
+  changes; the token wire shape is unchanged (3.5.1).
+
 ### Changed
 
 - **Issuer SDK floor raised to `auth-sdk-m8 >=3.0.0,<4.0.0`** (was

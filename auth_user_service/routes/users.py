@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import col, delete, func, select
 from auth_user_service.services.users import UserController
+from auth_user_service.services.generation import GenerationController
 from auth_user_service.core.deps import (
     CurrentUser,
     SessionDep,
@@ -185,6 +186,11 @@ def delete_user(
                 status_code=403,
                 detail="Super users are not allowed to delete themselves",
             )
+        # Durably record a terminal generation before the row (and its cascaded
+        # sessions/api-keys) disappears, so introspection treats every token ever
+        # minted for this subject as revoked. Committed atomically with the delete
+        # (3.5.1); the upsert is idempotent under a replayed delete.
+        GenerationController.write_deletion_tombstone(session=session, user=user)
         statement = delete(ClientSession).where(col(ClientSession.user_id) == user_id)
         session.execute(statement)
         session.delete(user)

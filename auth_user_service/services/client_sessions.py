@@ -47,6 +47,11 @@ class SessionController:
             ClientSession.user_id == current_user.id
         )
         db_session = session.exec(statement).first()
+        # Stamp the owner's current authorization generation at issuance so a
+        # session minted before a later role/is_active change is detectably stale
+        # (3.5.1). Reusing an existing row re-stamps to the current generation for
+        # the same reason.
+        current_generation = current_user.auth_generation
         if db_session is not None:
             # Session already exists, update it
             db_session.provider = current_user.provider
@@ -59,6 +64,7 @@ class SessionController:
             db_session.external_token_expires_at = (
                 session_data.external_token_expires_at
             )
+            db_session.auth_generation = current_generation
         else:
             db_session = ClientSession(
                 user_id=current_user.id,
@@ -71,6 +77,7 @@ class SessionController:
                 external_refresh_token=session_data.external_refresh_token,
                 external_token_expires_at=session_data.external_token_expires_at,
                 revoked=False,
+                auth_generation=current_generation,
             )
         session.add(db_session)
         session.commit()

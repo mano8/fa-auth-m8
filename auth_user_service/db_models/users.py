@@ -28,6 +28,12 @@ from auth_user_service.core.db_utils import get_table_args, prefixed_tables
 _SUPERUSER_ROLE_CHECK_NAME = "ck_user_superuser_role_consistency"
 _SUPERUSER_ROLE_CHECK_SQL = "is_superuser = (role = 'SUPERADMIN')"
 
+# First authorization generation stamped on a new user (3.5.1). Defined here in
+# the dependency-free db_models layer and re-exported by
+# ``services.generation`` (which imports these models), so callers reference a
+# single value without the models depending on the services layer.
+GENERATION_START = 1
+
 if TYPE_CHECKING:
     from auth_user_service.db_models.api_keys import ApiKey, RateLimit
     from auth_user_service.db_models.sessions import ClientSession
@@ -417,6 +423,22 @@ class User(UserBase, table=True):
         default=None,
         index=True,
         description="Tenant the user belongs to (nullable; set out-of-band)",
+    )
+    # Monotonic per-user authorization generation (revocation watermark, 3.5.1).
+    # Issuer-owned and never client-settable; kept off every public/admin payload
+    # (this column lives on the table model only). ``NOT NULL`` with default 1;
+    # incremented on role/is_active changes and repair by GenerationController.
+    auth_generation: int = Field(
+        default=GENERATION_START,
+        sa_column=Column(
+            "auth_generation",
+            sa.BigInteger,
+            nullable=False,
+            default=GENERATION_START,
+            server_default=sa.text("1"),
+        ),
+        description="Monotonic per-user authorization generation (revocation "
+        "watermark, 3.5.1).",
     )
     api_keys: List["ApiKey"] = Relationship(
         back_populates="user",

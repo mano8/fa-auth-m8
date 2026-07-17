@@ -7,6 +7,7 @@ from typing import Any, Optional
 from sqlmodel import Session, func, select
 from auth_user_service.core.security import SecurityHelper
 from auth_user_service.db_models.users import User, UserCreate, UserUpdate
+from auth_user_service.services.generation import GenerationController
 from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 
 # Explicit allowlist for admin user updates — includes role, never includes is_superuser.
@@ -96,6 +97,7 @@ class UserController:
             - The function commits the changes to the database
             and refreshes the `db_user` object.
         """
+        previous_role = db_user.role
         user_data = user_in.model_dump(exclude_unset=True)
         extra_data: dict[str, Any] = {}
         if "password" in user_data:
@@ -109,6 +111,13 @@ class UserController:
         # the allowlist loop so it can never be set from a client-supplied field.
         if "role" in user_data:
             db_user.is_superuser = _derive_is_superuser(db_user.role)
+        # A real role change is an authorization-state transition: bump the
+        # generation transactionally so every session issued under the prior role
+        # is detectably stale (3.5.1). A same-role update is not a transition here
+        # (the full repair-path handling of a mismatched-flag row is a later plan
+        # item); the flag is already re-derived above regardless.
+        if db_user.role != previous_role:
+            GenerationController.bump_user_generation(db_user)
         session.add(db_user)
         session.commit()
         session.refresh(db_user)

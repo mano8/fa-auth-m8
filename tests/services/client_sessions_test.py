@@ -33,6 +33,19 @@ class TestCreateClientSession:
         assert result.jwt_jti == session_data.jwt_jti
         assert str(result.user_id) == str(sample_user.id)
 
+    def test_stamps_owner_generation_on_new_session(self, db_session, sample_user):
+        sample_user.auth_generation = 7
+        db_session.add(sample_user)
+        db_session.commit()
+
+        result = SessionController.create_client_session(
+            session=db_session,
+            current_user=sample_user,
+            session_data=_make_session_create(),
+        )
+
+        assert result.auth_generation == 7
+
     def test_updates_existing_session(
         self, db_session, sample_client_session, sample_user
     ):
@@ -46,6 +59,24 @@ class TestCreateClientSession:
         )
 
         assert result.jwt_jti == new_jti
+
+    def test_restamps_generation_on_existing_session(
+        self, db_session, sample_client_session, sample_user
+    ):
+        # Reusing a user's row re-stamps to the owner's current generation so a
+        # recycled session can never carry a superseded one.
+        sample_user.auth_generation = 9
+        db_session.add(sample_user)
+        db_session.commit()
+
+        result = SessionController.create_client_session(
+            session=db_session,
+            current_user=sample_user,
+            session_data=_make_session_create(),
+        )
+
+        assert result.id == sample_client_session.id
+        assert result.auth_generation == 9
 
     def test_stores_external_tokens(self, db_session, sample_user):
         now = datetime.now(timezone.utc).replace(tzinfo=None)

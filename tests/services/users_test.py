@@ -25,6 +25,17 @@ class TestCreateUser:
         assert user.hashed_password != "securepassword"
         assert user.email == user_create.email
 
+    def test_new_user_starts_at_generation_one(self, db_session):
+        user_create = UserCreate(
+            email=f"gen_{uuid.uuid4().hex[:6]}@example.com",
+            password="securepassword",
+            provider=AuthProviderType.PASSWORD,
+        )
+
+        user = UserController.create_user(session=db_session, user_create=user_create)
+
+        assert user.auth_generation == 1
+
     def test_password_provider_sets_uuid_id(self, db_session):
         user_create = UserCreate(
             email=f"uid_{uuid.uuid4().hex[:6]}@example.com",
@@ -152,6 +163,28 @@ class TestUpdateUser:
         db_session.refresh(updated)
         assert updated.role == RoleType.USER
         assert updated.is_superuser is False
+
+    def test_role_change_bumps_generation(self, db_session, sample_user):
+        start = sample_user.auth_generation
+        updated = UserController.update_user(
+            session=db_session,
+            db_user=sample_user,
+            user_in=UserUpdate(role=RoleType.ADMIN),
+        )
+        db_session.refresh(updated)
+        assert updated.auth_generation == start + 1
+
+    def test_same_role_update_does_not_bump_generation(self, db_session, sample_user):
+        start = sample_user.auth_generation
+        # A non-role update (and a same-role submission) is not an authorization
+        # transition here, so the generation stays put.
+        updated = UserController.update_user(
+            session=db_session,
+            db_user=sample_user,
+            user_in=UserUpdate(full_name="No Auth Change"),
+        )
+        db_session.refresh(updated)
+        assert updated.auth_generation == start
 
     def test_privileged_field_blocked_by_allowlist(self, db_session, sample_user):
         """is_superuser injected into the update dict must be dropped by _ADMIN_UPDATE_FIELDS."""

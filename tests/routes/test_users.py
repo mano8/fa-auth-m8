@@ -6,6 +6,7 @@ from unittest.mock import patch
 from sqlmodel import select
 
 from auth_user_service.db_models.api_keys import ApiKey
+from auth_user_service.db_models.tombstones import AuthTombstone
 from auth_user_service.routes.users import delete_user
 
 
@@ -37,3 +38,19 @@ class TestDeleteUser:
         ).first()
         assert "deleted" in result.message.lower()
         assert deleted_key is None
+
+    def test_writes_durable_tombstone(self, db_session, sample_user, superuser) -> None:
+        expected_terminal = sample_user.auth_generation + 1
+
+        with patch("auth_user_service.routes.users.emit"):
+            delete_user(
+                session=db_session,
+                current_user=superuser,
+                user_id=sample_user.id,
+            )
+
+        # The tombstone survives the user's deletion (no FK cascade) and records a
+        # terminal generation, so introspection treats the subject as revoked.
+        tombstone = db_session.get(AuthTombstone, sample_user.id)
+        assert tombstone is not None
+        assert tombstone.terminal_generation == expected_terminal
