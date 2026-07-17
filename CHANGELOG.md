@@ -15,6 +15,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Issuer SDK floor raised to `auth-sdk-m8 >=3.0.0,<4.0.0`** (was
+  `>=2.1.1,<3.0.0`) in `auth_user_service/requirements_base.txt`, with the matching
+  `requirements_prod.lock` pin (`auth-sdk-m8==3.0.0`). The `3.0.0` major ships the
+  canonical role/`is_superuser` invariant and the shared, framework-neutral
+  authorization policy (`has_superuser_privileges`, `validate_privilege_claims`).
 - **CT-1 CONTRACT_VERSION 0.9→1.0.** `auth_user_service/core/service_meta.py` and the
   two example consumers (`fastapi_full`, `fastapi_minimal`) now declare
   `CONTRACT_VERSION = "1.0"`. The CONTRACT_RANGE (`>=1.0.0 <2.0.0`) and the service
@@ -26,6 +31,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   legacy-shape probes on hardened stacks that block `/private` at the public edge) and
   document `LIVE_TEST_HEALTH_DETAIL_CREDENTIAL` (9.3 / Design-B opt-in for deep
   `/health` detail; ungated body is always the constant liveness response).
+
+### Security
+
+- **Canonical superuser authorization — no flag-only privilege checks.**
+  `get_current_active_superuser` and every direct privileged-flag check
+  (`routes/users.py`, `routes/profile.py`, `services/dashboard.py`) now authorize
+  through the shared SDK `has_superuser_privileges(role, is_superuser)`
+  dual-evidence predicate instead of the bare `is_superuser` flag. An
+  `is_superuser=true` flag paired with a non-`SUPERADMIN` role (or the inverse) can
+  no longer grant superuser access.
+- **Persisted privilege claims validated before token signing.**
+  `AuthController.create_auth_tokens` — the single login/refresh signing chokepoint —
+  validates the persisted `role`/`is_superuser` pair via the SDK before issuing a
+  token. An inconsistent row fails closed (HTTP 500) and emits a bounded,
+  secret-free security event
+  (`event=token.sign.blocked reason=inconsistent_privilege_claims`); an inconsistent
+  access token is never signed.
 
 ---
 

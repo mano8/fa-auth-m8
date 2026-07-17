@@ -81,9 +81,9 @@ asyncpg==0.31.0 \
     --hash=sha256:f6b56b91bb0ffc328c4e3ed113136cddd9deefdf5f79ab448598b9772831df44 \
     --hash=sha256:f890de5e1e4f7e14023619399a471ce4b71f5418cd67a51853b9910fdfa73696
     # via -r requirements_base.txt
-auth-sdk-m8==2.1.1 \
-    --hash=sha256:4546a497cb718ee8be576f3bc3c9ccbe1bbf4770da634756b75bbaed7bf231ee \
-    --hash=sha256:a7dadb94cd98016100b37686ed2580e89bf6c491666891c041e352fc75c19bfe
+auth-sdk-m8==3.0.0 \
+    --hash=sha256:0de2a97051a0c3cfeeb202a98e5e3deca6b1f7fff7af866c5123fce612ff7032 \
+    --hash=sha256:f42db2746b5ba1f2755a1a60bf6ad72065cba409b769111cf497a728ea0bb16c
     # via -r requirements_base.txt
 bcrypt==5.0.0 \
     --hash=sha256:046ad6db88edb3c5ece4369af997938fb1c19d6a699b9c1b27b0db432faae4c4 \

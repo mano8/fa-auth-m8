@@ -16,6 +16,7 @@ from fastapi.security import OAuth2PasswordBearer
 from redis import ConnectionPool, Redis
 from sqlmodel import Session
 
+from auth_sdk_m8.authorization import has_superuser_privileges
 from auth_sdk_m8.core.exceptions import InvalidToken
 from auth_sdk_m8.schemas.user import UserModel
 from auth_sdk_m8.security import (
@@ -235,10 +236,14 @@ CurrentUser = Annotated[UserModel, Depends(get_current_user)]
 def get_current_active_superuser(current_user: CurrentUser) -> UserModel:
     """Verify that the current user holds superuser privileges.
 
+    Authorization uses the canonical SDK dual-evidence predicate
+    (``role == SUPERADMIN`` **and** ``is_superuser is True``); the
+    ``is_superuser`` flag alone never grants access.
+
     Raises:
         HTTPException 403: Insufficient privileges.
     """
-    if not current_user.is_superuser:
+    if not has_superuser_privileges(current_user.role, current_user.is_superuser):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="The user doesn't have enough privileges",

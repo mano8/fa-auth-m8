@@ -18,7 +18,7 @@ from auth_user_service.core.deps import (
 )
 from auth_user_service.core.security import SecurityHelper
 from auth_sdk_m8.schemas.auth import TokenAccessData, TokenSecret
-from auth_sdk_m8.schemas.base import Period
+from auth_sdk_m8.schemas.base import Period, RoleType
 from auth_sdk_m8.schemas.user import UserModel
 
 
@@ -199,6 +199,7 @@ class TestGetCurrentActiveSuperuser:
     def test_superuser_passes_through(self):
         user = MagicMock(spec=UserModel)
         user.is_superuser = True
+        user.role = RoleType.SUPERADMIN
 
         result = get_current_active_superuser(current_user=user)
 
@@ -207,6 +208,31 @@ class TestGetCurrentActiveSuperuser:
     def test_non_superuser_raises_403(self):
         user = MagicMock(spec=UserModel)
         user.is_superuser = False
+        user.role = RoleType.USER
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_active_superuser(current_user=user)
+
+        assert exc_info.value.status_code == 403
+
+    def test_superuser_flag_without_superadmin_role_denied(self):
+        # A lone ``is_superuser=True`` flag with a lower role must NOT grant
+        # access: the canonical predicate also requires ``role == SUPERADMIN``.
+        user = MagicMock(spec=UserModel)
+        user.is_superuser = True
+        user.role = RoleType.USER
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_active_superuser(current_user=user)
+
+        assert exc_info.value.status_code == 403
+
+    def test_superadmin_role_without_flag_denied(self):
+        # Conversely, ``role == SUPERADMIN`` with ``is_superuser=False`` is an
+        # inconsistent pair and is denied — no single-field authorization.
+        user = MagicMock(spec=UserModel)
+        user.is_superuser = False
+        user.role = RoleType.SUPERADMIN
 
         with pytest.raises(HTTPException) as exc_info:
             get_current_active_superuser(current_user=user)

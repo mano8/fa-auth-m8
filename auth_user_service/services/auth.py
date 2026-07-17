@@ -6,6 +6,7 @@ AuthController.py
 import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
+import logging
 import secrets
 from typing import Optional
 from urllib.parse import quote_plus
@@ -21,6 +22,8 @@ from auth_user_service.core.security import SecurityHelper
 
 from fastapi import HTTPException
 
+from auth_sdk_m8.authorization import validate_privilege_claims
+from auth_sdk_m8.core.exceptions import InconsistentPrivilegeClaimsError
 from auth_sdk_m8.schemas.auth import (
     ASYMMETRIC_ALGORITHMS,
     ExternalTokensData,
@@ -28,6 +31,8 @@ from auth_sdk_m8.schemas.auth import (
     TokenMinimalData,
     TokenSecret,
 )
+
+_logger = logging.getLogger(__name__)
 
 # Pre-computed hash used to run bcrypt for non-existent users, eliminating the
 # timing difference that would otherwise reveal valid email addresses.
@@ -178,6 +183,25 @@ class AuthController:
             str: The JWT refresh token.
             str: The JWT JTI key.
         """
+        # Validate the persisted role/is_superuser pair before signing. This is
+        # the single signing chokepoint for both login and refresh, so an
+        # inconsistent row that somehow survived a write is caught here and the
+        # service fails closed — it never signs an inconsistent access token.
+        # Only the bounded reason code is logged; raw claim values never are.
+        try:
+            validate_privilege_claims(role=user.role, is_superuser=user.is_superuser)
+        except InconsistentPrivilegeClaimsError as ex:
+            _logger.critical(
+                "event=token.sign.blocked reason=%s user_id=%s ts=%s",
+                str(ex),
+                str(user.id),
+                datetime.now(timezone.utc).isoformat(),
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Could not issue token.",
+            ) from ex
+
         access_token_expires, refresh_token_expires = AuthController.get_tokens_expire()
         algo = settings.ACCESS_TOKEN_ALGORITHM
         access_signing_secret = _resolve_access_secret(algo)

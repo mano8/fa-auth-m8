@@ -38,6 +38,10 @@ class TestRevokeSessionJtiEvents:
         SessionController.revoke_session_jti(
             "jti-1", _future(), MagicMock(), user_id="u1"
         )
+        # auth-sdk-m8 >= 3.0.0 adds the additive ``auth_generation``/``event_id``
+        # fields to the session-revoked event (defaulting to ``None`` until the
+        # issuer populates them via the generation/outbox work). Version stays
+        # ``v1`` for rolling compatibility.
         assert recording_hub.events == [
             (
                 "session-revoked",
@@ -46,6 +50,8 @@ class TestRevokeSessionJtiEvents:
                     "version": "v1",
                     "user_id": "u1",
                     "jti": "jti-1",
+                    "auth_generation": None,
+                    "event_id": None,
                 },
             )
         ]

@@ -7,7 +7,10 @@ from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from pydantic import SecretStr
+
+from auth_sdk_m8.schemas.base import RoleType
 
 import auth_user_service.services.auth as _auth_module
 from auth_user_service.services.auth import AuthController, _resolve_kid
@@ -214,6 +217,33 @@ class TestCreateAuthTokens:
         assert isinstance(refresh_token, str)
         assert isinstance(jti, str)
         assert uuid.UUID(jti)
+
+    def test_inconsistent_privilege_claims_fail_closed(self, caplog):
+        # A persisted inconsistent pair (is_superuser=True with a non-SUPERADMIN
+        # role) must never be signed: the single signing chokepoint fails closed
+        # with a 500 and emits a bounded security event carrying only the reason
+        # code — never the raw claim values.
+        import logging
+
+        user = MagicMock()
+        user.id = str(uuid.uuid4())
+        user.full_name = "Bad Pair"
+        user.email = "bad@example.com"
+        user.avatar = None
+        user.is_active = True
+        user.email_verified = True
+        user.is_superuser = True
+        user.role = RoleType.USER
+
+        with caplog.at_level(logging.CRITICAL):
+            with pytest.raises(HTTPException) as exc_info:
+                AuthController.create_auth_tokens(user=user)
+
+        assert exc_info.value.status_code == 500
+        assert "token.sign.blocked" in caplog.text
+        assert "inconsistent_privilege_claims" in caplog.text
+        # The bounded event never leaks the raw role/flag claim values.
+        assert "SUPERADMIN" not in caplog.text
 
     def test_jti_is_valid_uuid(self):
         user = MagicMock()

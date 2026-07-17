@@ -10,6 +10,7 @@ from auth_user_service.core.deps import (
     SessionDep,
     get_current_active_superuser,
 )
+from auth_sdk_m8.authorization import has_superuser_privileges
 from auth_sdk_m8.models.shared import Message
 from auth_user_service.db_models.sessions import ClientSession
 from auth_user_service.db_models.users import (
@@ -115,7 +116,9 @@ def read_user_by_id(
     user = session.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    if user.id != current_user.id and not current_user.is_superuser:
+    if user.id != current_user.id and not has_superuser_privileges(
+        current_user.role, current_user.is_superuser
+    ):
         raise HTTPException(
             status_code=403,
             detail="The user doesn't have enough privileges",
