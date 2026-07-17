@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from auth_user_service.db_models.users import UserCreate, UserUpdate
-from auth_user_service.services.users import UserController
-from auth_sdk_m8.schemas.base import AuthProviderType
+from auth_user_service.services.users import UserController, _derive_is_superuser
+from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 
 
 class TestCreateUser:
@@ -59,6 +59,34 @@ class TestCreateUser:
         with pytest.raises(ValueError, match="password is required"):
             UserController.create_user(session=db_session, user_create=bad_create)
 
+    def test_superadmin_role_derives_flag_true(self, db_session):
+        user_create = UserCreate(
+            email=f"super_{uuid.uuid4().hex[:6]}@example.com",
+            password="securepassword",
+            provider=AuthProviderType.PASSWORD,
+            role=RoleType.SUPERADMIN,
+        )
+
+        user = UserController.create_user(session=db_session, user_create=user_create)
+
+        assert user.role == RoleType.SUPERADMIN
+        assert user.is_superuser is True
+
+    def test_client_supplied_flag_is_ignored(self, db_session):
+        """A client-supplied is_superuser on a lower role is overridden to False."""
+        user_create = UserCreate(
+            email=f"inject_{uuid.uuid4().hex[:6]}@example.com",
+            password="securepassword",
+            provider=AuthProviderType.PASSWORD,
+            role=RoleType.USER,
+            is_superuser=True,
+        )
+
+        user = UserController.create_user(session=db_session, user_create=user_create)
+
+        assert user.role == RoleType.USER
+        assert user.is_superuser is False
+
 
 class TestUpdateUser:
     def test_update_full_name(self, db_session, sample_user):
@@ -99,6 +127,32 @@ class TestUpdateUser:
 
         assert updated.hashed_password == old_hash
 
+    def test_role_promotion_to_superadmin_derives_flag(self, db_session, sample_user):
+        update = UserUpdate(role=RoleType.SUPERADMIN)
+
+        updated = UserController.update_user(
+            session=db_session,
+            db_user=sample_user,
+            user_in=update,
+        )
+
+        db_session.refresh(updated)
+        assert updated.role == RoleType.SUPERADMIN
+        assert updated.is_superuser is True
+
+    def test_role_demotion_from_superadmin_clears_flag(self, db_session, superuser):
+        update = UserUpdate(role=RoleType.USER)
+
+        updated = UserController.update_user(
+            session=db_session,
+            db_user=superuser,
+            user_in=update,
+        )
+
+        db_session.refresh(updated)
+        assert updated.role == RoleType.USER
+        assert updated.is_superuser is False
+
     def test_privileged_field_blocked_by_allowlist(self, db_session, sample_user):
         """is_superuser injected into the update dict must be dropped by _ADMIN_UPDATE_FIELDS."""
         user_in = MagicMock()
@@ -117,6 +171,18 @@ class TestUpdateUser:
         db_session.refresh(updated)
         assert updated.is_superuser == original_superuser
         assert updated.full_name == "Injected"
+
+
+class TestDeriveIsSuperuser:
+    def test_superadmin_is_true(self):
+        assert _derive_is_superuser(RoleType.SUPERADMIN) is True
+
+    @pytest.mark.parametrize(
+        "role",
+        [RoleType.ADMIN, RoleType.WRITER, RoleType.READER, RoleType.USER],
+    )
+    def test_lower_roles_are_false(self, role):
+        assert _derive_is_superuser(role) is False
 
 
 class TestGetUser:

@@ -7,12 +7,24 @@ from typing import Any, Optional
 from sqlmodel import Session, func, select
 from auth_user_service.core.security import SecurityHelper
 from auth_user_service.db_models.users import User, UserCreate, UserUpdate
-from auth_sdk_m8.schemas.base import AuthProviderType
+from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 
 # Explicit allowlist for admin user updates — includes role, never includes is_superuser.
 _ADMIN_UPDATE_FIELDS: frozenset[str] = frozenset(
     {"email", "full_name", "avatar", "role", "oauth_user_id", "hashed_password"}
 )
+
+
+def _derive_is_superuser(role: RoleType) -> bool:
+    """Derive the ``is_superuser`` flag from the authorized role.
+
+    The flag is server-derived evidence of the canonical role, never a
+    client-submitted permission switch: ``SUPERADMIN -> True``, every other
+    role -> ``False``. This is the single derivation point shared by the create
+    and update paths, keeping the persisted pair consistent with the DB check
+    constraint and the model invariant.
+    """
+    return role == RoleType.SUPERADMIN
 
 
 class UserController:
@@ -36,6 +48,9 @@ class UserController:
             SQLAlchemyError:
                 If there is an error during the database operation.
         """
+        # Derive the privilege flag server-side from the role; any client-supplied
+        # is_superuser on the create payload is ignored (never authoritative).
+        derived_is_superuser = _derive_is_superuser(user_create.role)
         if user_create.provider == AuthProviderType.PASSWORD:
             if user_create.password is None:
                 raise ValueError("password is required for password-based registration")
@@ -46,10 +61,17 @@ class UserController:
                         user_create.password
                     ),
                     "id": str(uuid.uuid4()),
+                    "is_superuser": derived_is_superuser,
                 },
             )
         else:
-            db_obj = User.model_validate(user_create, update={"id": str(uuid.uuid4())})
+            db_obj = User.model_validate(
+                user_create,
+                update={
+                    "id": str(uuid.uuid4()),
+                    "is_superuser": derived_is_superuser,
+                },
+            )
         session.add(db_obj)
         session.commit()
         session.refresh(db_obj)
@@ -83,6 +105,10 @@ class UserController:
         for field, value in {**user_data, **extra_data}.items():
             if field in _ADMIN_UPDATE_FIELDS:
                 setattr(db_user, field, value)
+        # Re-derive the privilege flag from the (possibly updated) role, outside
+        # the allowlist loop so it can never be set from a client-supplied field.
+        if "role" in user_data:
+            db_user.is_superuser = _derive_is_superuser(db_user.role)
         session.add(db_user)
         session.commit()
         session.refresh(db_user)

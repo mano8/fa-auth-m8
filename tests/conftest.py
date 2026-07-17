@@ -158,7 +158,7 @@ def superuser(db_session):
         is_active=True,
         email_verified=True,
         is_superuser=True,
-        role=RoleType.USER,
+        role=RoleType.SUPERADMIN,
     )
     db_session.add(user)
     db_session.commit()

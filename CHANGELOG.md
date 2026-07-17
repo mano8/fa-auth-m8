@@ -31,6 +31,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   legacy-shape probes on hardened stacks that block `/private` at the public edge) and
   document `LIVE_TEST_HEALTH_DETAIL_CREDENTIAL` (9.3 / Design-B opt-in for deep
   `/health` detail; ungated body is always the constant liveness response).
+- **Canonical `superuser` test fixture.** `tests/conftest.py`'s `superuser`
+  fixture now carries `role=SUPERADMIN` (was `role=USER`) so it satisfies the new
+  role/flag invariant.
 
 ### Security
 
@@ -48,6 +51,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   secret-free security event
   (`event=token.sign.blocked reason=inconsistent_privilege_claims`); an inconsistent
   access token is never signed.
+- **`is_superuser <=> role == SUPERADMIN` enforced at the model, service, and
+  database layers.** `auth_user_service/db_models/users.py` adds the named DB check
+  constraint `ck_user_superuser_role_consistency`
+  (`is_superuser = (role = 'SUPERADMIN')`, compared against the verified persisted
+  enum member label `'SUPERADMIN'`, NULL-safe via the existing `NOT NULL` columns)
+  plus a model invariant that fires on `User.model_validate`. `is_superuser` is now
+  **derived evidence** of the authorized role, never a client-submitted switch:
+  `UserController.create_user`/`update_user` derive the flag server-side from the
+  role (`SUPERADMIN → true`, all others → `false`) in one place, ignoring any
+  client-supplied value, so a caller can never submit an inconsistent or
+  self-elevating pair. The DB constraint stays authoritative for direct SQL and
+  race paths.
+- **CI AST guard bans direct `is_superuser` authorization checks.**
+  `auth_user_service/scripts/check_no_direct_superuser_auth.py` (wired into the CI
+  `lint` job) fails the build on any boolean authorization decision that reads
+  `<user>.is_superuser` directly; the only sanctioned path is the SDK dual-evidence
+  predicate `has_superuser_privileges(role, is_superuser)`. Serialization and ORM
+  column use are unaffected.
 
 ---
 

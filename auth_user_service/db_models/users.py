@@ -7,14 +7,26 @@ the validation rules for user-related operations.
 from typing import List, Optional, TYPE_CHECKING
 import uuid
 
+import sqlalchemy as sa
 from pydantic import EmailStr, ValidationError, field_validator, model_validator
 from sqlalchemy import Column
 from sqlmodel import Field, Relationship, SQLModel, Uuid
 
+from auth_sdk_m8.authorization import validate_privilege_claims
 from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 from auth_sdk_m8.models.shared import TimestampMixin
 from auth_sdk_m8.utils.email import normalize_email
 from auth_user_service.core.db_utils import get_table_args, prefixed_tables
+
+# Named DB check constraint enforcing the canonical role/flag invariant
+# ``is_superuser <=> role == SUPERADMIN``. SQLAlchemy persists the native enum
+# **member name** ``'SUPERADMIN'`` (verified per dialect: PostgreSQL native enum,
+# MySQL/MariaDB ``ENUM`` label, SQLite VARCHAR surrogate — all store the uppercase
+# member name), so the equivalence compares against that literal. Both operands
+# are ``NOT NULL`` in the schema, so NULL is rejected by ``NOT NULL`` (a SQL CHECK
+# passes on UNKNOWN); the CHECK rejects both non-NULL mismatch directions.
+_SUPERUSER_ROLE_CHECK_NAME = "ck_user_superuser_role_consistency"
+_SUPERUSER_ROLE_CHECK_SQL = "is_superuser = (role = 'SUPERADMIN')"
 
 if TYPE_CHECKING:
     from auth_user_service.db_models.api_keys import ApiKey, RateLimit
@@ -352,7 +364,27 @@ class User(UserBase, table=True):
     """
 
     __tablename__ = prefixed_tables("user")
-    __table_args__ = (get_table_args(),)
+    __table_args__ = (
+        sa.CheckConstraint(
+            _SUPERUSER_ROLE_CHECK_SQL,
+            name=_SUPERUSER_ROLE_CHECK_NAME,
+        ),
+        get_table_args(),
+    )
+
+    @model_validator(mode="after")
+    def _validate_privilege_claim_consistency(self) -> "User":
+        """Reject a ``role``/``is_superuser`` pair outside the canonical table.
+
+        Mirrors the DB check constraint at the model layer so the service create
+        path (``User.model_validate``) fails closed on an inconsistent pair.
+        Direct ORM construction skips this hook (SQLModel table models do not
+        validate on ``__init__``); the DB constraint stays authoritative for
+        direct SQL and race paths.
+        """
+        validate_privilege_claims(self.role, self.is_superuser)
+        return self
+
     id: uuid.UUID = Field(
         sa_column=Column(
             "id",
