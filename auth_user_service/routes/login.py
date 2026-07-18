@@ -40,7 +40,6 @@ from auth_user_service.core.security import SecurityHelper
 from auth_user_service.db_models.users import UserPublic
 from auth_user_service.services.auth import AuthController
 from auth_user_service.services.client_sessions import SessionController
-from auth_user_service.services.users import UserController
 
 logger = logging.getLogger(__name__)
 
@@ -416,9 +415,28 @@ def login_refresh_token(
     if not settings.is_stateless:
         _check_refresh_allowlist(redis, old_jti, response, _m)
 
-    user = UserController.get_user(session=session, user_id=user_id)
+    # Re-read the persisted user fresh under a row lock before signing: the
+    # refresh path must not sign against a stale identity-map object, and it must
+    # observe the owner's current role/is_superuser/is_active/auth_generation so a
+    # refresh racing a role/activation change cannot mint a token with stale
+    # claims (3.4). create_auth_tokens then validates the canonical claim pair.
+    user = AuthController.reload_persisted_user_for_signing(
+        session=session, user_id=user_id
+    )
     if user is None or user.is_active is not True:
         raise HTTPException(status_code=401, detail="Invalid user or inactive user")
+
+    # Generation revalidation under the row lock: a refresh racing a revocation
+    # must not preserve the superseded session lineage. This is DB-authoritative
+    # (independent of the Redis allowlist) and applies only when sessions are
+    # tracked; a stale/absent generation is treated as revoked (3.4, 3.5.1).
+    if not settings.is_stateless and not AuthController.refresh_lineage_is_current(
+        session=session, user=user, session_jti=old_jti
+    ):
+        if _m and _m.token_refresh_total:
+            _m.token_refresh_total.labels(result="revoked").inc()
+        response.delete_cookie(key="refresh_token")
+        raise HTTPException(status_code=401, detail="Session revoked or superseded")
 
     access_token, new_refresh_token, new_jti = AuthController.create_auth_tokens(
         user=user

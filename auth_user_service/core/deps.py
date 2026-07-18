@@ -14,10 +14,16 @@ from typing import Callable
 from fastapi import Depends, Header, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer
 from redis import ConnectionPool, Redis
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 
-from auth_sdk_m8.authorization import has_superuser_privileges
+from auth_sdk_m8.authorization import (
+    has_superuser_privileges,
+    privilege_claims_are_consistent,
+    validate_api_key_required_role,
+)
 from auth_sdk_m8.core.exceptions import InvalidToken
+from auth_sdk_m8.schemas.api_key import ApiKeyPrincipal
+from auth_sdk_m8.schemas.base import ApiKeyAccessMode, RoleType
 from auth_sdk_m8.schemas.user import UserModel
 from auth_sdk_m8.security import (
     ValidationHooks,
@@ -41,6 +47,7 @@ from auth_user_service.services.service_token import (
 from auth_sdk_m8.observability.metrics import get as _get_metrics
 from auth_user_service.core.engine_sync import SessionDep  # noqa: F401 (re-exported)
 from auth_user_service.db_models.api_keys import ApiKey
+from auth_user_service.db_models.users import User
 from auth_user_service.services.api_keys import ApiKeyService, RateLimitEnforcer
 
 # Redis hash key for write-behind last_used_at updates: field=key_id, value=ISO timestamp
@@ -434,3 +441,104 @@ def get_current_api_key(
 
 
 CurrentApiKey = Annotated[ApiKey, Depends(get_current_api_key)]
+
+
+def _resolve_api_key_principal(session: Session, api_key: ApiKey) -> ApiKeyPrincipal:
+    """Resolve an authenticated *api_key* to the canonical live owner principal.
+
+    An API key stores no role — it is an opaque pointer to its owner — so a
+    request is authorized as the owner, at the owner's **current** persisted
+    role, and can never exceed it (3.11). The owner is loaded with a **fresh
+    query** (``populate_existing`` — never a stale identity-map object), and a
+    missing, inactive, or claim-inconsistent owner is rejected with the
+    **generic** invalid-key response so a caller cannot probe another account's
+    state. The returned :class:`ApiKeyPrincipal` is the SDK-owned canonical type
+    shared with the remote introspection path, so both halves of the rule
+    evaluate one identical object and cannot drift; it carries the owner's
+    current ``auth_generation`` as evidence for this decision only.
+
+    The key's immutable ``access_mode`` caps the principal (``APIKEY-MODE-01``).
+    The column is added by the Expand migration (later plan item); until then
+    every key reads as the migrated default ``READ_ONLY``, the most restrictive
+    mode, so the surface stays fail-closed and needs no change when it lands.
+    """
+    owner = session.exec(
+        select(User)
+        .where(col(User.id) == api_key.user_id)
+        .execution_options(populate_existing=True)
+    ).first()
+    if (
+        owner is None
+        or not owner.is_active
+        or not privilege_claims_are_consistent(owner.role, owner.is_superuser)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired API key",
+        )
+    access_mode = getattr(api_key, "access_mode", ApiKeyAccessMode.READ_ONLY)
+    return ApiKeyPrincipal(
+        user_id=str(owner.id),
+        role=owner.role,
+        is_superuser=owner.is_superuser,
+        access_mode=access_mode,
+        auth_generation=owner.auth_generation,
+    )
+
+
+def get_current_api_key_principal(
+    api_key: CurrentApiKey,
+    session: SessionDep,
+) -> ApiKeyPrincipal:
+    """Resolve the presented API key to the canonical live owner principal (3.11).
+
+    Composes the existing :func:`get_current_api_key` authentication (hash /
+    revoked / expiry validation + rate limiting) with a fresh owner load. This is
+    the **base** active-principal dependency; a capability-bearing route MUST
+    depend on a role dependency (:func:`require_api_key_role` and its
+    ``reader``/``writer`` specializations), never on this bare principal —
+    depending on it never implies any write capability.
+    """
+    return _resolve_api_key_principal(session, api_key)
+
+
+CurrentApiKeyPrincipal = Annotated[
+    ApiKeyPrincipal, Depends(get_current_api_key_principal)
+]
+
+
+def require_api_key_role(
+    required_role: RoleType,
+) -> Callable[[ApiKeyPrincipal], ApiKeyPrincipal]:
+    """Build an API-key capability dependency for *required_role* (3.11).
+
+    Authorizes through the **shared SDK capability check**
+    (:meth:`ApiKeyPrincipal.has_capability`) evaluated on the owner's current
+    claims and the key's immutable access mode — the *same* predicate the JWT
+    guards and the remote introspection path use — so a key can never exceed its
+    owner's current role and an owner downgrade takes effect on the key's next
+    request. ``required_role`` is capped at ``WRITER``: an API key never carries
+    administrative or superuser authority, so a higher requirement is a
+    programming error the surface rejects at wiring time
+    (:class:`ApiKeyCapabilityCeilingError`), not a routine denial. An owner whose
+    role (or a read-only key on a write capability) is insufficient returns the
+    standard 403.
+    """
+    validate_api_key_required_role(required_role)
+
+    def _require_api_key_role(principal: CurrentApiKeyPrincipal) -> ApiKeyPrincipal:
+        if not principal.has_capability(required_role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The API key owner doesn't have enough privileges",
+            )
+        return principal
+
+    return _require_api_key_role
+
+
+# The only reusable specializations — reader and writer. There is deliberately
+# no ``_admin``/``_superuser`` member: administrative and superuser operations
+# are JWT-only (APIKEY-CAP-01 capability ceiling).
+get_current_api_key_reader = require_api_key_role(RoleType.READER)
+get_current_api_key_writer = require_api_key_role(RoleType.WRITER)

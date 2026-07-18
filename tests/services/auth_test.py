@@ -13,6 +13,7 @@ from pydantic import SecretStr
 from auth_sdk_m8.schemas.base import RoleType
 
 import auth_user_service.services.auth as _auth_module
+from auth_user_service.db_models.sessions import ClientSession
 from auth_user_service.services.auth import AuthController, _resolve_kid
 
 
@@ -429,3 +430,95 @@ class TestCreateAuthSession:
         assert session_item.external_access_token is not None
         assert session_item.external_refresh_token is not None
         assert session_item.external_token_expires_at is not None
+
+
+class TestReloadPersistedUserForSigning:
+    """Fresh, row-locked re-read of the persisted user before signing (3.4)."""
+
+    def test_returns_current_persisted_row(self, db_session, sample_user):
+        # A concurrent write commits a role change; the fresh re-read must see it
+        # even though an identity-map object was populated earlier in the request.
+        cached = AuthController.reload_persisted_user_for_signing(
+            session=db_session, user_id=sample_user.id
+        )
+        assert cached is not None
+        sample_user.role = RoleType.WRITER
+        db_session.add(sample_user)
+        db_session.commit()
+
+        reloaded = AuthController.reload_persisted_user_for_signing(
+            session=db_session, user_id=sample_user.id
+        )
+        assert reloaded is not None
+        assert reloaded.role == RoleType.WRITER
+
+    def test_missing_user_returns_none(self, db_session):
+        assert (
+            AuthController.reload_persisted_user_for_signing(
+                session=db_session, user_id=uuid.uuid4()
+            )
+            is None
+        )
+
+
+class TestRefreshLineageIsCurrent:
+    """Generation revalidation of the refreshed session lineage (3.4, 3.5.1)."""
+
+    def _make_session(self, db_session, user, jti, generation):
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        client_session = ClientSession(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            provider=user.provider,
+            jwt_jti=jti,
+            refresh_token_hash="c" * 64,
+            jwt_expires_at=now + timedelta(hours=1),
+            refresh_expires_at=now + timedelta(days=7),
+            revoked=False,
+            auth_generation=generation,
+        )
+        db_session.add(client_session)
+        db_session.commit()
+        return client_session
+
+    def test_current_generation_is_current(self, db_session, sample_user):
+        jti = str(uuid.uuid4())
+        self._make_session(db_session, sample_user, jti, sample_user.auth_generation)
+        assert (
+            AuthController.refresh_lineage_is_current(
+                session=db_session, user=sample_user, session_jti=jti
+            )
+            is True
+        )
+
+    def test_stale_generation_is_not_current(self, db_session, sample_user):
+        jti = str(uuid.uuid4())
+        self._make_session(
+            db_session, sample_user, jti, sample_user.auth_generation - 1
+        )
+        assert (
+            AuthController.refresh_lineage_is_current(
+                session=db_session, user=sample_user, session_jti=jti
+            )
+            is False
+        )
+
+    def test_legacy_null_generation_is_not_current(self, db_session, sample_user):
+        jti = str(uuid.uuid4())
+        self._make_session(db_session, sample_user, jti, None)
+        assert (
+            AuthController.refresh_lineage_is_current(
+                session=db_session, user=sample_user, session_jti=jti
+            )
+            is False
+        )
+
+    def test_missing_session_is_not_current(self, db_session, sample_user):
+        assert (
+            AuthController.refresh_lineage_is_current(
+                session=db_session, user=sample_user, session_jti=str(uuid.uuid4())
+            )
+            is False
+        )

@@ -59,8 +59,14 @@ class TestForcedChurnDetection:
             patch("auth_user_service.routes.login.RefreshRateLimiter") as mock_rl_cls,
             patch("auth_user_service.routes.login.RedisRefreshStore") as mock_store_cls,
             patch(
-                "auth_user_service.routes.login.UserController.get_user",
+                "auth_user_service.routes.login.AuthController."
+                "reload_persisted_user_for_signing",
                 return_value=mock_user,
+            ),
+            patch(
+                "auth_user_service.routes.login.AuthController."
+                "refresh_lineage_is_current",
+                return_value=True,
             ),
             patch(
                 "auth_user_service.routes.login.AuthController.create_auth_tokens",

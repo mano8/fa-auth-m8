@@ -11,9 +11,10 @@ import secrets
 from typing import Optional
 from urllib.parse import quote_plus
 
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 
 from auth_user_service.services.client_sessions import SessionController
+from auth_user_service.services.generation import is_session_generation_stale
 from auth_user_service.services.users import UserController
 from auth_user_service.db_models.users import User
 from auth_user_service.db_models.sessions import ClientSessionCreate, ClientSession
@@ -169,6 +170,54 @@ class AuthController:
         access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         refresh_token_expires = timedelta(minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES)
         return access_token_expires, refresh_token_expires
+
+    @staticmethod
+    def reload_persisted_user_for_signing(
+        *, session: Session, user_id: object
+    ) -> Optional[User]:
+        """Re-read the persisted user fresh, under a row lock, for the signing path.
+
+        The refresh path shares the single :meth:`create_auth_tokens` signing
+        chokepoint with login, so before it re-signs it must read the owner's
+        **current** persisted claims rather than an identity-map object populated
+        earlier in the request. This reload issues a fresh query with
+        ``populate_existing=True`` and ``SELECT ... FOR UPDATE`` so a refresh
+        racing a role/activation change reads the committed row — its current
+        ``role``/``is_superuser``/``is_active``/``auth_generation`` — immediately
+        before signing (3.4). On SQLite ``FOR UPDATE`` is a no-op; the real
+        contention behaviour is certified on the engine matrix (later plan item).
+        """
+        statement = (
+            select(User)
+            .where(col(User.id) == user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return session.exec(statement).first()
+
+    @staticmethod
+    def refresh_lineage_is_current(
+        *, session: Session, user: User, session_jti: str
+    ) -> bool:
+        """Whether the refreshed session lineage is still current for *user* (3.4).
+
+        A refresh racing a revocation must not preserve a superseded session
+        lineage. The lineage is current only when its ``ClientSession`` row still
+        exists and its stamped ``auth_generation`` equals the owner's current
+        generation; a missing row, or a stale/absent stamp (legacy ``NULL``
+        generations are treated as revoked, 3.5.1), means the lineage has been
+        revoked. Callers apply this only when sessions are tracked
+        (non-stateless); a stateless deployment keeps no lineage and relies on
+        the persisted-claim re-read to converge the role at the next refresh.
+        """
+        client_session = session.exec(
+            select(ClientSession).where(col(ClientSession.jwt_jti) == session_jti)
+        ).first()
+        if client_session is None:
+            return False
+        return not is_session_generation_stale(
+            client_session.auth_generation, user.auth_generation
+        )
 
     @staticmethod
     def create_auth_tokens(user: User) -> tuple[str, str, str]:
