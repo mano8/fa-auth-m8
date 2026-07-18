@@ -245,6 +245,15 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     API_KEY_DEFAULT_LIMIT_MONTH: int = 200_000
     API_KEY_MAX_PER_USER: int = 10
 
+    # Per-consumer anti-abuse ceiling for POST /private/v1/api-keys/introspect
+    # (§3.12 step 3), consumed on every authenticated attempt — separate from and
+    # in addition to the introspected key's own functional quota. A fixed
+    # per-minute window keyed by the authenticated consumer id bounds how fast a
+    # single (compromised or buggy) internal consumer can probe keys, without
+    # ever touching the per-key counters. Observed with bounded labels only (the
+    # consumer id is a small registry-bounded set — never a JTI/key hash/user id).
+    API_KEY_INTROSPECTION_ANTIABUSE_PER_MINUTE: int = Field(600, ge=1, le=1_000_000)
+
     @property
     def effective_api_key_strict_rate_limit(self) -> bool:
         """Whether API-key verification must fail closed when Redis is unavailable.

@@ -126,6 +126,15 @@
     "note": "Create user — internal only; requires per-consumer credential + user-create scope"
   },
   {
+    "path": "/user/private/v1/api-keys/introspect",
+    "method": "POST",
+    "tag": "private",
+    "exposure": "internal",
+    "in_openapi": false,
+    "traefik_router": "internal",
+    "note": "API-key introspection (§3.12) — internal only; requires api-key-introspection scope"
+  },
+  {
     "path": "/user/private/v1/events/stream",
     "method": "GET",
     "tag": "private",

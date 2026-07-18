@@ -107,6 +107,43 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   (labelled by `effect_type`) and the `<prefix>_revocation_outbox_propagation_seconds`
   histogram (commit→delivery latency) on the shared `/metrics` registry. JTIs are
   never used as label values.
+- **Private API-key introspection endpoint (`POST /private/v1/api-keys/introspect`,
+  §3.12).** The distributed half of the API-key authorization rule: a consumer
+  service that does not share the issuer database resolves a **user API key** to
+  the same canonical live owner principal `fa-auth-m8` uses locally. The route
+  (`include_in_schema=False`) is gated by a dedicated `api-key-introspection`
+  `ConsumerScope` — kept distinct from `introspection` so a JTI-status consumer is
+  not implicitly granted key introspection. It follows the normative §3.12
+  processing order: authenticate the internal consumer → verify the scope →
+  consume a per-consumer anti-abuse allowance → resolve the key (hash lookup,
+  revocation, expiry) → resolve the owner live → check activity/canonical
+  consistency → derive the audience from the **authenticated consumer's registry
+  identity** (never the request body) → verify the key carries it → compute the
+  constrained principal → consume the key's functional quota → queue the
+  `last_used_at` write-behind → return. The raw key travels as a redacted
+  `SecretStr` body (a client-generated hash is never accepted; the key never
+  appears in the URL, logs, traces, or error messages). Status matrix: `401`
+  invalid/missing internal credential, `403` credential lacking the scope, one
+  generic `200 {active: false}` for **every** unusable cause (unknown/revoked/
+  expired key, missing/inactive/claim-inconsistent owner, or an audience the key
+  does not carry — no account-state oracle), `200 {active: true, …}` with the
+  minimized principal (owner role/superuser evidence ∩ the key's immutable access
+  mode, plus `audience_id` and `key_expires_at`; never `is_active`, key hash/id,
+  or email), `429`+`Retry-After` on functional-quota exhaustion with local-auth
+  parity, and `503` on DB-unavailable, an unknown requested schema version, or
+  strict-Redis quota unavailability (never fail-open). Because the normalized
+  `api_key_audiences` relation lands in a later Expand change, **no key yet
+  carries an audience**, so remote introspection currently answers `active: false`
+  for every consumer — the documented fail-closed cutover in which no existing key
+  silently becomes a cross-service credential. Supporting refactor:
+  `authenticate_private_consumer` now returns the authenticated consumer id (the
+  audience source; `require_private_scope` is a thin wrapper over it), and
+  `resolve_api_key_owner_principal` is the shared non-raising owner-principal
+  resolver used by both the local dependency (which maps the miss to the generic
+  `401`) and this endpoint (which maps it to `active: false`), so the two paths
+  cannot drift. New setting `API_KEY_INTROSPECTION_ANTIABUSE_PER_MINUTE`
+  (default `600`) bounds the per-consumer anti-abuse ceiling, observed with the
+  registry-bounded consumer id label only.
 
 ### Changed
 

@@ -8,15 +8,24 @@ short-TTL service token, authorized against ``PRIVATE_API_CONSUMERS``. The legac
 single shared ``PRIVATE_API_SECRET`` gate has been retired.
 """
 
+import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional, Union
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session
 
+from auth_sdk_m8.core.exceptions import UnsupportedApiKeySchemaVersionError
+from auth_sdk_m8.schemas.api_key import (
+    ApiKeyIntrospectionActiveResponse,
+    ApiKeyIntrospectionInactiveResponse,
+    ApiKeyIntrospectionRequest,
+    validate_api_key_introspection_schema_version,
+)
 from auth_sdk_m8.schemas.jti_status import (
     JTI_STATUS_SCHEMA_VERSION,
     JtiStatusActiveResponse,
@@ -34,15 +43,23 @@ from auth_user_service.core.config import settings
 from auth_user_service.core.consumer_registry import get_consumer_registry
 from auth_user_service.core.deps import (
     SessionDep,
+    _apply_rate_limit,
+    _handle_api_key_redis_degraded,
+    authenticate_private_consumer,
     get_redis_client,
     require_private_scope,
+    resolve_api_key_owner_principal,
 )
 from auth_user_service.core.security import SecurityHelper
+from auth_user_service.db_models.api_keys import ApiKey
 from auth_user_service.db_models.users import User, UserPublic
 from auth_user_service.events import get_hub
+from auth_user_service.services.api_keys import ApiKeyService
 from auth_user_service.services.generation import GenerationController
 from auth_user_service.services.service_token import issue_service_token
 from auth_user_service.services.users import UserController
+
+_logger = logging.getLogger(__name__)
 
 # Each private route names the scope it needs (9.1, deny-by-default). The
 # per-consumer registry is required — the legacy single-PRIVATE_API_SECRET gate is
@@ -277,6 +294,169 @@ async def check_jti_status(
     return JtiStatusActiveResponse(
         user_id=str(decision.user_id),
         auth_generation=decision.auth_generation,
+    )
+
+
+def _consume_introspection_antiabuse(redis: Any, consumer_id: str) -> None:
+    """Consume the per-consumer anti-abuse allowance for introspection (§3.12 step 3).
+
+    A fixed per-minute window keyed by the authenticated consumer id, consumed on
+    **every** authenticated attempt (inactive keys included) and entirely separate
+    from the introspected key's own functional quota (steps 11-12). Exhaustion is
+    a ``429`` with ``Retry-After``. When Redis is unavailable this ceiling cannot
+    be enforced, so it follows the same posture as key rate limiting: a
+    strict/production deployment fails closed (``503``), non-strict development
+    proceeds (logged unsafe). Labels stay bounded — only the registry-bounded
+    consumer id, never a key hash or user id.
+    """
+    if redis is None:
+        if settings.effective_api_key_strict_rate_limit:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=_INTROSPECTION_UNAVAILABLE,
+            )
+        _logger.warning(
+            "introspect.antiabuse_unavailable decision=allow mode=fail_open consumer=%s",
+            consumer_id,
+        )
+        return
+
+    limit = settings.API_KEY_INTROSPECTION_ANTIABUSE_PER_MINUTE
+    bucket = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    key = f"introspect:antiabuse:{consumer_id}:{bucket}"
+    with redis.pipeline() as pipe:
+        pipe.incr(key)
+        pipe.expire(key, 60)
+        count, _ = pipe.execute()
+    if count > limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Introspection rate limit exceeded",
+            headers={"Retry-After": "60"},
+        )
+
+
+def _key_carries_audience(api_key: ApiKey, audience_id: str) -> bool:
+    """Whether *api_key* is bound to *audience_id* (§3.12 steps 8-9, ``APIKEY-AUD-01``).
+
+    The audience is the authenticated consumer's registry identity, never
+    client-supplied. Audiences persist in the normalized ``api_key_audiences``
+    relation created by a later Expand plan item; until it lands every key
+    carries **no** audience, so a remote consumer's introspection is answered
+    ``active: false`` — the documented fail-closed cutover (no existing key
+    silently becomes a cross-service credential). Read defensively so this
+    endpoint needs no change when the relation is added.
+    """
+    audiences = getattr(api_key, "audiences", None) or ()
+    return any(getattr(a, "audience_id", None) == audience_id for a in audiences)
+
+
+@router.post(
+    "/v1/api-keys/introspect",
+    response_model=None,
+    include_in_schema=False,
+)
+async def introspect_api_key(
+    body: ApiKeyIntrospectionRequest,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    redis: Any = Depends(get_redis_client),
+) -> Any:
+    """Resolve a user API key to its canonical live owner principal (§3.12).
+
+    The distributed half of the API-key authorization rule: a service that is
+    **not** ``fa-auth-m8`` holds only the opaque key and cannot share the issuer
+    database, so it resolves the owner's **current** role here. Internal-caller
+    authentication is kept strictly separate from the state of the key being
+    inspected:
+
+    * ``401`` — missing/invalid internal consumer credential.
+    * ``403`` — valid credential lacking the dedicated ``API_KEY_INTROSPECTION``
+      scope (distinct from ``INTROSPECTION`` so a JTI-status consumer is not
+      implicitly granted key introspection).
+    * ``200 {"active": false}`` — one generic shape for **every** unusable key:
+      unknown/revoked/expired key, missing/inactive/claim-inconsistent owner, or
+      an audience the key does not carry. The endpoint never returns ``401`` for
+      an inactive key, so it is not an account-state or key-validity oracle.
+    * ``200 {"active": true, ...}`` — the minimized canonical principal (owner's
+      current role/superuser evidence ∩ the key's immutable access mode), with
+      the derived ``audience_id`` and ``key_expires_at``; no ``is_active``, key
+      hash, key id, or email is exposed.
+    * ``429`` — the key's own functional quota is exhausted (or the per-consumer
+      anti-abuse allowance), preserving ``Retry-After``.
+    * ``503`` — authoritative DB unavailable, an unsupported requested schema
+      version, or strict-Redis quota unavailability (never fail-open here).
+
+    The processing order is normative (§3.12): authenticate consumer → verify
+    scope → consume anti-abuse allowance → resolve key → check revocation/expiry
+    → resolve owner live → check activity/consistency → derive audience from the
+    consumer identity → verify the key carries it → compute the constrained
+    principal → consume the key's functional quota → queue the ``last_used_at``
+    write-behind → return. Inactive keys and audience mismatches consume the
+    anti-abuse allowance but never the key's functional quota. The raw key is a
+    :class:`~pydantic.SecretStr` and never appears in the URL, logs, traces, or
+    error messages.
+    """
+    # 1-2. Authenticate the internal consumer for the dedicated scope; its
+    # registry identity is the evaluated audience (never the request body).
+    consumer_id = authenticate_private_consumer(
+        request, ConsumerScope.API_KEY_INTROSPECTION
+    )
+
+    # A requested contract version this issuer does not implement is a 503 — it
+    # never guesses at a contract (shared SDK fail-closed chokepoint).
+    try:
+        validate_api_key_introspection_schema_version(body.schema_version)
+    except UnsupportedApiKeySchemaVersionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_INTROSPECTION_UNAVAILABLE,
+        ) from exc
+
+    # 3. Consume the per-consumer anti-abuse allowance (before touching keys).
+    _consume_introspection_antiabuse(redis, consumer_id)
+
+    # 4-5. Resolve the presented key (hash lookup, revocation, expiry).
+    try:
+        api_key = ApiKeyService.get_active_key(session, body.api_key.get_secret_value())
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_INTROSPECTION_UNAVAILABLE,
+        ) from exc
+    if api_key is None:
+        return ApiKeyIntrospectionInactiveResponse()
+
+    # 6-7. Resolve the owner live and check activity/canonical consistency.
+    try:
+        principal = resolve_api_key_owner_principal(session, api_key)
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_INTROSPECTION_UNAVAILABLE,
+        ) from exc
+    if principal is None:
+        return ApiKeyIntrospectionInactiveResponse()
+
+    # 8-9. Derive the audience from the consumer identity and require the key to
+    # carry it. No audience ⇒ issuer-local only ⇒ generic inactive remotely.
+    if not _key_carries_audience(api_key, consumer_id):
+        return ApiKeyIntrospectionInactiveResponse()
+
+    # 10 is the principal above. 11-12. Consume the key's authoritative functional
+    # quota and queue the last_used_at write-behind through the exact same chain
+    # local auth uses (429/Retry-After + strict-Redis 503 parity with local auth).
+    if redis is not None:
+        _apply_rate_limit(redis, session, api_key, response)
+    else:
+        _handle_api_key_redis_degraded(api_key)
+
+    # 13. Return the minimized canonical principal.
+    return ApiKeyIntrospectionActiveResponse(
+        audience_id=consumer_id,
+        principal=principal,
+        key_expires_at=api_key.expires_at,
     )
 
 

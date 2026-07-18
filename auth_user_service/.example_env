@@ -141,6 +141,10 @@ TRUSTED_PROXY_COUNT=0
 #API_KEY_DEFAULT_LIMIT_DAY=10000
 #API_KEY_DEFAULT_LIMIT_MONTH=200000
 #API_KEY_MAX_PER_USER=10
+# Per-consumer anti-abuse ceiling (requests/minute) for the private API-key
+# introspection endpoint (POST /private/v1/api-keys/introspect, §3.12), consumed
+# on every authenticated attempt — separate from the introspected key's own quota.
+#API_KEY_INTROSPECTION_ANTIABUSE_PER_MINUTE=600
 
 # ── Observability ──────────────────────────────────────────────────────────────
 METRICS_ENABLED=false

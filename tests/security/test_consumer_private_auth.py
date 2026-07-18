@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
 from auth_sdk_m8.security.consumer_auth import (
@@ -36,7 +36,10 @@ from pydantic import SecretStr
 
 from auth_user_service.core.config import ConsumerCredentialConfig, settings
 from auth_user_service.core.consumer_registry import get_consumer_registry
-from auth_user_service.core.deps import require_private_scope
+from auth_user_service.core.deps import (
+    authenticate_private_consumer,
+    require_private_scope,
+)
 from auth_user_service.routes import private as private_routes
 from auth_user_service.services.service_token import (
     SERVICE_TOKEN_AUDIENCE,
@@ -313,6 +316,50 @@ def test_service_token_paths(monkeypatch) -> None:
         client.get("/p", headers={"Authorization": "Bearer not-a-jwt"}).status_code
         == 401
     )
+
+
+# ── authenticate_private_consumer returns the caller identity (audience) ──────
+
+
+def _identity_client(scope: ConsumerScope) -> TestClient:
+    app = FastAPI()
+
+    @app.get("/id")
+    def _id(request: Request) -> dict[str, str]:
+        return {"id": authenticate_private_consumer(request, scope)}
+
+    return TestClient(app)
+
+
+def test_authenticate_returns_credential_client_id(monkeypatch) -> None:
+    """The per-consumer credential path yields the authenticated consumer id."""
+    monkeypatch.setattr(
+        settings,
+        "PRIVATE_API_CONSUMERS",
+        _consumers(media=("secret-m", ["introspection"])),
+    )
+    resp = _identity_client(ConsumerScope.INTROSPECTION).get(
+        "/id", headers={"X-Internal-Client": "media", "X-Internal-Token": "secret-m"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "media"
+
+
+def test_authenticate_returns_service_token_client_id(monkeypatch) -> None:
+    """The service-token path yields the token subject as the consumer id."""
+    monkeypatch.setattr(
+        settings,
+        "PRIVATE_API_CONSUMERS",
+        _consumers(media=("secret-m", ["introspection"])),
+    )
+    token, _ = issue_service_token(
+        "media", ["introspection"], signing_secret=_SIGNING_KEY, ttl_seconds=60
+    )
+    resp = _identity_client(ConsumerScope.INTROSPECTION).get(
+        "/id", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "media"
 
 
 # ── /private/v1/service-token exchange route ──────────────────────────────────
