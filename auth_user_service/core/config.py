@@ -244,6 +244,10 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     API_KEY_DEFAULT_LIMIT_DAY: int = 10_000
     API_KEY_DEFAULT_LIMIT_MONTH: int = 200_000
     API_KEY_MAX_PER_USER: int = 10
+    # Maximum introspection audiences bindable to a single API key (APIKEY-AUD-01,
+    # §3.12). Bounds the blast radius of one key across services; operational
+    # guidance still recommends one key per integration.
+    API_KEY_MAX_AUDIENCES: int = Field(3, ge=1, le=50)
 
     # Per-consumer anti-abuse ceiling for POST /private/v1/api-keys/introspect
     # (§3.12 step 3), consumed on every authenticated attempt — separate from and

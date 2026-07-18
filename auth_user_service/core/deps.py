@@ -481,9 +481,8 @@ def resolve_api_key_owner_principal(
     for this decision only.
 
     The key's immutable ``access_mode`` caps the principal (``APIKEY-MODE-01``).
-    The column is added by the Expand migration (later plan item); until then
-    every key reads as the migrated default ``READ_ONLY``, the most restrictive
-    mode, so the surface stays fail-closed and needs no change when it lands.
+    It is read live from the key; a stand-in without the attribute falls back to
+    the most restrictive ``READ_ONLY``, so the surface always stays fail-closed.
     """
     owner = session.exec(
         select(User)

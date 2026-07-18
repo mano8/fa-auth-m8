@@ -341,11 +341,11 @@ def _key_carries_audience(api_key: ApiKey, audience_id: str) -> bool:
 
     The audience is the authenticated consumer's registry identity, never
     client-supplied. Audiences persist in the normalized ``api_key_audiences``
-    relation created by a later Expand plan item; until it lands every key
-    carries **no** audience, so a remote consumer's introspection is answered
-    ``active: false`` — the documented fail-closed cutover (no existing key
-    silently becomes a cross-service credential). Read defensively so this
-    endpoint needs no change when the relation is added.
+    relation; a key with **no** audience rows is issuer-local only, so a remote
+    consumer's introspection is answered ``active: false`` — the documented
+    fail-closed cutover (no existing key silently becomes a cross-service
+    credential). Read defensively so a pre-Expand stand-in without the relation
+    also carries none.
     """
     audiences = getattr(api_key, "audiences", None) or ()
     return any(getattr(a, "audience_id", None) == audience_id for a in audiences)

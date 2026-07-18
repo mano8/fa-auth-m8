@@ -27,6 +27,7 @@ from functools import lru_cache
 from auth_sdk_m8.security.consumer_auth import (
     ConsumerCredential,
     ConsumerCredentialRegistry,
+    ConsumerScope,
 )
 
 from auth_user_service.core.config import ConsumerCredentialConfig, settings
@@ -77,3 +78,20 @@ def get_consumer_registry() -> ConsumerCredentialRegistry | None:
     fail closed / disable themselves when no ``PRIVATE_API_CONSUMERS`` are set.
     """
     return _build_registry(_snapshot(settings.PRIVATE_API_CONSUMERS))
+
+
+def get_introspection_audiences() -> frozenset[str]:
+    """Return the consumer ids eligible to be an API-key audience (``APIKEY-AUD-01``).
+
+    An audience is a registered consumer **explicitly granted** the dedicated
+    ``api-key-introspection`` scope (§3.12). A key may only be bound to such
+    consumers, so a leaked key cannot be introspected by one that was never
+    permitted to. A consumer whose registration is removed (disabled) is simply
+    absent from the map, so it ceases to be eligible.
+    """
+    scope = str(ConsumerScope.API_KEY_INTROSPECTION)
+    return frozenset(
+        client_id
+        for client_id, cfg in settings.PRIVATE_API_CONSUMERS.items()
+        if scope in cfg.scopes
+    )

@@ -11,7 +11,7 @@ import logging
 import secrets
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Iterable, Optional
 
 from redis import Redis
 from sqlmodel import Session, select
@@ -20,7 +20,7 @@ from auth_sdk_m8.observability import metrics as _metrics
 from auth_sdk_m8.schemas.base import Period
 from auth_user_service.core.client import RateLimitResult, RedisRateLimiter
 from auth_user_service.core.security import SecurityHelper
-from auth_user_service.db_models.api_keys import ApiKey, RateLimit
+from auth_user_service.db_models.api_keys import ApiKey, ApiKeyAudience, RateLimit
 
 if TYPE_CHECKING:
     from auth_user_service.core.config import Settings
@@ -55,10 +55,140 @@ def _emit_rate_hit_metric(exceeded_period: Optional[Period]) -> None:
         m.api_key_rate_limit_hits_total.labels(period=exceeded_period.value).inc()
 
 
+class ApiKeyAudienceError(ValueError):
+    """A requested audience binding is invalid.
+
+    Raised for a malformed audience (empty/wildcard), an id that is not an
+    enabled consumer granted the ``api-key-introspection`` scope, exceeding the
+    per-key maximum, or an attempt to change an immutable already-bound set.
+    Carries only a caller-safe message — never key material.
+    """
+
+
 class ApiKeyService:
     """Handles creation, validation, and revocation of API keys."""
 
     KEY_PREFIX = "ak_"
+
+    @staticmethod
+    def normalize_audiences(audiences: Iterable[str]) -> list[str]:
+        """Canonicalize a requested audience set without checking the registry.
+
+        Strips each id, rejects an empty or wildcard entry, and de-duplicates
+        preserving first-seen order so comparisons are exact (``APIKEY-AUD-01``:
+        wildcards are forbidden and matching is exact after normalization).
+
+        Raises:
+            ApiKeyAudienceError: On an empty or wildcard audience id.
+        """
+        seen: set[str] = set()
+        result: list[str] = []
+        for raw in audiences:
+            audience = (raw or "").strip()
+            if not audience:
+                raise ApiKeyAudienceError("An audience id must not be empty.")
+            if "*" in audience:
+                raise ApiKeyAudienceError("Audience wildcards are not permitted.")
+            if audience in seen:
+                continue
+            seen.add(audience)
+            result.append(audience)
+        return result
+
+    @classmethod
+    def validate_audiences(cls, audiences: Iterable[str]) -> list[str]:
+        """Normalize and authorize a requested audience set (``APIKEY-AUD-01``).
+
+        Only an **enabled consumer explicitly granted the
+        ``api-key-introspection`` scope** may be named — so a leaked key can never
+        be introspected by a consumer that was never permitted to — and no more
+        than ``settings.API_KEY_MAX_AUDIENCES`` per key.
+
+        Returns:
+            The normalized, authorized audience list.
+
+        Raises:
+            ApiKeyAudienceError: On a malformed id, an over-count, or an unknown /
+                ineligible consumer.
+        """
+        # Imported lazily to keep this dependency-light module free of a
+        # config/registry import at module load.
+        from auth_user_service.core.config import settings
+        from auth_user_service.core.consumer_registry import (
+            get_introspection_audiences,
+        )
+
+        normalized = cls.normalize_audiences(audiences)
+        max_count = settings.API_KEY_MAX_AUDIENCES
+        if len(normalized) > max_count:
+            raise ApiKeyAudienceError(
+                f"An API key may bind at most {max_count} audience(s)."
+            )
+        permitted = get_introspection_audiences()
+        unknown = [a for a in normalized if a not in permitted]
+        if unknown:
+            raise ApiKeyAudienceError(
+                "Unknown or ineligible audience(s): " + ", ".join(sorted(unknown))
+            )
+        return normalized
+
+    @staticmethod
+    def set_key_audiences_in_tx(
+        session: Session,
+        api_key: ApiKey,
+        audiences: Iterable[str],
+    ) -> list[ApiKeyAudience]:
+        """Replace *api_key*'s audience rows with *audiences* (transaction-neutral).
+
+        Deletes any existing bindings and adds one row per id **without
+        committing**, so the caller commits atomically with the key row. The
+        *audiences* must already be validated (:meth:`validate_audiences`).
+        Returns the created rows.
+        """
+        for existing in list(api_key.audiences or []):
+            session.delete(existing)
+        now = datetime.now(timezone.utc)
+        rows = [
+            ApiKeyAudience(api_key_id=api_key.id, audience_id=audience, created_at=now)
+            for audience in audiences
+        ]
+        for row in rows:
+            session.add(row)
+        return rows
+
+    @classmethod
+    def bind_existing_key_audiences(
+        cls,
+        session: Session,
+        api_key: ApiKey,
+        audiences: Iterable[str],
+    ) -> list[str]:
+        """Audited operator path: bind *audiences* to an existing key (§3.12).
+
+        Audiences only — ``access_mode`` is immutable and existing keys are
+        ``READ_ONLY``. The set is immutable after issuance, so this:
+
+        * binds when the key currently carries **no** audience (the legacy-key
+          migration case), or
+        * is an **idempotent no-op** when the identical set is already bound, and
+        * **refuses** to change a different non-empty set — rotate the key.
+
+        Transaction-neutral (the caller commits). Returns the normalized bound set.
+
+        Raises:
+            ApiKeyAudienceError: On invalid audiences or an immutable-set change.
+        """
+        normalized = cls.validate_audiences(audiences)
+        current = sorted(a.audience_id for a in (api_key.audiences or []))
+        if current == sorted(normalized):
+            return normalized
+        if current:
+            raise ApiKeyAudienceError(
+                "The key already carries a different audience set; audiences are "
+                "immutable after issuance — issue a replacement key instead."
+            )
+        cls.set_key_audiences_in_tx(session, api_key, normalized)
+        return normalized
 
     @classmethod
     def generate_key(cls) -> tuple[str, str]:

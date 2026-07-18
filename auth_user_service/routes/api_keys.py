@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func
-from sqlmodel import col, select
+from sqlmodel import Field, col, select
 
 from auth_sdk_m8.controllers.base import BaseController
 from auth_sdk_m8.models.shared import Message
@@ -22,7 +22,7 @@ from auth_user_service.core.config import settings
 from auth_user_service.core.deps import CurrentApiKey, CurrentUser, SessionDep
 from auth_user_service.core.exceptions import handle_route_exception
 from auth_user_service.db_models.api_keys import ApiKey, ApiKeyCreate, ApiKeyPublic
-from auth_user_service.services.api_keys import ApiKeyService
+from auth_user_service.services.api_keys import ApiKeyAudienceError, ApiKeyService
 
 router = APIRouter(prefix="/profile/api-keys", tags=["api-keys"])
 
@@ -31,6 +31,11 @@ class ApiKeyCreated(ApiKeyPublic):
     """Response model for key creation — includes plaintext shown exactly once."""
 
     plaintext: str
+    audiences: list[str] = Field(
+        default_factory=list,
+        description="Registered consumer ids this key was bound to (APIKEY-AUD-01). "
+        "Empty ⇒ issuer-local use only. Immutable after issuance.",
+    )
 
 
 @router.get(
@@ -61,9 +66,20 @@ def create_api_key(
 ) -> Any:
     """Create a new API key for the authenticated user.
 
-    The plaintext key is returned exactly once and never stored.
+    The plaintext key is returned exactly once and never stored. ``access_mode``
+    and ``audiences`` are fixed at issuance (§3.12): the default is the
+    security-first ``READ_ONLY`` key bound to no audience (issuer-local only). Any
+    requested audiences are authorized against the enabled introspection consumers
+    before the key is written (``409`` on an invalid/ineligible audience), and the
+    key row plus its audience bindings are committed atomically.
     """
     try:
+        # Authorize audiences before allocating the key so an invalid request
+        # never leaves a persisted key (validation raises ApiKeyAudienceError).
+        audiences: list[str] = (
+            ApiKeyService.validate_audiences(body.audiences) if body.audiences else []
+        )
+
         count_stmt = select(func.count()).where(
             ApiKey.user_id == current_user.id,
             col(ApiKey.revoked).is_(False),
@@ -86,8 +102,13 @@ def create_api_key(
             key_hash=key_hash,
             user_id=current_user.id,
             expires_at=expires_at,
+            access_mode=body.access_mode,
         )
         session.add(api_key)
+        # Bind audiences in the same transaction as the key row so a key never
+        # exists without its intended audience set (fail-closed cutover).
+        if audiences:
+            ApiKeyService.set_key_audiences_in_tx(session, api_key, audiences)
         session.commit()
         session.refresh(api_key)
 
@@ -95,7 +116,13 @@ def create_api_key(
         if m and m.api_key_lifecycle_total:
             m.api_key_lifecycle_total.labels(action="created").inc()
 
-        return ApiKeyCreated(**api_key.model_dump(), plaintext=plaintext)
+        return ApiKeyCreated(
+            **api_key.model_dump(), plaintext=plaintext, audiences=audiences
+        )
+    except ApiKeyAudienceError as ex:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(ex)
+        ) from ex
     except HTTPException:
         raise
     except Exception as ex:

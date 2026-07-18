@@ -138,7 +138,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | profile | PATCH | `/profile/me/password/` | JWT | Change own password |
 | profile | DELETE | `/profile/delete/me/` | JWT | Delete own account (cascades to the user's sessions, API keys, and rate-limit rows) |
 | api-keys | GET | `/profile/api-keys/verify` | X-API-Key | Validate key header, enforce rate limits, return key metadata |
-| api-keys | POST | `/profile/api-keys/` | JWT | Create API key — plaintext returned once, never stored |
+| api-keys | POST | `/profile/api-keys/` | JWT | Create API key — plaintext returned once, never stored. Optional `access_mode` (`read_only`/`read_write`) and `audiences` (introspection consumer ids) are fixed at issuance (§3.11–§3.12); `409` on an invalid/ineligible audience |
 | api-keys | GET | `/profile/api-keys/` | JWT | List own API keys (metadata only) |
 | api-keys | GET | `/profile/api-keys/{key_id}` | JWT | Get single key metadata |
 | api-keys | DELETE | `/profile/api-keys/{key_id}` | JWT | Revoke API key |
@@ -566,6 +566,7 @@ A startup warning is logged if the effective rate (requests ÷ window) exceeds 5
 | `API_KEY_DEFAULT_LIMIT_DAY` | no | `10000` | Default requests per day |
 | `API_KEY_DEFAULT_LIMIT_MONTH` | no | `200000` | Default requests per month |
 | `API_KEY_MAX_PER_USER` | no | `10` | Maximum API keys a user may create |
+| `API_KEY_MAX_AUDIENCES` | no | `3` | Maximum introspection audiences bindable to a single API key (§3.12) |
 
 ### Observability
 
@@ -808,6 +809,15 @@ API keys are created by authenticated users and validated by consumer services v
 - Stored as a SHA-256 hash in the database alongside metadata (name, expiry, revocation flag).
 - `last_used_at` is updated via a Redis write-behind queue flushed every 60 seconds.
 - Revoked with `DELETE /profile/api-keys/{key_id}`.
+
+### Access mode and audiences (§3.11–§3.12)
+
+A key is an opaque **pointer to its owner** — it stores no role, so a request is authorized as the owner at the owner's *current* role and can never exceed it. Two additive, explicit-only fields fix a key's reach at issuance and are **immutable afterwards** (change requires issuing a replacement key):
+
+- `access_mode` (`read_only` | `read_write`) — an immutable operation-category cap (`APIKEY-MODE-01`), **not** a role. Defaults to the most restrictive `read_only`; a `read_write` key still only writes when its owner is currently authorized to write.
+- `audiences` — the registered consumer ids allowed to introspect the key **remotely** (`APIKEY-AUD-01`). Each must be an enabled consumer explicitly granted the `api-key-introspection` scope, capped by `API_KEY_MAX_AUDIENCES`. Stored in the normalized `api_key_audiences` relation.
+
+Effective downstream authority is the intersection *owner's current role ∩ key `access_mode` ∩ matching audience ∩ route policy* — each dimension only narrows. A key with **no audience rows is issuer-local only**: remote introspection answers `active: false`, so no legacy key silently becomes a cross-service credential. Audiences on existing (legacy) keys are set by the audited operator command `python -m auth_user_service.scripts.bind_api_key_audiences --key-id <uuid> --actor <who> --reason <why> --audience <consumer-id>` (audiences only; idempotent; refuses to change an already-bound set).
 
 ### Rate limiting
 

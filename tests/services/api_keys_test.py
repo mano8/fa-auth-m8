@@ -8,8 +8,13 @@ import pytest
 from sqlmodel import select
 
 from auth_sdk_m8.schemas.base import Period
-from auth_user_service.db_models.api_keys import ApiKey, RateLimit
-from auth_user_service.services.api_keys import ApiKeyService, RateLimitEnforcer
+from auth_user_service.core.config import settings
+from auth_user_service.db_models.api_keys import ApiKey, ApiKeyAudience, RateLimit
+from auth_user_service.services.api_keys import (
+    ApiKeyAudienceError,
+    ApiKeyService,
+    RateLimitEnforcer,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -430,3 +435,131 @@ class TestRateLimitEnforcer:
 
         assert result.allowed is False
         mock_hits.labels.assert_called_once_with(period=Period.MINUTE.value)
+
+
+# ---------------------------------------------------------------------------
+# Audience binding (APIKEY-AUD-01, §3.12)
+# ---------------------------------------------------------------------------
+
+_PERMITTED = frozenset({"prompt-engine-m8", "media-worker-m8"})
+
+
+def _make_key(db_session, owner) -> ApiKey:
+    api_key = ApiKey(
+        id=uuid.uuid4(),
+        key_hash=(uuid.uuid4().hex + uuid.uuid4().hex),
+        user_id=owner.id,
+        name="k",
+    )
+    db_session.add(api_key)
+    db_session.commit()
+    db_session.refresh(api_key)
+    return api_key
+
+
+class TestNormalizeAudiences:
+    def test_strips_and_dedupes_preserving_order(self):
+        assert ApiKeyService.normalize_audiences([" b-m8 ", "a-m8", "b-m8"]) == [
+            "b-m8",
+            "a-m8",
+        ]
+
+    def test_empty_audience_rejected(self):
+        with pytest.raises(ApiKeyAudienceError):
+            ApiKeyService.normalize_audiences(["  "])
+
+    def test_wildcard_rejected(self):
+        with pytest.raises(ApiKeyAudienceError):
+            ApiKeyService.normalize_audiences(["*"])
+
+
+class TestValidateAudiences:
+    def _patch_registry(self, permitted=_PERMITTED):
+        return patch(
+            "auth_user_service.core.consumer_registry.get_introspection_audiences",
+            return_value=permitted,
+        )
+
+    def test_valid_audiences_pass(self):
+        with self._patch_registry():
+            assert ApiKeyService.validate_audiences(["prompt-engine-m8"]) == [
+                "prompt-engine-m8"
+            ]
+
+    def test_unknown_audience_rejected(self):
+        with self._patch_registry():
+            with pytest.raises(ApiKeyAudienceError, match="ineligible"):
+                ApiKeyService.validate_audiences(["not-a-consumer"])
+
+    def test_over_max_rejected(self):
+        with self._patch_registry(), patch.object(settings, "API_KEY_MAX_AUDIENCES", 1):
+            with pytest.raises(ApiKeyAudienceError, match="at most"):
+                ApiKeyService.validate_audiences(
+                    ["prompt-engine-m8", "media-worker-m8"]
+                )
+
+
+class TestSetKeyAudiencesInTx:
+    def test_sets_rows_without_commit(self, db_session, sample_user):
+        api_key = _make_key(db_session, sample_user)
+        ApiKeyService.set_key_audiences_in_tx(db_session, api_key, ["prompt-engine-m8"])
+        db_session.commit()
+        db_session.refresh(api_key)
+        assert [a.audience_id for a in api_key.audiences] == ["prompt-engine-m8"]
+
+    def test_replaces_existing_rows(self, db_session, sample_user):
+        api_key = _make_key(db_session, sample_user)
+        db_session.add(
+            ApiKeyAudience(api_key_id=api_key.id, audience_id="media-worker-m8")
+        )
+        db_session.commit()
+        db_session.refresh(api_key)
+        ApiKeyService.set_key_audiences_in_tx(db_session, api_key, ["prompt-engine-m8"])
+        db_session.commit()
+        db_session.refresh(api_key)
+        assert [a.audience_id for a in api_key.audiences] == ["prompt-engine-m8"]
+
+
+class TestBindExistingKeyAudiences:
+    def _patch_registry(self):
+        return patch(
+            "auth_user_service.core.consumer_registry.get_introspection_audiences",
+            return_value=_PERMITTED,
+        )
+
+    def test_binds_when_key_has_none(self, db_session, sample_user):
+        api_key = _make_key(db_session, sample_user)
+        with self._patch_registry():
+            bound = ApiKeyService.bind_existing_key_audiences(
+                db_session, api_key, ["prompt-engine-m8"]
+            )
+        db_session.commit()
+        db_session.refresh(api_key)
+        assert bound == ["prompt-engine-m8"]
+        assert [a.audience_id for a in api_key.audiences] == ["prompt-engine-m8"]
+
+    def test_identical_set_is_idempotent_noop(self, db_session, sample_user):
+        api_key = _make_key(db_session, sample_user)
+        db_session.add(
+            ApiKeyAudience(api_key_id=api_key.id, audience_id="prompt-engine-m8")
+        )
+        db_session.commit()
+        db_session.refresh(api_key)
+        with self._patch_registry():
+            bound = ApiKeyService.bind_existing_key_audiences(
+                db_session, api_key, ["prompt-engine-m8"]
+            )
+        assert bound == ["prompt-engine-m8"]
+
+    def test_changing_a_different_set_is_refused(self, db_session, sample_user):
+        api_key = _make_key(db_session, sample_user)
+        db_session.add(
+            ApiKeyAudience(api_key_id=api_key.id, audience_id="media-worker-m8")
+        )
+        db_session.commit()
+        db_session.refresh(api_key)
+        with self._patch_registry():
+            with pytest.raises(ApiKeyAudienceError, match="immutable"):
+                ApiKeyService.bind_existing_key_audiences(
+                    db_session, api_key, ["prompt-engine-m8"]
+                )

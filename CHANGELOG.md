@@ -15,6 +15,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **API-key `access_mode` and normalized audience bindings (§3.11–§3.12,
+  Expand).** `ApiKey` gains an immutable `access_mode` column (`read_only` /
+  `read_write`, `NOT NULL`, server default `READ_ONLY` so every existing key
+  migrates to the most restrictive cap — `APIKEY-MODE-01`; it is an
+  operation-category cap, never a role). Audiences persist in a new normalized
+  `api_key_audiences` relation (composite PK, `ON DELETE CASCADE`) rather than a
+  nullable plural column or native array, because the supported engines include
+  MySQL/MariaDB (`APIKEY-AUD-01`). `POST /profile/api-keys/` accepts the two
+  additive, explicit-only creation fields `access_mode` and `audiences` (both
+  fixed at issuance); an audience must be an enabled consumer explicitly granted
+  the `api-key-introspection` scope and is capped by the new
+  `API_KEY_MAX_AUDIENCES` setting (`409` on an invalid/ineligible audience). A
+  key with **no** audience rows is issuer-local only — remote introspection
+  answers `active: false`, the fail-closed cutover that stops any legacy key
+  silently becoming a cross-service credential. Legacy keys are migrated by a new
+  audited operator command,
+  `python -m auth_user_service.scripts.bind_api_key_audiences` (audiences only,
+  idempotent, refuses to change an already-bound immutable set), and the private
+  `/private/v1/api-keys/introspect` endpoint now evaluates the real relation for
+  the owner-role ∩ `access_mode` ∩ audience narrowing rule.
 - **Per-user authorization generation (`auth_generation`).** A monotonic,
   issuer-owned `BIGINT` revocation watermark now lands on `User` (`NOT NULL`,
   default `1`) and `ClientSession` (nullable during Expand; a `NULL`/absent stamp
