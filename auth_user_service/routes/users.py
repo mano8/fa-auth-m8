@@ -13,7 +13,6 @@ from auth_user_service.services.role_admin import (
 )
 from auth_user_service.core.deps import (
     CurrentUser,
-    RedisDep,
     SessionDep,
     get_current_active_superuser,
 )
@@ -21,6 +20,7 @@ from auth_sdk_m8.authorization import has_superuser_privileges
 from auth_sdk_m8.models.shared import Message
 from auth_user_service.db_models.users import (
     User,
+    UserAuthorizationUpdate,
     UserCreate,
     UserPublic,
     UserRegister,
@@ -135,13 +135,12 @@ def read_user_by_id(
 @router.patch(
     "/update/{user_id}/",
     dependencies=[Depends(get_current_active_superuser)],
-    response_model=UserPublic,
+    response_model=UserAuthorizationUpdate,
     responses=BaseController.get_error_responses(),
 )
 def update_current_user(
     *,
     session: SessionDep,
-    redis: RedisDep,
     current_user: CurrentUser,
     user_id: uuid.UUID,
     user_in: UserUpdate,
@@ -153,6 +152,9 @@ def update_current_user(
     transaction (``services.role_admin``): the last-superuser invariant and the
     no-self-promotion rule are enforced under the lock, sessions are revoked on
     any authorization transition, and deactivation revokes the owner's API keys.
+    The revocation side effects are enqueued to the durable outbox in the same
+    transaction; the response returns ``200`` with the updated user plus
+    ``auth_generation`` and ``revocation_enqueued`` once it commits (3.5.2).
     """
     try:
         db_user = session.get(User, user_id)
@@ -170,14 +172,17 @@ def update_current_user(
                     status_code=409, detail="User with this email already exists"
                 )
 
-        db_user = change_user_authorization(
+        result = change_user_authorization(
             session=session,
             actor_id=current_user.id,
             db_user=db_user,
             user_in=user_in,
-            redis=redis,
         )
-        return db_user
+        return UserAuthorizationUpdate(
+            **UserPublic.model_validate(result.user).model_dump(),
+            auth_generation=result.auth_generation,
+            revocation_enqueued=result.revocation_enqueued,
+        )
     except SelfPromotionError as ex:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

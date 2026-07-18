@@ -136,6 +136,28 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     # (it reconnects and resumes/flushes). Never blocks the emitting request.
     EVENT_STREAM_MAX_QUEUE: int = Field(64, ge=1, le=100000)
 
+    # ── Revocation outbox worker (3.5.2) ────────────────────────────────────
+    # Role-change revocation side effects (Redis blacklist + user-wide v2 event)
+    # are committed as durable outbox rows atomically with the DB revocation, then
+    # drained here with at-least-once delivery. The DB delete is already the
+    # authoritative revocation (3.5.4), so a disabled/lagging worker only slows
+    # cache eviction — it never changes correctness.
+    OUTBOX_WORKER_ENABLED: bool = True
+    # How often the in-process drain loop wakes to claim and deliver a batch.
+    OUTBOX_DRAIN_INTERVAL_SECONDS: float = Field(1.0, gt=0, le=3600)
+    # Max rows claimed per drain (FOR UPDATE SKIP LOCKED).
+    OUTBOX_BATCH_SIZE: int = Field(50, ge=1, le=10000)
+    # Lease duration on a claimed row; an expired lease is re-claimable so a
+    # crashed worker's in-flight rows recover without an alternative claim path.
+    OUTBOX_LEASE_SECONDS: int = Field(30, ge=1, le=86400)
+    # Delivery attempts before a row is dead-lettered (status='dead').
+    OUTBOX_MAX_ATTEMPTS: int = Field(5, ge=1, le=100)
+    # Exponential-backoff base and cap (seconds) between retries.
+    OUTBOX_BACKOFF_BASE_SECONDS: float = Field(2.0, gt=0, le=3600)
+    OUTBOX_BACKOFF_CAP_SECONDS: float = Field(300.0, gt=0, le=86400)
+    # How long a completed row is retained (idempotency window) before reaping.
+    OUTBOX_COMPLETED_RETENTION_SECONDS: int = Field(3600, ge=0, le=2592000)
+
     # Optional static scoped credential for scraping {API_PREFIX}/metrics (1.4).
     # Metrics are internal-only by default — the network boundary (internal
     # entrypoint) is the control and this stays unset. Set it only when metrics

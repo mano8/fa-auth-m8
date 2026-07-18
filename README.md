@@ -153,7 +153,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | users | POST | `/users/new_user/` | superuser | Create user with password |
 | users | POST | `/users/signup/` | superuser | Register user (no password set) |
 | users | GET | `/users/get/{user_id}/` | superuser | Get user by ID |
-| users | PATCH | `/users/update/{user_id}/` | superuser | Update user (role/`is_active` changes run under the superuser-set lock: revoke sessions, bump the auth generation, and — on deactivation — revoke the user's API keys; `409 last_superuser_required` if it would remove the last active superuser; `403` on self-promotion) |
+| users | PATCH | `/users/update/{user_id}/` | superuser | Update user (role/`is_active` changes run under the superuser-set lock: revoke sessions, bump the auth generation, enqueue revocation to the durable outbox, and — on deactivation — revoke the user's API keys; returns `200` with `auth_generation` + `revocation_enqueued`; `409 last_superuser_required` if it would remove the last active superuser; `403` on self-promotion) |
 | users | DELETE | `/users/delete/{user_id}/` | superuser | Delete user (cascades to the user's sessions, API keys, and rate-limit rows; `409 last_superuser_required` if it would remove the last active superuser; self-deletion allowed subject to that rule) |
 | dashboard | GET | `/dashboard/users/activity/` | JWT | All-user activity stats (monthly) |
 | dashboard | GET | `/dashboard/users/activity/current/` | JWT | Own activity stats (monthly) |
@@ -511,6 +511,20 @@ Each event `data` frame is HMAC-signed with the shared `EVENT_SIGNING_KEY` (reus
 | `EVENT_STREAM_MAX_QUEUE` | no | `64` | Per-connection outbound queue depth before a slow consumer is disconnected (it reconnects and resumes/flushes). Never blocks the emitting request. |
 
 > **Reverse proxies:** SSE needs response buffering **disabled** so frames flush immediately. The endpoint sends `X-Accel-Buffering: no` (honoured by nginx); for other proxies, disable response buffering and set the idle/read timeout above `EVENT_STREAM_HEARTBEAT_SECONDS`.
+
+### Revocation outbox
+
+Role-change revocation side effects (the Redis blacklist writes and the user-wide `session-revoked` event) are recorded as durable rows in the `<prefix>_revocation_outbox` table **inside the same transaction** as the database revocation, then applied by a background drain worker with at-least-once delivery. This closes the crash window in which a best-effort post-commit push could strand revocation state. The DB revocation is already authoritative (`POST /private/v1/jti-status` decides from database state), so a disabled or lagging worker only slows cache-eviction propagation — it never changes correctness. The role-change endpoint therefore returns `200` with `auth_generation` and `revocation_enqueued: true` as soon as the transaction commits; it never returns a post-commit `503`/`202`. Outbox `publish` effects carry the **v2** event (`auth_generation`, deterministic `event_id`) that consumers dedup on; blacklist effects carry a TTL derived from the captured per-target token expiry.
+
+| Variable | Required | Default | Description |
+| -------- | -------- | ------- | ----------- |
+| `OUTBOX_WORKER_ENABLED` | no | `true` | Master switch for the in-process outbox drain loop. When `false`, effects still commit durably but propagation waits for another worker. |
+| `OUTBOX_DRAIN_INTERVAL_SECONDS` | no | `1.0` | How often the drain loop claims and delivers a batch. |
+| `OUTBOX_BATCH_SIZE` | no | `50` | Max rows claimed per drain (`FOR UPDATE SKIP LOCKED`). |
+| `OUTBOX_LEASE_SECONDS` | no | `30` | Lease held on a claimed row; an expired lease is re-claimable (crashed-worker recovery). |
+| `OUTBOX_MAX_ATTEMPTS` | no | `5` | Delivery attempts before a row is dead-lettered (`status='dead'`). |
+| `OUTBOX_BACKOFF_BASE_SECONDS` / `OUTBOX_BACKOFF_CAP_SECONDS` | no | `2.0` / `300.0` | Exponential-backoff base and cap between retries. |
+| `OUTBOX_COMPLETED_RETENTION_SECONDS` | no | `3600` | How long a completed row is retained (idempotency window) before reaping. |
 
 ### Auth Degradation Policy
 

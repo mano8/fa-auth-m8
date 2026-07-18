@@ -74,6 +74,39 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   schema gains an optional `is_active` flag. Applied only by the route-owned
   transaction, an activation transition bumps the generation and revokes sessions
   in both directions.
+- **Transactional revocation outbox for role changes.** Role-change revocation
+  side effects are now recorded as durable outbox rows committed **atomically**
+  with the DB revocation instead of the best-effort post-commit Redis/event push
+  (3.5.2 `REV-OUTBOX-01`/`REV-EVENT-01`). New `<prefix>_revocation_outbox` table
+  (`auth_user_service/db_models/outbox.py`): separate effect rows each with their
+  own `status` (`pending`/`leased`/`completed`/`dead`), unique on
+  `(user_id, auth_generation, effect_type, target_digest)` so duplicate
+  enqueue/drain is harmless — **one `blacklist` row per captured `(jti, expires_at)`
+  target** (payload-carried, so no expiry is lost to aggregation) plus **one
+  user-wide `publish` row** carrying the durable **v2** `session-revoked` event
+  (`version="v2"`, `auth_generation`, deterministic `event_id`). New
+  `auth_user_service/services/outbox.py` adds `OutboxController.enqueue_role_change_effects`
+  (transaction-neutral enqueue) and `OutboxWorker`, an at-least-once drain worker:
+  claims a batch with `FOR UPDATE SKIP LOCKED` + a time-bounded lease
+  (an expired lease is the only recovery path for a crashed worker), applies the
+  Redis blacklist with a TTL **derived from the captured per-target token expiry**
+  and the durable event publication, retries with bounded exponential backoff,
+  dead-letters (`status='dead'`) on exhaustion, and reaps completed rows after a
+  retention window. A background drain loop is wired into the app lifespan
+  (`OUTBOX_WORKER_ENABLED`, `OUTBOX_*` settings). The DB delete remains the
+  authoritative revocation (3.5.4), so a disabled/lagging worker only slows
+  propagation.
+- **Role-change response contract (`200` + `revocation_enqueued`).** The
+  `PATCH {API_PREFIX}/users/update/{id}/` response is now `UserAuthorizationUpdate`
+  — the public user plus `auth_generation` and `revocation_enqueued` — returned
+  once the single transaction commits. It never implies downstream propagation has
+  completed and never returns a post-commit `503`/`202` (3.5.2). A pure profile
+  update reports `revocation_enqueued: false`.
+- **Revocation-propagation metrics.** New `auth_user_service/services/outbox_metrics.py`
+  registers `<prefix>_revocation_outbox_{enqueued,completed,retried,dead}_total`
+  (labelled by `effect_type`) and the `<prefix>_revocation_outbox_propagation_seconds`
+  histogram (commit→delivery latency) on the shared `/metrics` registry. JTIs are
+  never used as label values.
 
 ### Changed
 

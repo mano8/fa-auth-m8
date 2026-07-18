@@ -470,6 +470,27 @@ class UserPublic(UserBase):
     id: uuid.UUID
 
 
+class UserAuthorizationUpdate(UserPublic):
+    """Result of an admin user update, carrying the role-change contract fields.
+
+    Extends the public user with the two fields the role-change endpoint must
+    surface once the single transaction commits (3.5.2): the post-change
+    ``auth_generation`` (an opaque monotonic cache-tag counter) and
+    ``revocation_enqueued`` — ``True`` when revocation side effects were durably
+    enqueued to the outbox, ``False`` for a pure profile update. The endpoint
+    returns ``200`` with this body, never a post-commit ``503``/``202``.
+    """
+
+    auth_generation: int = Field(
+        description="Owner's current authorization generation after the update "
+        "(opaque monotonic counter used for cache tagging, 3.5.2).",
+    )
+    revocation_enqueued: bool = Field(
+        description="Whether revocation side effects were durably enqueued to the "
+        "transactional outbox for post-commit propagation (3.5.2).",
+    )
+
+
 class UsersPublic(SQLModel):
     """
     Wrapper for paginated user lists.

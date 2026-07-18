@@ -10,7 +10,6 @@ them** (3.5, 3.5.3, 3.10, 3.11).
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
 
 import pytest
 from sqlmodel import delete, select
@@ -19,6 +18,12 @@ from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 
 from auth_user_service.core.security import SecurityHelper
 from auth_user_service.db_models.api_keys import ApiKey
+from auth_user_service.db_models.outbox import (
+    EFFECT_BLACKLIST,
+    EFFECT_PUBLISH,
+    STATUS_PENDING,
+    RevocationOutbox,
+)
 from auth_user_service.db_models.security_policy import (
     SUPERUSER_SET_POLICY_KEY,
     SecurityPolicy,
@@ -148,8 +153,10 @@ class TestChangeUserAuthorizationProfileOnly:
             db_user=sample_user,
             user_in=UserUpdate(full_name="Renamed"),
         )
-        assert result.full_name == "Renamed"
+        assert result.user.full_name == "Renamed"
         assert result.auth_generation == start_gen
+        # A pure profile update enqueues nothing.
+        assert result.revocation_enqueued is False
 
 
 class TestChangeUserAuthorizationRole:
@@ -166,8 +173,9 @@ class TestChangeUserAuthorizationRole:
             user_in=UserUpdate(role=RoleType.ADMIN),
         )
 
-        assert result.role == RoleType.ADMIN
+        assert result.user.role == RoleType.ADMIN
         assert result.auth_generation == start_gen + 1
+        assert result.revocation_enqueued is True
         remaining = db_session.exec(
             select(ClientSession).where(ClientSession.user_id == sample_user.id)
         ).all()
@@ -215,8 +223,8 @@ class TestChangeUserAuthorizationRole:
             db_user=superuser,
             user_in=UserUpdate(role=RoleType.USER),
         )
-        assert result.role == RoleType.USER
-        assert result.is_superuser is False
+        assert result.user.role == RoleType.USER
+        assert result.user.is_superuser is False
 
     def test_self_promotion_is_forbidden(self, db_session, sample_user):
         with pytest.raises(SelfPromotionError):
@@ -237,18 +245,28 @@ class TestChangeUserAuthorizationRole:
             db_user=superuser,
             user_in=UserUpdate(role=RoleType.READER),
         )
-        assert result.role == RoleType.READER
+        assert result.user.role == RoleType.READER
 
-    def test_promotion_with_mock_redis_runs_post_commit(self, db_session, sample_user):
+    def test_promotion_enqueues_outbox_effects(self, db_session, sample_user):
         _add_session(db_session, sample_user)
         result = change_user_authorization(
             session=db_session,
             actor_id=uuid.uuid4(),
             db_user=sample_user,
             user_in=UserUpdate(role=RoleType.WRITER),
-            redis=MagicMock(),
         )
-        assert result.role == RoleType.WRITER
+        assert result.user.role == RoleType.WRITER
+        assert result.revocation_enqueued is True
+        # One blacklist row for the captured session + one user-wide publish row,
+        # committed atomically with the DB revocation (3.5.2).
+        rows = db_session.exec(
+            select(RevocationOutbox).where(RevocationOutbox.user_id == sample_user.id)
+        ).all()
+        effect_types = sorted(r.effect_type for r in rows)
+        assert effect_types == [EFFECT_BLACKLIST, EFFECT_PUBLISH]
+        for row in rows:
+            assert row.auth_generation == result.auth_generation
+            assert row.status == STATUS_PENDING
 
 
 class TestChangeUserAuthorizationActivation:
@@ -265,7 +283,7 @@ class TestChangeUserAuthorizationActivation:
             user_in=UserUpdate(is_active=False),
         )
 
-        assert result.is_active is False
+        assert result.user.is_active is False
         assert result.auth_generation == start_gen + 1
         db_session.refresh(key)
         assert key.revoked is True
@@ -293,7 +311,7 @@ class TestChangeUserAuthorizationActivation:
             user_in=UserUpdate(is_active=True),
         )
 
-        assert result.is_active is True
+        assert result.user.is_active is True
         # Reactivation is an authorization transition (generation bumps) but must
         # never clear a prior revocation.
         assert result.auth_generation == start_gen + 1

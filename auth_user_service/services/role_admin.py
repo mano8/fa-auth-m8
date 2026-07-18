@@ -18,34 +18,61 @@ so the invariant holds under real concurrency:
    increment (3.5.1).
 6. Revoke the affected sessions in the same transaction; on **deactivation**
    revoke the owner's API keys too (3.11).
-7. Bump ``security_policy.revision`` and commit once.
+7. Enqueue the revocation side effects (Redis blacklist + user-wide v2 event) as
+   durable outbox rows in the same transaction (3.5.2).
+8. Bump ``security_policy.revision`` and commit once.
 
-The durable transactional outbox (step 7 of 3.5) is a later plan item; until it
-lands the post-commit Redis blacklist + user-wide event stays the best-effort
-accelerator, and the database delete is the authoritative revocation (3.5.4).
+A post-commit :class:`~auth_user_service.services.outbox.OutboxWorker` drains the
+outbox and applies the Redis blacklist + event publication with at-least-once
+delivery; the database delete is already the authoritative revocation (3.5.4), so
+the endpoint returns ``200`` with ``revocation_enqueued: true`` as soon as the
+transaction commits, never implying downstream propagation has completed.
 """
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from redis import Redis
 from sqlmodel import Session, col, select
 
 from auth_sdk_m8.authorization import has_minimum_role, has_superuser_privileges
 from auth_sdk_m8.schemas.base import RoleType
 
+from auth_user_service.db_models.outbox import (
+    EFFECT_BLACKLIST,
+    EFFECT_PUBLISH,
+    RevocationOutbox,
+)
 from auth_user_service.db_models.security_policy import (
     SUPERUSER_SET_POLICY_KEY,
     SecurityPolicy,
 )
 from auth_user_service.db_models.users import User, UserUpdate
+from auth_user_service.services import outbox_metrics
 from auth_user_service.services.api_keys import ApiKeyService
 from auth_user_service.services.client_sessions import (
     RevocationTarget,
     SessionController,
 )
 from auth_user_service.services.generation import GenerationController
+from auth_user_service.services.outbox import OutboxController
 from auth_user_service.services.users import UserController, _derive_is_superuser
+
+
+@dataclass(frozen=True)
+class AuthorizationChangeResult:
+    """Outcome of a role/activation change (3.5.2 endpoint contract).
+
+    Carries the refreshed user plus the two fields the role-change response must
+    surface: the post-change ``auth_generation`` and whether revocation side
+    effects were durably enqueued to the outbox. ``revocation_enqueued`` is
+    ``False`` for a pure profile update (no authorization transition, nothing
+    enqueued).
+    """
+
+    user: User
+    auth_generation: int
+    revocation_enqueued: bool
 
 
 class RoleAdminError(Exception):
@@ -148,22 +175,30 @@ def _lock_user_row(session: Session, user: User) -> None:
     session.exec(select(User).where(col(User.id) == user.id).with_for_update()).first()
 
 
+def _record_enqueued_metrics(rows: list[RevocationOutbox]) -> None:
+    """Count the enqueued effects by type after the transaction commits."""
+    blacklist = sum(1 for row in rows if row.effect_type == EFFECT_BLACKLIST)
+    outbox_metrics.record_enqueued(EFFECT_BLACKLIST, blacklist)
+    outbox_metrics.record_enqueued(EFFECT_PUBLISH, len(rows) - blacklist)
+
+
 def change_user_authorization(
     *,
     session: Session,
     actor_id: object,
     db_user: User,
     user_in: UserUpdate,
-    redis: Optional[Redis] = None,
-) -> User:
+) -> AuthorizationChangeResult:
     """Apply an admin user update as the route-owned superuser-set transaction.
 
     Handles role and/or ``is_active`` changes (plus any allowlisted profile
     fields) atomically: the last-superuser invariant and the role-administration
-    matrix are enforced under the lock, the generation is bumped and sessions
-    revoked on any authorization transition, and the owner's API keys are revoked
-    on deactivation — all committed once. A pure profile update takes no lock and
-    revokes nothing. Returns the refreshed user.
+    matrix are enforced under the lock, the generation is bumped, sessions
+    revoked, and the revocation side effects enqueued to the durable outbox on any
+    authorization transition, and the owner's API keys are revoked on
+    deactivation — all committed once. A pure profile update takes no lock and
+    revokes nothing. Returns an :class:`AuthorizationChangeResult` carrying the
+    refreshed user, its current generation, and whether revocation was enqueued.
     """
     fields = user_in.model_dump(exclude_unset=True)
     role_requested = fields.get("role") is not None
@@ -205,11 +240,22 @@ def change_user_authorization(
     deactivated = active_requested and previous_active and not intended_active
     authorization_changed = outcome.role_changed or activation_changed
 
-    targets: list[RevocationTarget] = []
+    enqueued: list[RevocationOutbox] = []
     if authorization_changed:
-        GenerationController.bump_user_generation(db_user)
+        new_generation = GenerationController.bump_user_generation(db_user)
+        targets: list[RevocationTarget]
         targets, _ = SessionController.capture_and_delete_user_sessions(
             session, db_user.id
+        )
+        # Record the Redis blacklist + user-wide v2 event as durable outbox rows
+        # committed atomically with the DB revocation; a post-commit worker drains
+        # them (3.5.2). This replaces the best-effort post-commit push on the
+        # role-change path — the database delete is already authoritative (3.5.4).
+        enqueued = OutboxController.enqueue_role_change_effects(
+            session,
+            user_id=db_user.id,
+            auth_generation=new_generation,
+            targets=targets,
         )
     if deactivated:
         ApiKeyService.revoke_all_user_keys_in_tx(session, db_user.id)
@@ -221,8 +267,12 @@ def change_user_authorization(
     session.refresh(db_user)
 
     if authorization_changed:
-        SessionController.apply_post_commit_revocation(targets, db_user.id, redis)
-    return db_user
+        _record_enqueued_metrics(enqueued)
+    return AuthorizationChangeResult(
+        user=db_user,
+        auth_generation=db_user.auth_generation,
+        revocation_enqueued=authorization_changed,
+    )
 
 
 def delete_user_account(
