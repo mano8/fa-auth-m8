@@ -46,6 +46,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   change and goes through `services.role_admin` instead. The CLI is
   `python -m auth_user_service.scripts.security_repair --user-id <uuid>
   --intended-role <role> --actor <who> --reason <why>`.
+- **Global legacy-session revocation (§4.1 step 5, §4.2).** New
+  `auth_user_service/services/legacy_session_revocation.py`
+  (`GlobalLegacySessionRevocationController.revoke_legacy_sessions`) deletes
+  every `ClientSession` row that still carries no `auth_generation` — every
+  access and refresh session that predates the Expand migration — and never
+  backfills a generation onto them (backfilling could bless an old canonical
+  token carrying a stale role). This is what allows
+  `ClientSession.auth_generation` to become `NOT NULL` in Enforce. It runs
+  once, inside the write-quiescent maintenance window, after Expand and the
+  preflight/repair pass and before Enforce; deletion alone is authoritative
+  for the stateful validation path, and it is idempotent (a repeat run finds
+  zero remaining legacy rows). The audited CLI is
+  `python -m auth_user_service.scripts.legacy_session_revocation --confirm
+  REVOKE-ALL-LEGACY-SESSIONS --actor <who> --reason <why>`; it requires the
+  literal confirmation token because this is a one-time, all-users forced
+  global logout — every user must sign in again after cutover — for stateful
+  deployments and for refresh flows in every mode. Hybrid/stateless access
+  tokens that are still wire-valid keep working only until their own natural
+  expiry (the documented bounded window, §3.6), because no server-side
+  session backs them.
 - **API-key `access_mode` and normalized audience bindings (§3.11–§3.12,
   Expand).** `ApiKey` gains an immutable `access_mode` column (`read_only` /
   `read_write`, `NOT NULL`, server default `READ_ONLY` so every existing key
