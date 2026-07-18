@@ -28,9 +28,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   find can never itself raise while being found. A new read-only CLI,
   `python -m auth_user_service.scripts.security_preflight`, exits `1` when any
   mismatch is found (per 4.4 step 1, run before the coordinated release) and
-  `0` otherwise; it writes nothing and never auto-promotes/demotes. The
-  audited repair command that resolves a reported mismatch is a separate,
-  not-yet-implemented item.
+  `0` otherwise; it writes nothing and never auto-promotes/demotes.
+  `SecurityRepairController.repair_user` is the explicit audited repair
+  command that resolves a reported mismatch: the operator supplies the
+  intended role explicitly (never inferred), and on a real change it
+  propagates exactly like the runtime role-change transaction — bumps
+  `auth_generation`, revokes the owner's sessions, and enqueues the same
+  durable outbox effects (blacklist + user-wide v2 event) — with no separate
+  API-key revocation step, since key authorization is evaluated live against
+  the owner's current row (§3.11). It reads and writes raw columns only
+  (never a `User` write), takes only the target row's own lock (a row
+  eligible for repair is never counted as an active canonical superuser
+  today, so repair can only add to that set, never remove from it — the
+  last-superuser invariant cannot be violated here), is idempotent (repeating
+  the same repair is a no-op), and rejects (`NotMismatchedError`) a retarget
+  of an already-consistent row to a different role — that is a plain role
+  change and goes through `services.role_admin` instead. The CLI is
+  `python -m auth_user_service.scripts.security_repair --user-id <uuid>
+  --intended-role <role> --actor <who> --reason <why>`.
 - **API-key `access_mode` and normalized audience bindings (§3.11–§3.12,
   Expand).** `ApiKey` gains an immutable `access_mode` column (`read_only` /
   `read_write`, `NOT NULL`, server default `READ_ONLY` so every existing key

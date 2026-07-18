@@ -46,7 +46,7 @@ def _raw_insert_mismatched_user(session, *, role: str, is_superuser: int) -> uui
                 "(id, provider, email, is_active, email_verified, is_superuser, role) "
                 f"VALUES (:id, 'PASSWORD', :email, 1, 0, {is_superuser}, '{role}')"
             ),
-            {"id": str(user_id), "email": f"mismatch_{user_id.hex[:8]}@example.com"},
+            {"id": user_id.hex, "email": f"mismatch_{user_id.hex[:8]}@example.com"},
         )
         session.commit()
     return user_id

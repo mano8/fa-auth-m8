@@ -1,25 +1,47 @@
-"""Read-only mismatch/last-superuser preflight (4.1 ``MIG-PREFLIGHT-01``).
+"""Read-only mismatch preflight and audited repair (4.1 ``MIG-PREFLIGHT-01``).
 
-Reports existing-row consistency ahead of the Expand -> repair -> Enforce
-migration sequence (4.1). SDK 3 models and the strict issuer ``User`` model
-reject an inconsistent ``role``/``is_superuser`` pair (mirroring the DB check
-constraint that is only added in Enforce), so scanning for exactly the rows
-that need fixing must never construct a ``User``/validating ORM entity for one
-of them -- every query here selects individual scalar columns only. This
-module performs no writes; the audited repair command is a separate item.
+Ahead of the Expand -> repair -> Enforce migration sequence (4.1), SDK 3
+models and the strict issuer ``User`` model reject an inconsistent
+``role``/``is_superuser`` pair (mirroring the DB check constraint that is only
+added in Enforce), so scanning for and fixing exactly the rows that need
+repair must never construct a ``User``/validating ORM entity for one of them.
+Every query and update here touches individual scalar columns only.
+
+:class:`SecurityPreflightController` is read-only. :class:`SecurityRepairController`
+performs the operator-audited write that resolves a reported mismatch: it never
+auto-promotes/demotes (the operator supplies the intended role explicitly), and
+on a real change it propagates exactly like the runtime role-change transaction
+-- bumping ``auth_generation``, revoking sessions, and enqueueing the same
+durable outbox effects (3.5.1, 3.5.2). A row eligible for repair is, by
+definition, never counted as an active canonical superuser today (the
+dual-evidence predicate 3.5.3 requires ``role == SUPERADMIN and is_superuser``
+together, and a mismatched row fails exactly one side of that), so repair can
+only ever add a row to that set, never remove one -- the last-superuser
+invariant cannot be violated by this command, and it does not acquire the
+singleton ``security_policy`` set-mutation lock (3.5.3) that guards removals;
+it takes only the target row's own lock to serialize concurrent repairs of
+that one id. API-key authorization needs no separate revocation step because
+it is evaluated live against the owner's current row (3.11).
 """
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Tuple
 
-from sqlmodel import Session, col, func, select
+from sqlmodel import Session, col, func, select, update
 
 from auth_sdk_m8.schemas.base import RoleType
 
 from auth_user_service.db_models.sessions import ClientSession
 from auth_user_service.db_models.users import User
+from auth_user_service.services.client_sessions import SessionController
+from auth_user_service.services.generation import next_generation
+from auth_user_service.services.outbox import OutboxController
+from auth_user_service.services.users import _derive_is_superuser
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -123,3 +145,170 @@ class SecurityPreflightController:
             .distinct()
         ).all()
         return tuple(rows)
+
+
+class SecurityRepairError(Exception):
+    """Base class for audited repair failures."""
+
+
+class UserNotFoundError(SecurityRepairError):
+    """No user exists for the given id."""
+
+
+class NotMismatchedError(SecurityRepairError):
+    """The target row is already role/flag-consistent.
+
+    This command exists to resolve exactly the mismatches the preflight
+    reports; a consistent row that merely needs a different role is a plain
+    role change and must go through the route-owned superuser-set transaction
+    (``services.role_admin.change_user_authorization``), which carries the
+    last-superuser and self-promotion protections this command deliberately
+    does not reimplement.
+    """
+
+
+@dataclass(frozen=True)
+class RepairResult:
+    """Outcome of one audited repair (4.1).
+
+    ``already_repaired`` is ``True`` when the row was already consistent with
+    *intended_role* -- a safe repeat of a previous repair call; no generation
+    bump or revocation is enqueued for an already-repaired row.
+    """
+
+    user_id: uuid.UUID
+    previous_role: RoleType
+    previous_is_superuser: bool
+    intended_role: RoleType
+    auth_generation: int
+    revocation_enqueued: bool
+    already_repaired: bool
+
+
+class SecurityRepairController:
+    """Raw-column audited repair for one role/flag-mismatched row (4.1)."""
+
+    @staticmethod
+    def repair_user(
+        session: Session,
+        *,
+        user_id: uuid.UUID,
+        intended_role: RoleType,
+        actor: str,
+        reason: str,
+    ) -> RepairResult:
+        """Resolve *user_id*'s mismatch to *intended_role*, committing on success.
+
+        Reads and writes individual columns only (never ``select(User)`` or a
+        ``User`` write), locking the target row so a concurrent repair of the
+        same id cannot race. Raises :class:`UserNotFoundError` when the id
+        does not exist and :class:`NotMismatchedError` when the row is already
+        consistent under a *different* role than *intended_role* (repair
+        cannot re-target an already-repaired or never-mismatched row -- use
+        the ordinary role-change transaction instead). A repeat call with the
+        same *intended_role* the row already carries is a no-op
+        (``already_repaired=True``). Every outcome is logged with the actor,
+        reason, previous state, intended role, and completion status -- never
+        email, token, JTI, or session-payload data.
+        """
+        current = session.exec(
+            select(
+                User.id,
+                User.role,
+                User.is_superuser,
+                User.auth_generation,
+            )
+            .where(col(User.id) == user_id)
+            .with_for_update()
+        ).first()
+        if current is None:
+            logger.warning(
+                "security.repair outcome=not_found actor=%s reason=%s user_id=%s",
+                actor,
+                reason,
+                user_id,
+            )
+            raise UserNotFoundError(f"user {user_id} not found")
+
+        _, previous_role, previous_is_superuser, current_generation = current
+        currently_consistent = previous_is_superuser == _derive_is_superuser(
+            previous_role
+        )
+        derived_is_superuser = _derive_is_superuser(intended_role)
+
+        if currently_consistent and previous_role != intended_role:
+            logger.warning(
+                "security.repair outcome=not_mismatched actor=%s reason=%s "
+                "user_id=%s previous_role=%s intended_role=%s",
+                actor,
+                reason,
+                user_id,
+                previous_role,
+                intended_role,
+            )
+            raise NotMismatchedError(
+                f"user {user_id} is already role/flag-consistent under a "
+                "different role; use the role-change transaction instead"
+            )
+
+        if currently_consistent:
+            # previous_role == intended_role here (the branch above handles
+            # every other currently_consistent case), so this is a safe repeat.
+            logger.info(
+                "security.repair outcome=already_repaired actor=%s reason=%s "
+                "user_id=%s intended_role=%s auth_generation=%d",
+                actor,
+                reason,
+                user_id,
+                intended_role,
+                current_generation,
+            )
+            return RepairResult(
+                user_id=user_id,
+                previous_role=previous_role,
+                previous_is_superuser=previous_is_superuser,
+                intended_role=intended_role,
+                auth_generation=current_generation,
+                revocation_enqueued=False,
+                already_repaired=True,
+            )
+
+        new_generation = next_generation(current_generation)
+        session.exec(
+            update(User)
+            .where(col(User.id) == user_id)
+            .values(
+                role=intended_role,
+                is_superuser=derived_is_superuser,
+                auth_generation=new_generation,
+            )
+        )
+        targets, _ = SessionController.capture_and_delete_user_sessions(
+            session, user_id
+        )
+        OutboxController.enqueue_role_change_effects(
+            session,
+            user_id=user_id,
+            auth_generation=new_generation,
+            targets=targets,
+        )
+        session.commit()
+        logger.info(
+            "security.repair outcome=repaired actor=%s reason=%s user_id=%s "
+            "previous_role=%s intended_role=%s auth_generation=%d",
+            actor,
+            reason,
+            user_id,
+            previous_role,
+            intended_role,
+            new_generation,
+        )
+        return RepairResult(
+            user_id=user_id,
+            previous_role=previous_role,
+            previous_is_superuser=previous_is_superuser,
+            intended_role=intended_role,
+            auth_generation=new_generation,
+            revocation_enqueued=True,
+            already_repaired=False,
+        )
