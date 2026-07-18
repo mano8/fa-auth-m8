@@ -15,6 +15,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Read-only mismatch/last-superuser preflight (§4.1).** New
+  `auth_user_service/services/security_preflight.py`
+  (`SecurityPreflightController.run`) scans for existing
+  `is_superuser`/`role` mismatches ahead of the Expand → repair → Enforce
+  migration sequence: counts and ids where `is_superuser=true` with a
+  non-SUPERADMIN role, counts and ids where `role=SUPERADMIN` with
+  `is_superuser=false`, the active canonical-superuser count, and which
+  mismatched ids hold an active session — never email, token, JTI, or session
+  payloads. Every query selects individual scalar columns only (never
+  `select(User)` or `User.model_validate`), so a row the preflight exists to
+  find can never itself raise while being found. A new read-only CLI,
+  `python -m auth_user_service.scripts.security_preflight`, exits `1` when any
+  mismatch is found (per 4.4 step 1, run before the coordinated release) and
+  `0` otherwise; it writes nothing and never auto-promotes/demotes. The
+  audited repair command that resolves a reported mismatch is a separate,
+  not-yet-implemented item.
 - **API-key `access_mode` and normalized audience bindings (§3.11–§3.12,
   Expand).** `ApiKey` gains an immutable `access_mode` column (`read_only` /
   `read_write`, `NOT NULL`, server default `READ_ONLY` so every existing key
