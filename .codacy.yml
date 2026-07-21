@@ -28,3 +28,4 @@ exclude_paths:
   - "examples/addon/package-lock.json"
   - "AGENTS.md"
   - "CLAUDE.md"
+  - "REPOSITORY_CONTEXT.md"
