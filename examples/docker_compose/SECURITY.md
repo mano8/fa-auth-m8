@@ -277,6 +277,29 @@ the window is later aborted. See `40-migration-release.md` §4.5 for the full
 rollback policy, including that issuer rollback below `2.0` after Enforce is
 forward-fix only.
 
+**Split migrations.** The Expand and Enforce Alembic revisions live in each
+maintained example's `shared_migrations/auth_user/versions/` (§4.1 step 3 and
+step 6 respectively); apply them via the normal `alembic upgrade head` flow
+already wired into `docker_start.sh`/`pre_start.sh` — there is no separate
+command. Expand is safe to apply with the previous issuer still running
+(additive only, no CHECK, `ClientSession.auth_generation` stays nullable);
+Enforce must run only after the preflight/repair pass and the global
+legacy-session revocation above.
+
+**Non-rollback rehearsal (tested, not just documented).** Before relying on
+"issuer rollback below `2.0` after Enforce is forward-fix only," prove it:
+
+```bash
+./auth_user_service/scripts/rollback_rehearsal.sh [<previous-git-ref>] [<example>]
+```
+
+Builds the current issuer image, migrates a disposable database to Enforce
+head, then starts the *previous* issuer image (default: the latest tag)
+against that same database and asserts it fails startup cleanly with an
+actionable Alembic error (`Can't locate revision identified by ...`) — never
+a crash loop from an old write path attempting inconsistent updates. Requires
+Docker; creates and tears down every resource itself.
+
 ---
 
 ## Planned secret rotation
