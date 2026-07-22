@@ -4,6 +4,7 @@
 pytest>=9.0.3
 pytest-cov>=7.1.0
 coverage>=7.14.1
+hypothesis>=6.140.0
 
 # Debugging
 debugpy>=1.8.20
