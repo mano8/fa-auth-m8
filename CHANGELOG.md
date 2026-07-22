@@ -15,6 +15,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Bundled examples raised to `fastapi-m8 >=4.0.0,<5.0.0`.** `examples/fastapi_minimal/requirements.txt`
+  now floors on the 4.x line (`fastapi_full` already did); `fastapi_minimal/routes.py` demonstrates
+  all four JWT dependency levels (`get_current_user`/`get_current_active_writer`/
+  `get_current_active_admin`/`get_current_active_superuser`) and `fastapi_full` gains one
+  API-key-gated writer route (`POST /category/api-key/add/`,
+  `app/routes/api_key_category.py`) wired through the remote API-key principal
+  dependency (`get_current_api_key_writer`, §3.12) — present only when
+  `API_KEY_INTROSPECTION_ENABLED=true` is set. Neither example re-implements a
+  role or `is_superuser` check; every guard is the shared dependency built by
+  the single `build_auth_deps` call.
 - **Read-only mismatch/last-superuser preflight (§4.1).** New
   `auth_user_service/services/security_preflight.py`
   (`SecurityPreflightController.run`) scans for existing

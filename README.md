@@ -964,7 +964,12 @@ The suite covers:
 
 ## Consumer Service Integration
 
-`examples/fastapi_full` and `examples/fastapi_minimal` are reference implementations showing how a downstream microservice integrates with `auth_user_service` using [fastapi-m8](https://github.com/mano8/fastapi-m8) and [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8). `fastapi_full` demonstrates DB session, health checks, auth deps, and lifespan teardown; `fastapi_minimal` is the minimal three-step setup.
+`examples/fastapi_full` and `examples/fastapi_minimal` are reference implementations showing how a downstream microservice integrates with `auth_user_service` using [fastapi-m8](https://github.com/mano8/fastapi-m8) `>=4.0.0,<5.0.0` and [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8). `fastapi_full` demonstrates DB session, health checks, auth deps, and lifespan teardown; `fastapi_minimal` is the minimal three-step setup.
+
+Both examples wire every JWT guard straight from the single `build_auth_deps` call — no route re-implements a role or `is_superuser` check:
+
+- `fastapi_minimal` (`routes.py`) demonstrates all four JWT levels: `GET /hello/` (any authenticated user), `/hello/writer` (WRITER+), `/hello/admin` (ADMIN+), and `/hello/superuser` (canonical superuser only).
+- `fastapi_full` (`app/routes/api_key_category.py`) demonstrates the remote API-key principal dependency (§3.12): `POST /category/api-key/add/` depends on `get_current_api_key_writer` and resolves the key's owner live against `auth_user_service` on every call — capped at WRITER, never administrative or superuser. The route only exists when this deployment sets `API_KEY_INTROSPECTION_ENABLED=true` (plus `INTERNAL_CLIENT_ID` and an introspection URL, see `.example_env`); `get_current_api_key_writer` is `None` otherwise and the router is never built.
 
 [fastapi-m8](https://github.com/mano8/fastapi-m8) is the recommended consumer integration package — it wires CORS, health, lifespan, and auth dependencies in a few lines and bundles `auth-sdk-m8` for JWT validation and shared schemas:
 

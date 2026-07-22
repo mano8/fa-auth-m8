@@ -83,6 +83,18 @@ TOKEN_STRICT_VALIDATION=false
 INTROSPECTION_URL=http://auth_user_service:8000/user/private/v1/jti-status
 PRIVATE_API_SECRET=changethis
 
+# ── Remote API-key principal (§3.12, optional) ────────────────────────────────
+# Off by default: no dependency exists to authorize an API key when unset (the
+# app/routes/api_key_category.py route is only wired when this is enabled).
+# Enabling requires a registered consumer identity (INTERNAL_CLIENT_ID) and the
+# API_KEY_INTROSPECTION scope granted to it on auth_user_service; the app fails
+# startup cleanly if any required value below is missing.
+#API_KEY_INTROSPECTION_ENABLED=false
+#INTERNAL_CLIENT_ID=fastapi-full
+# Reuses INTROSPECTION_URL's host to derive .../private/v1/api-keys/introspect
+# unless API_KEY_INTROSPECTION_URL is set explicitly below.
+#API_KEY_INTROSPECTION_URL=http://auth_user_service:8000/user/private/v1/api-keys/introspect
+
 # ── Event signing (auth event stream) ─────────────────────────────────────────
 # auth-sdk-m8 >= 1.0.0 secure-by-default: the AuthEventStreamClient verifies each
 # SSE payload's HMAC signature. Must match auth_user_service EVENT_SIGNING_KEY.
