@@ -23,8 +23,8 @@ class Settings(ConsumerServiceSettings):
     ENV_FILE_DIR: Path = Path(__file__).resolve().parent.parent
 
     SERVICE_VERSION: str = __version__
-    CONTRACT_VERSION: str = "1.0"
-    CONTRACT_RANGE: str = ">=1.1.0 <2.0.0"
+    CONTRACT_VERSION: str = "2.0"
+    CONTRACT_RANGE: str = ">=2.0.0 <3.0.0"
 
     model_config = SettingsConfigDict(
         env_file=find_dotenv(Path(__file__).resolve().parent.parent),

@@ -261,7 +261,7 @@ def test_preflight_rejects_vault_dev_mode_in_compose_under_production(
             "      - -dev",
             "      - -dev-listen-address=0.0.0.0:8200",
             "  auth_user_service:",
-            "    image: tepochtli/fa-auth-m8:1.1.0",
+            "    image: tepochtli/fa-auth-m8:2.0.0",
         ]
     )
     _write_stack(
@@ -279,7 +279,7 @@ def test_preflight_accepts_production_without_vault_dev_markers(tmp_path: Path) 
         [
             "services:",
             "  auth_user_service:",
-            "    image: tepochtli/fa-auth-m8:1.1.0",
+            "    image: tepochtli/fa-auth-m8:2.0.0",
         ]
     )
     _write_stack(
