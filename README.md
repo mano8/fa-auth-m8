@@ -513,6 +513,24 @@ Each event `data` frame is HMAC-signed with the shared `EVENT_SIGNING_KEY` (reus
 
 > **Reverse proxies:** SSE needs response buffering **disabled** so frames flush immediately. The endpoint sends `X-Accel-Buffering: no` (honoured by nginx); for other proxies, disable response buffering and set the idle/read timeout above `EVENT_STREAM_HEARTBEAT_SECONDS`.
 
+### Database-authoritative revocation
+
+The database is the source of revocation correctness. Redis blacklist entries, outbox delivery and `session-revoked` events are **accelerators**: they evict consumer caches sooner, but they never decide. Every path that revokes authorization persists that revocation on the authoritative `ClientSession` row(s) — or on durable user state — in the same transaction/operation, so a Redis failure can never re-activate a database-inactive session and a fresh `POST /private/v1/jti-status` (v2) decision denies from database state alone.
+
+| Path | Authoritative persistence | Accelerator |
+| ---- | ------------------------- | ----------- |
+| Logout | Session row deleted (`revoke_session_jti`, then the idempotent `delete_session_by_jti`) | Access-JTI blacklist, refresh allowlist revoke, per-JTI event |
+| Individual session revocation (`revoke_session_jti`) | Session row deleted and committed **before** any Redis write | Access-JTI blacklist + per-JTI event |
+| Administrative revocation (`DELETE /sessions/delete/{id}/`, `/sessions/delete-by-user/{user_id}/`) | Session row(s) deleted and committed | Blacklist + refresh revoke + per-JTI (single) or user-wide (bulk) event |
+| Refresh rotation | The user's session row is re-stamped with the new JTI and the owner's current generation, so the superseded JTI matches no row | Refresh-store `rotate` (atomic swap) |
+| Refresh-token reuse response | Every session row for the user deleted (`revoke_all_user_sessions`) | Blacklist of all captured JTIs + user-wide event |
+| Role change / deactivation / reactivation | Route-owned transaction: `auth_generation` bump + session rows deleted + outbox rows enqueued, one commit | Durable outbox (blacklist + v2 event) |
+| Deletion | Durable authorization tombstone + row delete, one commit | Durable outbox |
+| Security repair | Same transaction as a runtime role change (generation bump, session delete, outbox enqueue) | Durable outbox |
+| Global legacy-session revocation (cutover) | All pre-Expand session rows deleted (never backfilled) | — (write-quiescent maintenance) |
+
+No revocation path is Redis-only: a Redis write with no corresponding authoritative database change is a defect. Authoritative-database unavailability is a `503` and never falls open; Redis unavailability falls back to the authoritative database decision, except where strict Redis-backed rate limiting itself mandates `503`.
+
 ### Revocation outbox
 
 Role-change revocation side effects (the Redis blacklist writes and the user-wide `session-revoked` event) are recorded as durable rows in the `<prefix>_revocation_outbox` table **inside the same transaction** as the database revocation, then applied by a background drain worker with at-least-once delivery. This closes the crash window in which a best-effort post-commit push could strand revocation state. The DB revocation is already authoritative (`POST /private/v1/jti-status` decides from database state), so a disabled or lagging worker only slows cache-eviction propagation — it never changes correctness. The role-change endpoint therefore returns `200` with `auth_generation` and `revocation_enqueued: true` as soon as the transaction commits; it never returns a post-commit `503`/`202`. Outbox `publish` effects carry the **v2** event (`auth_generation`, deterministic `event_id`) that consumers dedup on; blacklist effects carry a TTL derived from the captured per-target token expiry.

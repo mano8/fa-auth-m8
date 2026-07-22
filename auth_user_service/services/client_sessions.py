@@ -106,19 +106,33 @@ class SessionController:
         expires_at: datetime,
         redis: Optional[Redis] = None,
         *,
+        session: Session,
         user_id: Optional[str] = None,
     ) -> None:
-        """
-        Blacklist a JWT identifier via Redis (manual revocation).
+        """Revoke a single access JTI — database-authoritative (3.5.4).
+
+        The authoritative ``ClientSession`` row is deleted **first**, in this
+        same operation, and committed; only then are the accelerators applied.
+        The Redis blacklist entry and the ``session-revoked`` event merely evict
+        consumer caches ahead of expiry, so a Redis outage can never lose the
+        revocation: a fresh v2 JTI-status decision denies from database state
+        alone (`REV-PATH-01`). ``session`` is therefore mandatory — a Redis-only
+        call is not a revocation.
 
         Args:
             jti (str): JWT token identifier.
             expires_at (datetime): When the token would naturally expire.
-            redis: Live Redis client, or None to fall back to get_redis_client().
+            redis: Live Redis client, or None when Redis is unavailable.
+            session: SQLModel DB session owning the authoritative delete.
             user_id: Owner of the session. When supplied, a best-effort
                 ``session-revoked`` event is pushed so consumers can evict the
                 cached validation of this JTI ahead of expiry.
         """
+        # 1. Authoritative revocation: remove the DB session row and commit.
+        SessionController._delete_session_rows_by_jti(session, jti)
+        session.commit()
+
+        # 2. Accelerator: TTL-bounded Redis blacklist entry for the access JTI.
         now = datetime.now(timezone.utc)
 
         if expires_at.tzinfo is None:
@@ -132,6 +146,7 @@ class SessionController:
             logger.warning(
                 "Not blacklisting JTI %s because TTL was %d seconds", jti, raw_ttl
             )
+        # 3. Accelerator: best-effort cache-eviction event.
         if user_id is not None:
             emit(
                 EVENT_SESSION_REVOKED,
@@ -163,6 +178,18 @@ class SessionController:
         return RedisSessionManager(redis).is_blacklisted(jti)
 
     @staticmethod
+    def _delete_session_rows_by_jti(session: Session, jti: str) -> int:
+        """Delete the authoritative session row(s) for *jti* — no commit (3.5.4).
+
+        Transaction-neutral primitive shared by every single-JTI revocation
+        path, so none of them can degrade into a Redis-only write. Returns the
+        number of rows removed.
+        """
+        stmt = delete(ClientSession).where(col(ClientSession.jwt_jti) == jti)
+        result = session.exec(stmt)  # type: ignore[call-overload]
+        return int(result.rowcount or 0)
+
+    @staticmethod
     def delete_session_by_jti(
         session: Session, jti: str, *, user_id: Optional[str] = None
     ) -> None:
@@ -174,8 +201,7 @@ class SessionController:
             user_id: Owner of the session. When supplied, a best-effort
                 ``session-revoked`` event is pushed for cache eviction.
         """
-        stmt = delete(ClientSession).where(col(ClientSession.jwt_jti) == jti)
-        session.exec(stmt)
+        SessionController._delete_session_rows_by_jti(session, jti)
         session.commit()
         if user_id is not None:
             emit(
@@ -260,8 +286,10 @@ class SessionController:
         targets: Sequence[RevocationTarget],
         user_id: Union[uuid.UUID, str],
         redis: Optional[Redis],
+        *,
+        user_wide: bool = True,
     ) -> None:
-        """Best-effort Redis blacklist + user-wide revoked event, after commit.
+        """Best-effort Redis blacklist + revoked event(s), after commit.
 
         The database delete is already authoritative (3.5.4); this only
         accelerates consumer cache eviction. Blacklists each captured access JTI
@@ -269,6 +297,10 @@ class SessionController:
         allowlist entry, and pushes the ``jti=None`` user-wide event so consumers
         flush every cached session for the user. The durable transactional outbox
         that replaces this best-effort push is a later plan item.
+
+        ``user_wide=False`` narrows the eviction to the captured targets — one
+        event per revoked JTI — for the administrative single-session path, whose
+        blast radius is a single session rather than the user's whole lineage.
         """
         if redis is not None and targets:
             access_mgr = RedisSessionManager(redis)
@@ -282,6 +314,15 @@ class SessionController:
                 if ttl > 0:
                     access_mgr.blacklist_jti(target.jti, ttl)
                 refresh_store.revoke(target.jti)
+        if not user_wide:
+            for target in targets:
+                emit(
+                    EVENT_SESSION_REVOKED,
+                    SessionRevokedEvent(
+                        user_id=str(user_id), jti=target.jti
+                    ).model_dump(),
+                )
+            return
         # jti=None signals "all of this user's sessions" — consumers flush every
         # cached session for the user rather than a single JTI.
         emit(
@@ -290,8 +331,33 @@ class SessionController:
         )
 
     @staticmethod
+    def revoke_session_record(
+        session: Session,
+        client_session: ClientSession,
+        redis: Optional[Redis],
+    ) -> None:
+        """Administrative revocation of one session row (3.5.4).
+
+        The row itself is already authoritative state, so the delete *is* the
+        revocation; this adds the accelerator the administrative path previously
+        lacked — without it a consumer's positive cache entry survived until its
+        TTL even though the database had denied the session. Captures the JTI and
+        its natural expiry before the delete, commits, then blacklists that one
+        JTI, drops its refresh allowlist entry, and emits the per-JTI event.
+        """
+        target = RevocationTarget(
+            jti=client_session.jwt_jti, expires_at=client_session.jwt_expires_at
+        )
+        user_id = str(client_session.user_id)
+        session.delete(client_session)
+        session.commit()
+        SessionController.apply_post_commit_revocation(
+            [target], user_id, redis, user_wide=False
+        )
+
+    @staticmethod
     def revoke_all_user_sessions(
-        session: Session, user_id: str, redis: Optional[Redis]
+        session: Session, user_id: Union[uuid.UUID, str], redis: Optional[Redis]
     ) -> int:
         """Revoke every active session for *user_id* — reuse-attack response.
 

@@ -3,7 +3,7 @@
 import uuid
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import col, delete, func, select
+from sqlmodel import func, select
 from auth_sdk_m8.schemas.base import AuthProviderType
 from auth_sdk_m8.models.shared import Message
 from auth_sdk_m8.controllers.base import BaseController
@@ -12,9 +12,11 @@ from auth_user_service.core.config import settings
 from auth_user_service.core.security import SecurityHelper
 from auth_user_service.core.deps import (
     CurrentUser,
+    RedisDep,
     SessionDep,
     get_current_active_superuser,
 )
+from auth_user_service.services.client_sessions import SessionController
 from auth_user_service.db_models.sessions import (
     ClientSession,
     ClientSessionPublic,
@@ -191,14 +193,20 @@ def refresh_google_session_tokens(
     dependencies=[Depends(get_current_active_superuser)],
     responses=BaseController.get_error_responses(),
 )
-def delete_sessions_by_user(session: SessionDep, user_id: uuid.UUID) -> Message:
-    """
-    Delete a user.
+def delete_sessions_by_user(
+    session: SessionDep, redis: RedisDep, user_id: uuid.UUID
+) -> Message:
+    """Administratively revoke every session of *user_id* (3.5.4).
+
+    The authoritative ``ClientSession`` rows are deleted and committed first;
+    the post-commit accelerator then blacklists each captured access JTI, drops
+    the matching refresh allowlist entries, and emits the user-wide
+    ``session-revoked`` event. Redis being unavailable degrades only the
+    accelerator — the revocation is already persisted, so a fresh v2 JTI-status
+    decision denies from database state alone.
     """
     try:
-        statement = delete(ClientSession).where(col(ClientSession.user_id) == user_id)
-        session.exec(statement)  # type: ignore
-        session.commit()
+        SessionController.revoke_all_user_sessions(session, user_id, redis)
         return Message(message="User deleted successfully")
     except HTTPException:
         raise
@@ -211,16 +219,20 @@ def delete_sessions_by_user(session: SessionDep, user_id: uuid.UUID) -> Message:
     dependencies=[Depends(get_current_active_superuser)],
     responses=BaseController.get_error_responses(),
 )
-def delete_session(session: SessionDep, session_id: uuid.UUID) -> Message:
-    """
-    Delete a user.
+def delete_session(
+    session: SessionDep, redis: RedisDep, session_id: uuid.UUID
+) -> Message:
+    """Administratively revoke one session row (3.5.4).
+
+    The delete of the authoritative row is the revocation; the accelerator
+    blacklists that session's access JTI and emits the per-JTI event so a
+    consumer's positive cache entry does not outlive the database decision.
     """
     try:
         client_session = session.get(ClientSession, session_id)
         if not client_session:
             raise HTTPException(status_code=404, detail="Session not found")
-        session.delete(client_session)
-        session.commit()
+        SessionController.revoke_session_record(session, client_session, redis)
         return Message(message="Session deleted successfully")
     except HTTPException:
         raise

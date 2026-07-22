@@ -13,6 +13,42 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [2.0.0] - 2026-07-22
 
+### Security
+
+- **Every revocation path is database-authoritative (`REV-PATH-01`, 3.5.4;
+  audit finding 8).** `SessionController.revoke_session_jti` was Redis-only — a
+  blacklist write plus a best-effort event, with no authoritative DB write — so
+  the revocation was silently lost whenever Redis was down, and any future
+  caller inherited the defect. It now takes a mandatory `session` and deletes
+  the authoritative `ClientSession` row **before** touching Redis, committing
+  the authoritative state first; the blacklist entry and the `session-revoked`
+  event are accelerators only. The logout path passes its request session
+  through (`routes/login.py::_revoke_access_jti`) and keeps its fail-closed
+  `SESSION_WRITE_FAILURE_MODE` posture. The administrative revocation routes
+  (`DELETE /sessions/delete/{session_id}/`, `DELETE
+  /sessions/delete-by-user/{user_id}/`) were the mirror-image gap — DB-
+  authoritative but with **no** accelerator, so a consumer's positive cache
+  entry outlived the database decision until its TTL; they now route through
+  `SessionController.revoke_session_record` /
+  `revoke_all_user_sessions`, which blacklist the captured JTIs, drop the
+  matching refresh-allowlist entries, and emit a per-JTI (single) or user-wide
+  (bulk) event. `apply_post_commit_revocation` gained the `user_wide` switch
+  that narrows eviction to the captured targets for the single-session case.
+  All ten paths enumerated in 3.5.4 are audited and documented in the new
+  README section _Database-authoritative revocation_.
+- **Per-path revocation-persistence tests** (`tests/services/test_revocation_paths.py`,
+  23 tests). Every enumerated path — logout, individual revocation,
+  administrative single/bulk revocation, refresh rotation, refresh-reuse
+  response, role change, deactivation/reactivation, deletion, security repair,
+  and the global legacy-session revocation — asserts both that the
+  authoritative session state is persisted in the same transaction/operation
+  and that a fresh subject-bound **v2** `/private/v1/jti-status` request
+  **with Redis down** still denies from database state alone. Includes an
+  active baseline (so denial is caused by revocation, not by setup), a proof
+  that the authoritative delete survives a failing blacklist write, and a
+  signature regression lock asserting no revocation entry point can be called
+  without an authoritative DB session.
+
 ### Fixed
 
 - **Coverage gate now measures the authorization-bearing route code (3A-2).**

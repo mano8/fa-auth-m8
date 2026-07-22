@@ -308,9 +308,15 @@ def _decode_refresh_or_raise(refresh_token: str, _m: Any) -> tuple:
 
 
 def _revoke_access_jti(
-    token: str, redis: Optional[Redis], _m: Any
+    token: str, session: Session, redis: Optional[Redis], _m: Any
 ) -> tuple[str | None, bool]:
-    """Blacklist the access token JTI; returns (jti, failed)."""
+    """Revoke the access token JTI — DB row first, then Redis (3.5.4).
+
+    ``SessionController.revoke_session_jti`` deletes the authoritative session
+    row in the same operation, so a Redis outage degrades only the accelerator;
+    a failure of the authoritative delete surfaces as ``failed`` and the caller
+    applies the fail-closed session-write posture. Returns (jti, failed).
+    """
     if not settings.is_stateful:
         return None, False
     try:
@@ -323,7 +329,7 @@ def _revoke_access_jti(
                 minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
             )
         SessionController.revoke_session_jti(
-            jti, expires_at, redis, user_id=payload.sub
+            jti, expires_at, redis, session=session, user_id=payload.sub
         )
         return jti, False
     except Exception:  # noqa: BLE001
@@ -504,7 +510,7 @@ def logout(
     """Revoke both tokens, delete the DB session, and clear the cookie."""
     _m = _get_metrics()
 
-    access_jti, access_failed = _revoke_access_jti(token, redis, _m)
+    access_jti, access_failed = _revoke_access_jti(token, session, redis, _m)
     jti, refresh_failed = _revoke_refresh_jti(refresh_token, redis, access_jti, _m)
     db_failed = _delete_db_session(session, jti, _m)
 
