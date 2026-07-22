@@ -10,6 +10,7 @@ from auth_user_service.routes import (
     oauth_login,
     private,
     profile,
+    security,
     sessions,
     users,
 )
@@ -25,4 +26,5 @@ api_router.include_router(oauth_login.router)
 api_router.include_router(google_auth.router)
 api_router.include_router(sessions.router)
 api_router.include_router(dashboard.router)
+api_router.include_router(security.router, include_in_schema=False)
 api_router.include_router(private.router, include_in_schema=False)

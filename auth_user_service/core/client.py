@@ -373,6 +373,42 @@ class ExchangeRateLimiter:
         return count <= self.max_requests
 
 
+class SuperuserProbeRateLimiter:
+    """Fixed-window limiter for ``GET /security/superuser-probe``, keyed by user ID.
+
+    The probe is authenticated (canonical superuser guard) rather than
+    anonymous, so unlike the login/exchange limiters it keys on the caller's
+    user ID instead of an IP address. Bounds how often the security-harness
+    canary — or a caller holding a genuinely valid superuser token — can be
+    exercised.
+    """
+
+    DEFAULT_MAX_REQUESTS: Final[int] = 30
+    DEFAULT_WINDOW_SECONDS: Final[int] = 60
+    PREFIX: Final[str] = "security:superuser_probe:"
+
+    def __init__(
+        self,
+        client: Redis,
+        max_requests: int = DEFAULT_MAX_REQUESTS,
+        window_seconds: int = DEFAULT_WINDOW_SECONDS,
+    ) -> None:
+        self.client = client
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+
+    def _key(self, user_id: str) -> str:
+        return f"{self.PREFIX}{user_id}"
+
+    def is_allowed(self, user_id: str) -> bool:
+        """Increment the per-user counter and return True if still within limit."""
+        key = self._key(user_id)
+        count = cast(int, self.client.incr(key))
+        if count == 1:
+            self.client.expire(key, self.window_seconds)
+        return count <= self.max_requests
+
+
 _ROTATE_SCRIPT = """
 local old = KEYS[1]
 local new = KEYS[2]

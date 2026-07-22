@@ -50,6 +50,7 @@ _RUNTIME_KEY_PREFIXES = [
     "jwt:blacklist:",
     "rate:api:",
     "api_key:luat",
+    "security:superuser_probe:",
 ]
 
 

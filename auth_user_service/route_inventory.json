@@ -243,6 +243,15 @@
     "note": "Update own profile — requires valid bearer token"
   },
   {
+    "path": "/user/security/superuser-probe",
+    "method": "GET",
+    "tag": "security",
+    "exposure": "admin",
+    "in_openapi": false,
+    "traefik_router": "public",
+    "note": "Non-disclosing superuser-authorization canary for the live security harness (3.9); JWT-only, no user query, no mutation"
+  },
+  {
     "path": "/user/sessions/",
     "method": "GET",
     "tag": "sessions",
