@@ -59,7 +59,9 @@ def _called_name(call: ast.Call) -> str:
         return func.id
     if isinstance(func, ast.Attribute):
         return func.attr
-    return ""
+    return (
+        ""  # pragma: no cover - defensive: no scanned call target is a bare expression
+    )
 
 
 class _DecisionVisitor(ast.NodeVisitor):

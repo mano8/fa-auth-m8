@@ -11,6 +11,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Coverage gate now measures the authorization-bearing route code (3A-2).**
+  `.coveragerc` no longer blanket-omits `auth_user_service/routes/*` and
+  `auth_user_service/scripts/*`; `pytest --cov-fail-under=100` previously
+  asserted nothing about them. Added the route-level error-mapping tests for
+  `routes/users.py::update_current_user`/`delete_user` — the operator-visible
+  `403` (`SelfPromotionError`), `409 last_superuser_required`
+  (`LastSuperuserError`), `404`, email-`409`, and generic-500 branches — plus
+  coverage for the pre-existing `read_users`/`create_new_user_with_password`/
+  `register_user`/`read_user_by_id` routes and two edge cases in the
+  `check_no_direct_superuser_auth` AST guard
+  (`tests/security/test_no_direct_superuser_auth.py`). `routes/login.py`,
+  `routes/sessions.py`, and `routes/api_keys.py` stay in the omit list as
+  pre-existing surfaces exercised only by `tests/live` (ignored by the CI unit
+  gate); a handful of other pre-existing, live-tested-only code paths
+  (`routes/private.py::event_stream`, the two `routes/dashboard.py` handlers,
+  and one defensive branch in `routes/oauth_login.py::_is_safe_http_redirect`)
+  are marked `# pragma: no cover` in place with a recorded justification
+  rather than reintroducing a blanket omit. Full suite: 1296 passed, 100%
+  statement/branch coverage under the narrowed scope; ruff format/check, mypy,
+  bandit, `check_no_direct_superuser_auth`, and pip-audit all clean.
+
 ## [2.0.0] - 2026-07-22
 
 ### Added

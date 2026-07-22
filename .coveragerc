@@ -2,14 +2,20 @@
 source = auth_user_service
 omit =
     auth_user_service/main.py
-    auth_user_service/routes/*
     auth_user_service/alembic/*
-    auth_user_service/scripts/*
     auth_user_service/services/oauth.py
     auth_user_service/core/engine_async.py
     auth_user_service/core/engine_sync.py
     auth_user_service/core/init_db.py
     auth_user_service/core/config.py
+    # Pre-existing live-tested-only surfaces (tests/live drives them against a
+    # real running stack; CI's unit gate ignores tests/live). Kept as a
+    # deliberate, recorded omission rather than the former blanket
+    # routes/*/scripts/* omit, which also hid the new authorization-bearing
+    # route code this gate must measure (3A-2).
+    auth_user_service/routes/login.py
+    auth_user_service/routes/sessions.py
+    auth_user_service/routes/api_keys.py
 
 [report]
 exclude_lines =

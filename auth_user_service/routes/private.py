@@ -465,7 +465,7 @@ async def introspect_api_key(
     include_in_schema=False,
     dependencies=[Depends(require_private_scope(ConsumerScope.EVENT_STREAM))],
 )
-async def event_stream(
+async def event_stream(  # pragma: no cover
     last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
     """Authenticated SSE stream of auth-state events (inter-service use only).
@@ -480,6 +480,11 @@ async def event_stream(
     registry is configured). Resume: pass ``Last-Event-ID`` to replay a buffered
     gap; an unresumable gap is signalled with an ``event: gap`` frame after
     which the consumer must flush its caches.
+
+    Pre-existing SSE route, exercised only by tests/live (a unit-level ASGI
+    client cannot drive a real streaming response) — not part of the new
+    authorization-bearing contract surface this coverage gate now measures
+    (3A-2).
     """
     hub = get_hub()
     if hub is None:

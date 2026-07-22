@@ -131,7 +131,10 @@ def _validate_redirect_target(redirect_target: str) -> None:
 
 def _is_safe_http_redirect(hostname: str | None) -> bool:
     """Return True when an HTTP redirect host is local development only."""
-    if hostname is None:
+    if hostname is None:  # pragma: no cover
+        # Defensive: _validate_redirect_target already rejects an empty
+        # netloc before this helper runs, so a None hostname is unreachable
+        # through the current call chain (3A-2).
         return False
     return hostname.lower() in {"localhost", "127.0.0.1", "::1"}
 

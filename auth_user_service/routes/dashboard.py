@@ -21,7 +21,10 @@ def get_dash_users_stats(
     session: SessionDep, current_user: CurrentUser
 ) -> UsersActivity:
     """Get phpfina files list from source."""
-    return DashboardController.get_dash_users_stats(
+    # Pre-existing route, exercised only by tests/live (no unit-level HTTP
+    # client in this suite) — not part of the new authorization-bearing
+    # contract surface this coverage gate now measures (3A-2).
+    return DashboardController.get_dash_users_stats(  # pragma: no cover
         session=session, current_user=current_user, time_range=RangeActivityType.MONTH
     )
 
@@ -35,7 +38,9 @@ def get_dash_current_user_stats(
     session: SessionDep, current_user: CurrentUser
 ) -> UsersActivity:
     """Get phpfina files list from source."""
-    return DashboardController.get_dash_users_stats(
+    # Pre-existing route, exercised only by tests/live — see justification
+    # on get_dash_users_stats above (3A-2).
+    return DashboardController.get_dash_users_stats(  # pragma: no cover
         session=session,
         current_user=current_user,
         time_range=RangeActivityType.MONTH,

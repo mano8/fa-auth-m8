@@ -6,6 +6,7 @@ import pytest
 
 from auth_user_service.scripts.check_no_direct_superuser_auth import (
     find_violations,
+    iter_python_files,
     main,
     scan_paths,
 )
@@ -75,6 +76,23 @@ class TestCliAndScanning:
         assert len(violations) == 1
         assert violations[0].line == 2
         assert "is_superuser" in violations[0].snippet
+
+    def test_iter_python_files_skips_pycache(self, tmp_path):
+        pycache = tmp_path / "__pycache__"
+        pycache.mkdir()
+        (pycache / "stale.py").write_text("x = 1\n")
+        real = tmp_path / "mod.py"
+        real.write_text("x = 1\n")
+
+        found = list(iter_python_files([tmp_path]))
+
+        assert found == [real]
+
+    def test_iter_python_files_ignores_non_python_file_argument(self, tmp_path):
+        not_python = tmp_path / "notes.txt"
+        not_python.write_text("hello\n")
+
+        assert list(iter_python_files([not_python])) == []
 
     def test_main_defaults_to_source_package(self, monkeypatch):
         # No argv → defaults to scanning ``auth_user_service`` from repo root.
