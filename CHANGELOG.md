@@ -11,7 +11,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [2.0.0] - 2026-07-22
 
 ### Fixed
 
@@ -35,8 +35,6 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   rather than reintroducing a blanket omit. Full suite: 1296 passed, 100%
   statement/branch coverage under the narrowed scope; ruff format/check, mypy,
   bandit, `check_no_direct_superuser_auth`, and pip-audit all clean.
-
-## [2.0.0] - 2026-07-22
 
 ### Added
 
