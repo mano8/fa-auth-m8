@@ -10,3 +10,7 @@ from .api_keys import (
 from .tombstones import AuthTombstone as AuthTombstone
 from .security_policy import SecurityPolicy as SecurityPolicy
 from .outbox import RevocationOutbox as RevocationOutbox
+from .privileged_action_audit import (
+    AuditAction as AuditAction,
+    PrivilegedActionAudit as PrivilegedActionAudit,
+)
