@@ -252,6 +252,15 @@
     "note": "Non-disclosing superuser-authorization canary for the live security harness (3.9); JWT-only, no user query, no mutation"
   },
   {
+    "path": "/user/security/audit-log",
+    "method": "GET",
+    "tag": "security",
+    "exposure": "admin",
+    "in_openapi": false,
+    "traefik_router": "public",
+    "note": "Read-only privileged-action audit trail (Phase 7); ADMIN sees own rows only, SUPERADMIN sees all, no PII beyond recorded ids"
+  },
+  {
     "path": "/user/sessions/",
     "method": "GET",
     "tag": "sessions",

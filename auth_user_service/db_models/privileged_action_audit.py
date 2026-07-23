@@ -31,7 +31,7 @@ Design constraints (all normative, Phase 7; tombstone-consistent, 3.5.1):
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
 from sqlalchemy import Column, String, Uuid, text
 from sqlalchemy import Enum as SAEnum
@@ -118,4 +118,33 @@ class PrivilegedActionAudit(SQLModel, table=True):
         sa_column=Column("target_owner_id", String(128), nullable=True),
         description="Owner id of the mutated row as text; NULL when the target has "
         "no owner (no FK — the audit outlives the owner).",
+    )
+
+
+class PrivilegedActionAuditPublic(SQLModel):
+    """Read-only response shape for one audit row (Phase 7 audit read route).
+
+    Carries only the recorded ids and classification fields — no PII beyond
+    the actor/target ids already stored on the row (secret non-exposure
+    invariant: this surface never touches user profile/secret columns).
+    """
+
+    id: uuid.UUID
+    created_at: datetime
+    actor_user_id: uuid.UUID
+    actor_role: RoleType
+    action: AuditAction
+    table_name: str
+    row_pk: str
+    target_owner_id: Optional[str] = None
+
+
+class PrivilegedActionAuditsPublic(SQLModel):
+    """Wrapper for a paginated privileged-action-audit listing."""
+
+    data: List[PrivilegedActionAuditPublic] = Field(
+        description="List of public privileged-action-audit rows",
+    )
+    count: int = Field(
+        description="Total number of audit rows visible to the caller",
     )

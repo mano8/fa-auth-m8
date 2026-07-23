@@ -10,6 +10,7 @@ from fastapi import HTTPException
 
 from auth_user_service.core.client import RateLimitResult
 from auth_user_service.core.deps import (
+    get_current_active_admin,
     get_current_active_superuser,
     get_current_api_key,
     get_current_user,
@@ -236,6 +237,48 @@ class TestGetCurrentActiveSuperuser:
 
         with pytest.raises(HTTPException) as exc_info:
             get_current_active_superuser(current_user=user)
+
+        assert exc_info.value.status_code == 403
+
+
+class TestGetCurrentActiveAdmin:
+    @pytest.mark.parametrize(
+        "role",
+        [RoleType.ADMIN, RoleType.SUPERADMIN],
+    )
+    def test_admin_or_above_passes_through(self, role: RoleType) -> None:
+        user = MagicMock(spec=UserModel)
+        user.role = role
+        user.is_superuser = role == RoleType.SUPERADMIN
+
+        result = get_current_active_admin(current_user=user)
+
+        assert result is user
+
+    @pytest.mark.parametrize(
+        "role",
+        [RoleType.USER, RoleType.READER, RoleType.WRITER],
+    )
+    def test_below_admin_raises_403(self, role: RoleType) -> None:
+        user = MagicMock(spec=UserModel)
+        user.role = role
+        user.is_superuser = False
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_active_admin(current_user=user)
+
+        assert exc_info.value.status_code == 403
+
+    def test_stray_is_superuser_flag_never_satisfies_role_threshold(self) -> None:
+        # A lone is_superuser=True on a sub-ADMIN role must not grant access —
+        # this guard is a pure role-hierarchy check that never consults the
+        # flag (mirrors the ADMIN/SUPERADMIN dependencies elsewhere).
+        user = MagicMock(spec=UserModel)
+        user.role = RoleType.USER
+        user.is_superuser = True
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_active_admin(current_user=user)
 
         assert exc_info.value.status_code == 403
 

@@ -17,6 +17,7 @@ from redis import ConnectionPool, Redis
 from sqlmodel import Session, col, select
 
 from auth_sdk_m8.authorization import (
+    has_minimum_role,
     has_superuser_privileges,
     privilege_claims_are_consistent,
     validate_api_key_required_role,
@@ -238,6 +239,31 @@ def get_current_user(token: TokenDep) -> UserModel:
 
 
 CurrentUser = Annotated[UserModel, Depends(get_current_user)]
+
+
+def get_current_active_admin(current_user: CurrentUser) -> UserModel:
+    """Verify that the current user holds at least ADMIN role (§3.3.1).
+
+    Authorized solely through the SDK's ``has_minimum_role`` role-hierarchy
+    predicate on the JWT-authenticated user; ``is_superuser`` is never
+    consulted for a role threshold, so the flag alone can never satisfy this
+    guard. The issuer builds its own dependency surface and does not call
+    fastapi-m8's ``build_auth_deps``, so this mirrors that framework's
+    ``require_role(RoleType.ADMIN)`` guard directly against
+    ``auth_user_service.core.deps.get_current_user`` — the issuer's existing
+    per-request validation already re-checks the token and, in stateful mode,
+    the JTI revocation state on every call, so there is no separate
+    positive-cache path to bypass here.
+
+    Raises:
+        HTTPException 403: Role below ADMIN.
+    """
+    if not has_minimum_role(current_user.role, RoleType.ADMIN):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The user doesn't have enough privileges",
+        )
+    return current_user
 
 
 def get_current_active_superuser(current_user: CurrentUser) -> UserModel:
