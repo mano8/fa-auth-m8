@@ -26,13 +26,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   local/remote principal equivalence, and the audience/capability-policy
   matrix) instead of locally invented expectations, so an SDK-side contract
   drift fails this suite too.
+- Raise the bundled `examples/fastapi_minimal/requirements.txt` and
+  `examples/fastapi_full/requirements_base.txt` `fastapi-m8` floor to
+  `>=4.1.0,<5.0.0`, matching the coordinated `auth-sdk-m8 3.1.0` /
+  `fastapi-m8 4.1.0` fixture-consumption bump so both maintained examples
+  install the SDK/fastapi-m8 pair that ships the expanded fixture matrix.
 
 **Known gap:** `auth_user_service/requirements_prod.lock` still pins
 `auth-sdk-m8==3.0.0` — regenerating it with `pip-compile --generate-hashes`
 requires `auth-sdk-m8 3.1.0` to already be resolvable from the configured
 package index, which is a Phase 6 (coordinated release) precondition, not
 this Phase 5 test-consumption change. Regenerate the lock as part of the
-Phase 6 publish sequence.
+Phase 6 publish sequence. The same applies to the two bumped example
+`requirements*.txt` floors: `pip install` against them (including this
+repository's own CI, which installs `examples/fastapi_full/requirements_base.txt`)
+only resolves once `auth-sdk-m8 3.1.0` and `fastapi-m8 4.1.0` are actually
+published to the configured package index.
 
 ---
 
