@@ -5,7 +5,7 @@ Dashboard Controller
 from datetime import datetime, timedelta
 from sqlalchemy import case, and_
 from sqlmodel import Session, select, func
-from auth_sdk_m8.controllers.base import BaseController
+from fastapi_m8 import BaseController, has_superuser_privileges
 from fastapi_full.core.deps import CurrentUser
 from fastapi_full.schemas.dashboard import (
     ActivityStats,
@@ -111,7 +111,12 @@ class DashboardController:
                     )
                 ).label("added"),
             ).select_from(model)
-            if not current_user.is_superuser or is_current is True:
+            if (
+                not has_superuser_privileges(
+                    current_user.role, current_user.is_superuser
+                )
+                or is_current is True
+            ):
                 if model_name == "User":
                     stmt = stmt.where(model.id == current_user.id)
                 else:

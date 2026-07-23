@@ -19,6 +19,9 @@ engine: DbEngine = create_db_engine(settings)
 
 CurrentUser = auth.CurrentUser
 get_current_user = auth.get_current_user
+get_current_active_reader = auth.get_current_active_reader
+get_current_active_writer = auth.get_current_active_writer
+get_current_active_superuser = auth.get_current_active_superuser
 get_db = engine.session_dep
 SessionDep = Annotated[Session, Depends(get_db)]
 
