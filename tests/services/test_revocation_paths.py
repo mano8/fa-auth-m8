@@ -358,6 +358,7 @@ class TestRoleChangeAndActivation:
         result = change_user_authorization(
             session=db_session,
             actor_id=superuser.id,
+            actor_role=RoleType.SUPERADMIN,
             db_user=sample_user,
             user_in=UserUpdate(role=RoleType.ADMIN),
         )
@@ -375,6 +376,7 @@ class TestRoleChangeAndActivation:
         change_user_authorization(
             session=db_session,
             actor_id=superuser.id,
+            actor_role=RoleType.SUPERADMIN,
             db_user=sample_user,
             user_in=UserUpdate(is_active=False),
         )
@@ -383,6 +385,7 @@ class TestRoleChangeAndActivation:
         change_user_authorization(
             session=db_session,
             actor_id=superuser.id,
+            actor_role=RoleType.SUPERADMIN,
             db_user=sample_user,
             user_in=UserUpdate(is_active=True),
         )
@@ -403,7 +406,10 @@ class TestDeletion:
         user_id = sample_user.id
 
         delete_user_account(
-            session=db_session, actor_id=superuser.id, db_user=sample_user
+            session=db_session,
+            actor_id=superuser.id,
+            actor_role=RoleType.SUPERADMIN,
+            db_user=sample_user,
         )
 
         assert _row_for(db_session, issued.jwt_jti) is None

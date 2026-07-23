@@ -30,6 +30,8 @@ from auth_user_service.db_models.users import (
 from auth_sdk_m8.controllers.base import BaseController
 from auth_sdk_m8.schemas.user_events import UserDeletedEvent
 from auth_user_service.core.exceptions import handle_route_exception
+from auth_user_service.db_models.privileged_action_audit import AuditAction
+from auth_user_service.services.audit import record_privileged_action
 from auth_user_service.events import EVENT_USER_DELETED, emit
 
 # pylint: disable=not-callable, broad-exception-caught
@@ -65,9 +67,15 @@ def read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:
     response_model=UserPublic,
     responses=BaseController.get_error_responses(),
 )
-def create_new_user_with_password(*, session: SessionDep, user_in: UserCreate) -> Any:
+def create_new_user_with_password(
+    *, session: SessionDep, current_user: CurrentUser, user_in: UserCreate
+) -> Any:
     """
     Create new user.
+
+    A superadmin creating another user is a privileged mutation of non-owned
+    data: the new row and its ``add`` audit row are committed together in one
+    transaction (Phase 7), so the create can never land without its audit record.
     """
     try:
         user = UserController.get_user_by_email(session=session, email=user_in.email)
@@ -77,7 +85,18 @@ def create_new_user_with_password(*, session: SessionDep, user_in: UserCreate) -
                 detail=("The user with this email already exists in the system."),
             )
 
-        user = UserController.create_user(session=session, user_create=user_in)
+        user = UserController.build_user(session=session, user_create=user_in)
+        record_privileged_action(
+            session,
+            actor_user_id=current_user.id,
+            actor_role=current_user.role,
+            action=AuditAction.ADD,
+            table_name=User.__tablename__,
+            row_pk=user.id,
+            target_owner_id=user.id,
+        )
+        session.commit()
+        session.refresh(user)
         return user
     except Exception as ex:
         return handle_route_exception(ex=ex, session=session)
@@ -89,9 +108,15 @@ def create_new_user_with_password(*, session: SessionDep, user_in: UserCreate) -
     response_model=UserPublic,
     responses=BaseController.get_error_responses(),
 )
-def register_user(session: SessionDep, user_in: UserRegister) -> Any:
+def register_user(
+    session: SessionDep, current_user: CurrentUser, user_in: UserRegister
+) -> Any:
     """
     Create new user without the need to be logged in.
+
+    Superadmin-gated (see the route dependency), so this too is a privileged
+    creation of non-owned data: the new row and its ``add`` audit row commit
+    together in one transaction (Phase 7).
     """
     try:
         user = UserController.get_user_by_email(session=session, email=user_in.email)
@@ -101,7 +126,18 @@ def register_user(session: SessionDep, user_in: UserRegister) -> Any:
                 detail="The user with this email already exists in the system",
             )
         user_create = UserCreate.model_validate(user_in)
-        user = UserController.create_user(session=session, user_create=user_create)
+        user = UserController.build_user(session=session, user_create=user_create)
+        record_privileged_action(
+            session,
+            actor_user_id=current_user.id,
+            actor_role=current_user.role,
+            action=AuditAction.ADD,
+            table_name=User.__tablename__,
+            row_pk=user.id,
+            target_owner_id=user.id,
+        )
+        session.commit()
+        session.refresh(user)
         return user
     except Exception as ex:
         return handle_route_exception(ex=ex, session=session)
@@ -175,6 +211,7 @@ def update_current_user(
         result = change_user_authorization(
             session=session,
             actor_id=current_user.id,
+            actor_role=current_user.role,
             db_user=db_user,
             user_in=user_in,
         )
@@ -221,6 +258,7 @@ def delete_user(
         delete_user_account(
             session=session,
             actor_id=current_user.id,
+            actor_role=current_user.role,
             db_user=user,
         )
         # Best-effort push so consumers drop any cached state for the deleted

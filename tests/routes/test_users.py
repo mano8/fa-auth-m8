@@ -9,6 +9,10 @@ from sqlmodel import delete, select
 
 from auth_sdk_m8.schemas.base import RoleType
 from auth_user_service.db_models.api_keys import ApiKey
+from auth_user_service.db_models.privileged_action_audit import (
+    AuditAction,
+    PrivilegedActionAudit,
+)
 from auth_user_service.db_models.tombstones import AuthTombstone
 from auth_user_service.db_models.users import User, UserCreate, UserRegister, UserUpdate
 from auth_user_service.routes.users import (
@@ -136,36 +140,44 @@ class TestReadUsers:
 
 
 class TestCreateNewUserWithPassword:
-    def test_creates_user(self, db_session) -> None:
+    def test_creates_user(self, db_session, superuser) -> None:
         email = f"created_{uuid.uuid4().hex[:8]}@example.com"
         user = create_new_user_with_password(
             session=db_session,
+            current_user=superuser,
             user_in=UserCreate(email=email, password=_PASS),
         )
         assert user.email == email
 
-    def test_duplicate_email_returns_400(self, db_session, sample_user) -> None:
+    def test_duplicate_email_returns_400(
+        self, db_session, sample_user, superuser
+    ) -> None:
         with pytest.raises(HTTPException) as exc:
             create_new_user_with_password(
                 session=db_session,
+                current_user=superuser,
                 user_in=UserCreate(email=sample_user.email, password=_PASS),
             )
         assert exc.value.status_code == 400
 
 
 class TestRegisterUser:
-    def test_registers_user(self, db_session) -> None:
+    def test_registers_user(self, db_session, superuser) -> None:
         email = f"registered_{uuid.uuid4().hex[:8]}@example.com"
         user = register_user(
             session=db_session,
+            current_user=superuser,
             user_in=UserRegister(email=email, password=_PASS),
         )
         assert user.email == email
 
-    def test_duplicate_email_returns_400(self, db_session, sample_user) -> None:
+    def test_duplicate_email_returns_400(
+        self, db_session, sample_user, superuser
+    ) -> None:
         with pytest.raises(HTTPException) as exc:
             register_user(
                 session=db_session,
+                current_user=superuser,
                 user_in=UserRegister(email=sample_user.email, password=_PASS),
             )
         assert exc.value.status_code == 400
@@ -320,3 +332,115 @@ class TestDeleteUserErrorMapping:
                 user_id=sample_user.id,
             )
         mock_handle.assert_called_once()
+
+
+def _audit_for_pk(db_session, row_pk) -> list[PrivilegedActionAudit]:
+    # The in-memory test engine is session-scoped, so committed audit rows from
+    # sibling tests persist; scope every assertion to this action's unique row_pk.
+    return list(
+        db_session.exec(
+            select(PrivilegedActionAudit).where(
+                PrivilegedActionAudit.row_pk == str(row_pk)
+            )
+        ).all()
+    )
+
+
+def _audit_count(db_session) -> int:
+    return len(db_session.exec(select(PrivilegedActionAudit)).all())
+
+
+class TestPrivilegedActionAuditIntegration:
+    """The four user-mutation routes each write exactly one audit row atomically."""
+
+    def test_create_writes_add_audit_row(self, db_session, superuser) -> None:
+        email = f"audited_{uuid.uuid4().hex[:8]}@example.com"
+        user = create_new_user_with_password(
+            session=db_session,
+            current_user=superuser,
+            user_in=UserCreate(email=email, password=_PASS),
+        )
+        rows = _audit_for_pk(db_session, user.id)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.action == AuditAction.ADD
+        assert row.actor_user_id == superuser.id
+        # actor_role is taken from the authenticated principal, not client input.
+        assert row.actor_role == superuser.role
+        assert row.table_name == User.__tablename__
+        assert row.row_pk == str(user.id)
+        assert row.target_owner_id == str(user.id)
+
+    def test_duplicate_create_writes_no_audit_row(self, db_session, superuser) -> None:
+        # The action never reaches the recorder, so nothing new is audited.
+        before = _audit_count(db_session)
+        with pytest.raises(HTTPException):
+            create_new_user_with_password(
+                session=db_session,
+                current_user=superuser,
+                user_in=UserCreate(email=superuser.email, password=_PASS),
+            )
+        assert _audit_count(db_session) == before
+
+    def test_register_writes_add_audit_row(self, db_session, superuser) -> None:
+        email = f"audited_reg_{uuid.uuid4().hex[:8]}@example.com"
+        user = register_user(
+            session=db_session,
+            current_user=superuser,
+            user_in=UserRegister(email=email, password=_PASS),
+        )
+        rows = _audit_for_pk(db_session, user.id)
+        assert len(rows) == 1
+        assert rows[0].action == AuditAction.ADD
+
+    def test_update_writes_edit_audit_row(
+        self, db_session, sample_user, superuser
+    ) -> None:
+        new_email = f"edited_{uuid.uuid4().hex[:8]}@example.com"
+        update_current_user(
+            session=db_session,
+            current_user=superuser,
+            user_id=sample_user.id,
+            user_in=UserUpdate(email=new_email),
+        )
+        rows = _audit_for_pk(db_session, sample_user.id)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.action == AuditAction.EDIT
+        assert row.actor_user_id == superuser.id
+        assert row.actor_role == RoleType.SUPERADMIN
+        assert row.row_pk == str(sample_user.id)
+
+    def test_failed_update_writes_no_audit_row(self, db_session, superuser) -> None:
+        # A self-promotion is rejected before commit; no audit row lands.
+        _clear_other_superadmins(db_session, superuser.id)
+        before = _audit_count(db_session)
+        with pytest.raises(HTTPException):
+            update_current_user(
+                session=db_session,
+                current_user=superuser,
+                user_id=superuser.id,
+                user_in=UserUpdate(role=RoleType.USER),
+            )
+        assert _audit_count(db_session) == before
+
+    def test_delete_writes_delete_audit_row_that_outlives_the_user(
+        self, db_session, sample_user, superuser
+    ) -> None:
+        target_id = sample_user.id
+        with patch("auth_user_service.routes.users.emit"):
+            delete_user(
+                session=db_session,
+                current_user=superuser,
+                user_id=target_id,
+            )
+        # The user row is gone, but the audit row (no FK to the actor/target)
+        # survives the deletion, capturing the pre-delete identifiers (3.5.1).
+        assert db_session.get(User, target_id) is None
+        rows = _audit_for_pk(db_session, target_id)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.action == AuditAction.DELETE
+        assert row.actor_user_id == superuser.id
+        assert row.row_pk == str(target_id)
+        assert row.target_owner_id == str(target_id)

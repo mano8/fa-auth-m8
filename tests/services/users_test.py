@@ -103,6 +103,36 @@ class TestCreateUser:
         assert user.is_superuser is False
 
 
+class TestBuildUser:
+    def test_persists_without_committing(self, db_session):
+        # Transaction-neutral: the row is flushed (id known) but not committed,
+        # so a privileged create route can enqueue its audit row in the same
+        # transaction. A rollback discards the user (nothing committed).
+        user_create = UserCreate(
+            email=f"neutral_{uuid.uuid4().hex[:6]}@example.com",
+            password="securepassword",
+            provider=AuthProviderType.PASSWORD,
+        )
+
+        user = UserController.build_user(session=db_session, user_create=user_create)
+        user_id = user.id
+
+        assert user_id is not None
+        assert user.is_superuser is False
+        assert user.auth_generation == 1
+        db_session.rollback()
+        assert UserController.get_user(session=db_session, user_id=user_id) is None
+
+    def test_missing_password_raises(self, db_session):
+        bad_create = UserCreate.model_construct(
+            email=f"bad_{uuid.uuid4().hex[:6]}@example.com",
+            password=None,
+            provider=AuthProviderType.PASSWORD,
+        )
+        with pytest.raises(ValueError):
+            UserController.build_user(session=db_session, user_create=bad_create)
+
+
 class TestUpdateUser:
     def test_update_full_name(self, db_session, sample_user):
         update = UserUpdate(full_name="New Name")

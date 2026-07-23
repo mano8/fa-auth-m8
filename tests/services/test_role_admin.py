@@ -150,6 +150,7 @@ class TestChangeUserAuthorizationProfileOnly:
         result = change_user_authorization(
             session=db_session,
             actor_id=uuid.uuid4(),
+            actor_role=RoleType.SUPERADMIN,
             db_user=sample_user,
             user_in=UserUpdate(full_name="Renamed"),
         )
@@ -169,6 +170,7 @@ class TestChangeUserAuthorizationRole:
         result = change_user_authorization(
             session=db_session,
             actor_id=uuid.uuid4(),
+            actor_role=RoleType.SUPERADMIN,
             db_user=sample_user,
             user_in=UserUpdate(role=RoleType.ADMIN),
         )
@@ -189,6 +191,7 @@ class TestChangeUserAuthorizationRole:
         result = change_user_authorization(
             session=db_session,
             actor_id=uuid.uuid4(),
+            actor_role=RoleType.SUPERADMIN,
             db_user=sample_user,
             user_in=UserUpdate(role=RoleType.USER),  # already USER
         )
@@ -209,6 +212,7 @@ class TestChangeUserAuthorizationRole:
             change_user_authorization(
                 session=db_session,
                 actor_id=uuid.uuid4(),
+                actor_role=RoleType.SUPERADMIN,
                 db_user=superuser,
                 user_in=UserUpdate(role=RoleType.USER),
             )
@@ -220,6 +224,7 @@ class TestChangeUserAuthorizationRole:
         result = change_user_authorization(
             session=db_session,
             actor_id=uuid.uuid4(),
+            actor_role=RoleType.SUPERADMIN,
             db_user=superuser,
             user_in=UserUpdate(role=RoleType.USER),
         )
@@ -231,6 +236,7 @@ class TestChangeUserAuthorizationRole:
             change_user_authorization(
                 session=db_session,
                 actor_id=sample_user.id,
+                actor_role=RoleType.SUPERADMIN,
                 db_user=sample_user,
                 user_in=UserUpdate(role=RoleType.ADMIN),
             )
@@ -242,6 +248,7 @@ class TestChangeUserAuthorizationRole:
         result = change_user_authorization(
             session=db_session,
             actor_id=superuser.id,  # actor == target: self-demotion
+            actor_role=RoleType.SUPERADMIN,
             db_user=superuser,
             user_in=UserUpdate(role=RoleType.READER),
         )
@@ -252,6 +259,7 @@ class TestChangeUserAuthorizationRole:
         result = change_user_authorization(
             session=db_session,
             actor_id=uuid.uuid4(),
+            actor_role=RoleType.SUPERADMIN,
             db_user=sample_user,
             user_in=UserUpdate(role=RoleType.WRITER),
         )
@@ -279,6 +287,7 @@ class TestChangeUserAuthorizationActivation:
         result = change_user_authorization(
             session=db_session,
             actor_id=uuid.uuid4(),
+            actor_role=RoleType.SUPERADMIN,
             db_user=sample_user,
             user_in=UserUpdate(is_active=False),
         )
@@ -307,6 +316,7 @@ class TestChangeUserAuthorizationActivation:
         result = change_user_authorization(
             session=db_session,
             actor_id=uuid.uuid4(),
+            actor_role=RoleType.SUPERADMIN,
             db_user=user,
             user_in=UserUpdate(is_active=True),
         )
@@ -329,6 +339,7 @@ class TestChangeUserAuthorizationActivation:
             change_user_authorization(
                 session=db_session,
                 actor_id=uuid.uuid4(),
+                actor_role=RoleType.SUPERADMIN,
                 db_user=superuser,
                 user_in=UserUpdate(is_active=False),
             )
@@ -343,6 +354,7 @@ class TestDeleteUserAccount:
         delete_user_account(
             session=db_session,
             actor_id=uuid.uuid4(),
+            actor_role=RoleType.SUPERADMIN,
             db_user=sample_user,
         )
 
@@ -362,6 +374,7 @@ class TestDeleteUserAccount:
             delete_user_account(
                 session=db_session,
                 actor_id=uuid.uuid4(),
+                actor_role=RoleType.SUPERADMIN,
                 db_user=superuser,
             )
 
@@ -373,6 +386,7 @@ class TestDeleteUserAccount:
         delete_user_account(
             session=db_session,
             actor_id=superuser.id,  # self-delete permitted subject to last-superuser
+            actor_role=RoleType.SUPERADMIN,
             db_user=superuser,
         )
         assert db_session.get(User, uid) is None

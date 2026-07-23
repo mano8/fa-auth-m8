@@ -43,6 +43,8 @@ from auth_user_service.db_models.outbox import (
     EFFECT_PUBLISH,
     RevocationOutbox,
 )
+from auth_user_service.db_models.privileged_action_audit import AuditAction
+from auth_user_service.services.audit import record_privileged_action
 from auth_user_service.db_models.security_policy import (
     SUPERUSER_SET_POLICY_KEY,
     SecurityPolicy,
@@ -186,6 +188,7 @@ def change_user_authorization(
     *,
     session: Session,
     actor_id: object,
+    actor_role: RoleType,
     db_user: User,
     user_in: UserUpdate,
 ) -> AuthorizationChangeResult:
@@ -199,6 +202,11 @@ def change_user_authorization(
     deactivation — all committed once. A pure profile update takes no lock and
     revokes nothing. Returns an :class:`AuthorizationChangeResult` carrying the
     refreshed user, its current generation, and whether revocation was enqueued.
+
+    A single ``edit`` privileged-action audit row is written **in this
+    transaction** for the mutated (non-owned) user record — ``actor_role`` comes
+    from the authenticated principal, never client input — so the mutation can
+    never commit without its forensic record (Phase 7).
     """
     fields = user_in.model_dump(exclude_unset=True)
     role_requested = fields.get("role") is not None
@@ -263,6 +271,17 @@ def change_user_authorization(
     session.add(db_user)
     if policy is not None and authorization_changed:
         _bump_policy_revision(policy)
+    # One durable edit audit row, atomic with the mutation (Phase 7). The actor's
+    # role is the authenticated principal's, and the user is its own owner.
+    record_privileged_action(
+        session,
+        actor_user_id=actor_id,  # type: ignore[arg-type]
+        actor_role=actor_role,
+        action=AuditAction.EDIT,
+        table_name=User.__tablename__,
+        row_pk=db_user.id,
+        target_owner_id=db_user.id,
+    )
     session.commit()
     session.refresh(db_user)
 
@@ -278,7 +297,8 @@ def change_user_authorization(
 def delete_user_account(
     *,
     session: Session,
-    actor_id: object,  # noqa: ARG001 - reserved for cross-domain/audit checks
+    actor_id: object,
+    actor_role: RoleType,
     db_user: User,
 ) -> None:
     """Hard-delete a user as the route-owned superuser-set transaction (3.5.3).
@@ -289,6 +309,11 @@ def delete_user_account(
     once. Self-deletion is permitted subject only to the last-superuser rule
     (3.10); the durable tombstone makes every token ever minted for the subject
     revoked (3.5.1).
+
+    A single ``delete`` privileged-action audit row is written **in this
+    transaction**, capturing the target's id/owner **before** the row is removed
+    (the audit has no FK to the user, so it outlives the deletion, 3.5.1). The
+    ``actor_role`` comes from the authenticated principal, never client input.
     """
     policy = acquire_superuser_set_lock(session)
     _lock_user_row(session, db_user)
@@ -296,6 +321,17 @@ def delete_user_account(
         if count_active_canonical_superusers(session, exclude_user_id=db_user.id) == 0:
             raise LastSuperuserError("last_superuser_required")
 
+    # Capture the target identifiers before the row is removed, then record the
+    # audit row in the same transaction as the delete (Phase 7).
+    record_privileged_action(
+        session,
+        actor_user_id=actor_id,  # type: ignore[arg-type]
+        actor_role=actor_role,
+        action=AuditAction.DELETE,
+        table_name=User.__tablename__,
+        row_pk=db_user.id,
+        target_owner_id=db_user.id,
+    )
     GenerationController.write_deletion_tombstone(session=session, user=db_user)
     SessionController.capture_and_delete_user_sessions(session, db_user.id)
     session.delete(db_user)

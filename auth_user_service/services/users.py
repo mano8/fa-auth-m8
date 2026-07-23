@@ -52,22 +52,24 @@ class UserController:
     """User Controller"""
 
     @staticmethod
-    def create_user(*, session: Session, user_create: UserCreate) -> User:
-        """
-        Create a new user in the database.
+    def build_user(*, session: Session, user_create: UserCreate) -> User:
+        """Persist a new user in the caller's transaction — **no commit** (3.5).
+
+        Transaction-neutral internal mirroring :meth:`create_user` but leaving the
+        commit to the caller, so a privileged create route can enqueue its audit
+        row in the *same* transaction (Phase 7): the user row and its audit row
+        commit together or not at all. The id is generated in-process, so it is
+        known to the caller for the audit row before the flush.
 
         Args:
-            session (Session):
-                The database session to use for the operation.
-            user_create (UserCreate):
-                An object containing the details of the user to be created.
+            session (Session): The database session that owns the transaction.
+            user_create (UserCreate): The details of the user to be created.
 
         Returns:
-            User: The newly created user object.
+            User: The newly built user object, flushed but not committed.
 
         Raises:
-            SQLAlchemyError:
-                If there is an error during the database operation.
+            ValueError: password-based registration without a password.
         """
         # Derive the privilege flag server-side from the role; any client-supplied
         # is_superuser on the create payload is ignored (never authoritative).
@@ -94,6 +96,32 @@ class UserController:
                 },
             )
         session.add(db_obj)
+        session.flush()
+        return db_obj
+
+    @staticmethod
+    def create_user(*, session: Session, user_create: UserCreate) -> User:
+        """
+        Create a new user in the database.
+
+        Convenience wrapper composing the transaction-neutral :meth:`build_user`
+        with an owned commit, preserving the historical single-call behavior for
+        callers that do not compose an audit row (init/OAuth/self-service paths).
+
+        Args:
+            session (Session):
+                The database session to use for the operation.
+            user_create (UserCreate):
+                An object containing the details of the user to be created.
+
+        Returns:
+            User: The newly created user object.
+
+        Raises:
+            SQLAlchemyError:
+                If there is an error during the database operation.
+        """
+        db_obj = UserController.build_user(session=session, user_create=user_create)
         session.commit()
         session.refresh(db_obj)
         return db_obj
