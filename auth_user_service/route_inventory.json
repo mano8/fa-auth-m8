@@ -207,6 +207,24 @@
     "note": "Get API key detail — requires valid bearer token"
   },
   {
+    "path": "/user/api-keys/by-user/{user_id}/",
+    "method": "GET",
+    "tag": "api-keys-admin",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Superadmin-only: list a user's API keys, metadata only (Phase 7, §3.11/§3.12) — never the raw or hashed key"
+  },
+  {
+    "path": "/user/api-keys/revoke/{key_id}/",
+    "method": "POST",
+    "tag": "api-keys-admin",
+    "exposure": "admin",
+    "in_openapi": true,
+    "traefik_router": "public",
+    "note": "Superadmin-only: revoke any user's API key (delete-equivalent); writes a delete privileged-action audit row (Phase 7)"
+  },
+  {
     "path": "/user/profile/delete/me/",
     "method": "DELETE",
     "tag": "profile",

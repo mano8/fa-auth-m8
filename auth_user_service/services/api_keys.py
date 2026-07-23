@@ -237,6 +237,21 @@ class ApiKeyService:
         return api_key
 
     @staticmethod
+    def revoke_key_in_tx(session: Session, api_key: ApiKey) -> None:
+        """Authoritatively revoke a single API key (transaction-neutral, 3.11).
+
+        Flips ``revoked`` on the row in memory and does **not** commit, so the
+        caller owns the commit boundary — used both by the owner's own revoke
+        route and the limited superadmin revoke surface, where the ``delete``
+        audit row must land in the **same** transaction as the revocation. An
+        API key is a bearer pointer resolved live against its owner, so setting
+        ``revoked=True`` on the authoritative row *is* the delete-equivalent
+        revocation: the key is rejected on its next use in every token mode.
+        """
+        api_key.revoked = True
+        session.add(api_key)
+
+    @staticmethod
     def revoke_all_user_keys_in_tx(session: Session, user_id: uuid.UUID) -> int:
         """Mark every non-revoked API key owned by *user_id* as revoked (3.11).
 

@@ -162,6 +162,78 @@ class ApiKeyPublic(ApiKeyBase, SQLModel):
     )
 
 
+class ApiKeyAdminPublic(SQLModel):
+    """Superadmin metadata view of *any* user's API key (Phase 7, §3.11/§3.12).
+
+    The limited superadmin surface may **list** and **revoke** other users' keys
+    but never read their secrets. This model therefore carries **metadata only** —
+    id, label (``name``), derived ``status``, ``created_at``/``last_used_at``, and
+    the owner id (``user_id``) — and, because it does **not** inherit from
+    :class:`ApiKey`, it structurally cannot expose ``key_hash`` (the stored hash)
+    or the raw key (which is never stored). The secret non-exposure invariant is
+    enforced by construction, not by omission.
+    """
+
+    id: uuid.UUID = Field(description="Unique API key ID")
+    name: Optional[str] = Field(default=None, description="Developer-defined key name")
+    user_id: uuid.UUID = Field(description="Owner user ID of the key")
+    revoked: bool = Field(description="Whether the key is revoked")
+    expires_at: Optional[datetime] = Field(
+        default=None, description="When the key expires (UTC)"
+    )
+    last_used_at: Optional[datetime] = Field(
+        default=None, description="Last time the key was used (UTC)"
+    )
+    created_at: datetime = Field(description="When the key was created (UTC)")
+    access_mode: ApiKeyAccessMode = Field(
+        default=ApiKeyAccessMode.READ_ONLY,
+        description="The key's immutable operation-category cap (APIKEY-MODE-01).",
+    )
+    status: str = Field(
+        description="Derived lifecycle status: 'active', 'revoked', or 'expired'.",
+    )
+
+    @classmethod
+    def from_key(cls, api_key: "ApiKey") -> "ApiKeyAdminPublic":
+        """Project an ``ApiKey`` ORM row to its metadata-only admin view.
+
+        The ``status`` is derived the same way key validation resolves usability
+        (:meth:`ApiKeyService.get_active_key`): a revoked key is ``revoked``, an
+        elapsed ``expires_at`` is ``expired``, otherwise ``active``. No secret
+        column is read.
+        """
+        now = datetime.now(timezone.utc)
+        if api_key.revoked:
+            status = "revoked"
+        elif (
+            api_key.expires_at is not None
+            and api_key.expires_at.replace(tzinfo=timezone.utc) < now
+        ):
+            status = "expired"
+        else:
+            status = "active"
+        return cls(
+            id=api_key.id,
+            name=api_key.name,
+            user_id=api_key.user_id,
+            revoked=api_key.revoked,
+            expires_at=api_key.expires_at,
+            last_used_at=api_key.last_used_at,
+            created_at=api_key.created_at,
+            access_mode=api_key.access_mode,
+            status=status,
+        )
+
+
+class ApiKeysAdminPublic(SQLModel):
+    """Wrapper for a paginated superadmin listing of a user's API keys."""
+
+    data: List[ApiKeyAdminPublic] = Field(
+        description="Metadata-only public rows for the target user's API keys."
+    )
+    count: int = Field(description="Total number of keys owned by the target user.")
+
+
 class ApiKeyAudience(SQLModel, table=True):
     """One audience binding of an API key (normalized ``api_key_audiences``).
 

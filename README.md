@@ -142,6 +142,8 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | api-keys | GET | `/profile/api-keys/` | JWT | List own API keys (metadata only) |
 | api-keys | GET | `/profile/api-keys/{key_id}` | JWT | Get single key metadata |
 | api-keys | DELETE | `/profile/api-keys/{key_id}` | JWT | Revoke API key |
+| api-keys-admin | GET | `/api-keys/by-user/{user_id}/` | superuser | Superadmin-only: list any user's API keys — **metadata only** (id, label, status, `created_at`/`last_used_at`, owner id); never the raw or hashed key (§3.11/§3.12). A read — not audited |
+| api-keys-admin | POST | `/api-keys/revoke/{key_id}/` | superuser | Superadmin-only: revoke any user's API key (delete-equivalent, same authoritative path as the owner revoke); writes one `delete` privileged-action audit row atomically. No create/edit or secret-read surface exists |
 | sessions | GET | `/sessions/` | superuser | List all sessions (paginated) |
 | sessions | GET | `/sessions/get/{session_id}/` | superuser | Get session by ID |
 | sessions | GET | `/sessions/get-by-user/{user_id}/` | superuser | Get session by user ID |
@@ -827,6 +829,15 @@ API keys are created by authenticated users and validated by consumer services v
 - Stored as a SHA-256 hash in the database alongside metadata (name, expiry, revocation flag).
 - `last_used_at` is updated via a Redis write-behind queue flushed every 60 seconds.
 - Revoked with `DELETE /profile/api-keys/{key_id}`.
+
+### Limited superadmin surface (§3.11–§3.12)
+
+Superadmin authority over API keys is deliberately narrowed to **list + revoke**, never create/edit and never a secret read:
+
+- `GET /api-keys/by-user/{user_id}/` lists any user's keys as **metadata only** — id, label, derived status (`active`/`revoked`/`expired`), `created_at`/`last_used_at`, owner id, and the immutable access mode. It never returns the raw key (never stored) or the stored `key_hash`; the response model structurally cannot carry either (secret non-exposure invariant). Being a read, it writes no audit row.
+- `POST /api-keys/revoke/{key_id}/` revokes any user's key through the **same authoritative revocation path** as the owner's own revoke (delete-equivalent — the key is rejected on its next use). Because it mutates non-owned data, it writes exactly one `delete` privileged-action audit row atomically with the revocation.
+
+Deactivation-driven key revocation (a user going inactive revokes their keys in the same transaction) is unchanged. Every other `/profile/api-keys/*` route stays scoped to the caller's own keys (`APIKEY-OWNER-01`).
 
 ### Access mode and audiences (§3.11–§3.12)
 
