@@ -16,8 +16,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Depends
 
-from auth_sdk_m8.controllers.base import BaseController
-from auth_sdk_m8.schemas.base import ResponseModelBase
+from fastapi_m8 import BaseController, ResponseModelBase
 from fastapi_full.app.deps import SessionDep
 from fastapi_full.db_models.categories import Category, CategoryCreate
 

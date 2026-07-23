@@ -5,7 +5,7 @@ from sqlalchemy import UniqueConstraint
 from sqlmodel import CHAR, Column, Field, SQLModel
 from slugify import slugify
 
-from auth_sdk_m8.models.shared import TimestampMixin
+from fastapi_m8 import TimestampMixin
 from fastapi_full.core.db_models import prefixed_tables
 from fastapi_full.core.config import settings
 

@@ -4,8 +4,7 @@ from pathlib import Path
 
 from pydantic_settings import SettingsConfigDict
 
-from auth_sdk_m8.utils.paths import find_dotenv
-from fastapi_m8 import ConsumerServiceSettings
+from fastapi_m8 import ConsumerServiceSettings, find_dotenv
 
 from .. import __version__
 

@@ -8,9 +8,8 @@ Every guard below is the shared SDK-authorized dependency built by
 
 from typing import Annotated
 
-from auth_sdk_m8.schemas.user import UserModel
 from fastapi import Depends
-from fastapi_m8 import AuthDeps, build_auth_deps
+from fastapi_m8 import AuthDeps, UserModel, build_auth_deps
 
 from .config import settings
 

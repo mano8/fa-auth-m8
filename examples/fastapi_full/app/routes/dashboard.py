@@ -3,8 +3,9 @@ DashBoard routes
 """
 
 from fastapi import APIRouter
+from fastapi_m8 import BaseController
+
 from fastapi_full.app.deps import CurrentUser, SessionDep
-from auth_sdk_m8.controllers.base import BaseController
 from fastapi_full.controllers.dashboard import DashboardController
 from fastapi_full.schemas.dashboard import RangeActivityType, UsersActivity
 
