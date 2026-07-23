@@ -64,3 +64,24 @@ def test_docker_publish_yaml_actions_are_sha_pinned() -> None:
         assert _SHA_RE.match(sha_part), (
             f"docker-publish.yaml: '{full_ref}' is not SHA-pinned — use a full 40-char commit hash."
         )
+
+
+# ── Phase 7 — flag-only-authorization ban covers the maintained example ────
+
+
+def test_ci_yaml_bans_direct_superuser_auth_in_bundled_example() -> None:
+    """The is_superuser AST guard must also scan examples/fastapi_full.
+
+    ``check_no_direct_superuser_auth`` previously ran against
+    ``auth_user_service`` only, so a flag-only authorization check in the
+    maintained example (``examples/fastapi_full``) shipped unflagged. This
+    locks the CI invocation so the scan scope cannot silently regress back to
+    the issuer package alone.
+    """
+    text = CI_YAML.read_text()
+    assert (
+        "check_no_direct_superuser_auth auth_user_service examples/fastapi_full" in text
+    ), (
+        "CI.yaml must run check_no_direct_superuser_auth against both "
+        "auth_user_service and examples/fastapi_full."
+    )

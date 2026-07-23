@@ -20,6 +20,8 @@ etc.). It deliberately allows:
 
 Run: ``python -m auth_user_service.scripts.check_no_direct_superuser_auth``
 (optionally pass one or more paths to scan; defaults to ``auth_user_service``).
+CI additionally scans ``examples/fastapi_full`` so the ban covers the
+maintained example, not just the issuer service package.
 """
 
 from __future__ import annotations

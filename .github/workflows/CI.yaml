@@ -30,7 +30,7 @@ jobs:
         run: ruff check .
 
       - name: Ban direct is_superuser authorization checks
-        run: python -m auth_user_service.scripts.check_no_direct_superuser_auth auth_user_service
+        run: python -m auth_user_service.scripts.check_no_direct_superuser_auth auth_user_service examples/fastapi_full
 
   typecheck:
     runs-on: ubuntu-latest
