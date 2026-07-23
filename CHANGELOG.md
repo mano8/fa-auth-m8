@@ -11,6 +11,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added — Consume the SDK canonical fixture matrix (Phase 5, FIXTURE-01)
+
+- Raise the `auth-sdk-m8` floor in `auth_user_service/requirements_base.txt`
+  to `>=3.1.0,<4.0.0` to consume the expanded, checksummed
+  `authorization_matrix.json` (schema version `"2"`) from
+  `auth_sdk_m8.testing.load_authorization_fixture_matrix()`.
+- `tests/routes/test_private_fixture_matrix_contract.py` drives the issuer's
+  own `JtiStatusRequest`/`ApiKeyIntrospectionRequest` schemas and the
+  `check_jti_status`/`introspect_api_key` route handlers directly from the
+  canonical fixture data (JTI-status v1/v2, API-key introspection shapes,
+  local/remote principal equivalence, and the audience/capability-policy
+  matrix) instead of locally invented expectations, so an SDK-side contract
+  drift fails this suite too.
+
+**Known gap:** `auth_user_service/requirements_prod.lock` still pins
+`auth-sdk-m8==3.0.0` — regenerating it with `pip-compile --generate-hashes`
+requires `auth-sdk-m8 3.1.0` to already be resolvable from the configured
+package index, which is a Phase 6 (coordinated release) precondition, not
+this Phase 5 test-consumption change. Regenerate the lock as part of the
+Phase 6 publish sequence.
+
+---
+
 ## [2.0.0] - 2026-07-22
 
 ### Security
