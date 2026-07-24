@@ -17,18 +17,25 @@ Two invariants the recorder enforces by contract (the caller must honour them):
   the row is removed and passes the captured values here, so the forensic record
   survives the deletion (the audit table has no foreign key to the target, 3.5.1).
 
-The table is append-only: this module offers only a create path — no update and
-no targeted single-row delete exist anywhere (schema-enforced by the Expand
-migration; the sole deletion is the horizon-bounded superadmin retention purge).
+The table is append-only: this module offers only a create path plus one
+horizon-bounded bulk-delete path — no update and no targeted single-row delete
+exist anywhere. :func:`purge_expired_audit_rows` is that sole deletion path: a
+superadmin-gated, floor-enforced, batched purge of rows older than a chosen
+retention window (schema-level enforcement of the write-once/no-targeted-delete
+contract is the separate Expand migration).
 """
 
 import uuid
-from typing import Optional, Union
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+from typing import Final, Optional, Union
 
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 
 from auth_sdk_m8.schemas.base import RoleType
 
+from auth_user_service.core.config import settings
 from auth_user_service.db_models.privileged_action_audit import (
     AuditAction,
     PrivilegedActionAudit,
@@ -81,3 +88,143 @@ def record_privileged_action(
     session.add(row)
     session.flush()
     return row
+
+
+class RetentionWindow(str, Enum):
+    """Selectable retention windows for the superadmin audit retention purge.
+
+    The audit trail's only removal path (Phase 7): a superadmin chooses one of
+    these fixed windows and every row older than it is bulk-deleted, subject to
+    the configured minimum-retention floor (:func:`purge_expired_audit_rows`).
+    """
+
+    ONE_WEEK = "1w"
+    ONE_MONTH = "1m"
+    THREE_MONTHS = "3m"
+    SIX_MONTHS = "6m"
+    ONE_YEAR = "1y"
+
+
+_WINDOW_SECONDS: Final[dict[RetentionWindow, int]] = {
+    RetentionWindow.ONE_WEEK: 7 * 86400,
+    RetentionWindow.ONE_MONTH: 30 * 86400,
+    RetentionWindow.THREE_MONTHS: 90 * 86400,
+    RetentionWindow.SIX_MONTHS: 180 * 86400,
+    RetentionWindow.ONE_YEAR: 365 * 86400,
+}
+
+
+class AuditRetentionFloorError(ValueError):
+    """Raised when the requested window is below the configured retention floor.
+
+    The floor (default >= 90 days, ``AUDIT_PURGE_MIN_RETENTION_SECONDS``) is a
+    deployment-level setting, not a per-call parameter: shortening it below the
+    default is an explicit operator config opt-in, never something a caller of
+    the purge action can request directly.
+    """
+
+
+@dataclass(frozen=True)
+class AuditPurgeResult:
+    """Outcome of one retention-purge run."""
+
+    window: RetentionWindow
+    removed: int
+
+
+def _as_aware_utc(value: datetime) -> datetime:
+    """Normalise a possibly-naive timestamp to timezone-aware UTC."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def purge_expired_audit_rows(
+    session: Session,
+    *,
+    window: RetentionWindow,
+    actor_user_id: Union[uuid.UUID, str],
+    actor_role: RoleType,
+    batch_size: Optional[int] = None,
+    now: Optional[datetime] = None,
+) -> AuditPurgeResult:
+    """Bulk-delete audit rows older than *window*; the sole removal path (3.5.1).
+
+    Enforces the configured minimum-retention floor
+    (``AUDIT_PURGE_MIN_RETENTION_SECONDS``) before touching any row: a *window*
+    shorter than the floor raises :class:`AuditRetentionFloorError` and deletes
+    nothing. Otherwise every row older than ``now - window`` is removed in
+    ``AUDIT_PURGE_BATCH_SIZE``-row batches claimed with ``FOR UPDATE SKIP
+    LOCKED`` (mirroring the outbox worker's batching), each batch committed
+    before the next is claimed, so a large purge never holds one long-lived
+    lock over the table.
+
+    There is deliberately no row-id/target parameter — the horizon is the only
+    selector, so this can never become a targeted single-row delete.
+
+    Once the sweep completes, the purge writes **its own** maintenance audit
+    row via :func:`record_privileged_action` (actor, action, and the window
+    plus removed-row count packed into ``row_pk`` — the model has no dedicated
+    fields for those, and ``row_pk`` is free text). That row is timestamped
+    *now* — always newer than the horizon it was just computed from — so it
+    survives this and every subsequent purge (mirrors the tombstone
+    retention-horizon pattern, 3.5.1).
+
+    Args:
+        session: DB session; each batch commit is on this session.
+        window: The chosen retention window.
+        actor_user_id: Id of the authenticated superadmin performing the purge.
+        actor_role: The actor's role snapshot, from the authenticated principal.
+        batch_size: Rows per delete batch; defaults to
+            ``settings.AUDIT_PURGE_BATCH_SIZE``.
+        now: Override for the current time (tests only); defaults to the
+            actual current UTC time.
+
+    Returns:
+        :class:`AuditPurgeResult` with the window and the total rows removed.
+
+    Raises:
+        AuditRetentionFloorError: *window* is shorter than the configured floor.
+    """
+    window_seconds = _WINDOW_SECONDS[window]
+    floor_seconds = settings.AUDIT_PURGE_MIN_RETENTION_SECONDS
+    if window_seconds < floor_seconds:
+        raise AuditRetentionFloorError(
+            f"retention window {window.value!r} ({window_seconds}s) is below "
+            f"the configured minimum-retention floor ({floor_seconds}s); "
+            "lowering the floor requires an explicit operator config change"
+        )
+
+    batch = batch_size or settings.AUDIT_PURGE_BATCH_SIZE
+    current = _as_aware_utc(now or datetime.now(timezone.utc))
+    horizon = current - timedelta(seconds=window_seconds)
+
+    removed = 0
+    while True:
+        rows = session.exec(
+            select(PrivilegedActionAudit)
+            .where(col(PrivilegedActionAudit.created_at) < horizon)
+            .order_by(col(PrivilegedActionAudit.created_at))
+            .limit(batch)
+            .with_for_update(skip_locked=True)
+        ).all()
+        if not rows:
+            break
+        for row in rows:
+            session.delete(row)
+        session.commit()
+        removed += len(rows)
+        if len(rows) < batch:
+            break
+
+    record_privileged_action(
+        session,
+        actor_user_id=actor_user_id,
+        actor_role=actor_role,
+        action=AuditAction.DELETE,
+        table_name=PrivilegedActionAudit.__tablename__,
+        row_pk=f"retention_purge:window={window.value}:removed={removed}",
+        target_owner_id=None,
+    )
+    session.commit()
+    return AuditPurgeResult(window=window, removed=removed)

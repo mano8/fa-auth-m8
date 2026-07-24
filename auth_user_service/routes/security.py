@@ -14,17 +14,27 @@ no user query and no mutation.
 admin sees only rows it authored (`actor_user_id == self`, filtered
 server-side — never from a client-supplied parameter), and every other role
 is denied with 403. No create/update/delete endpoint exists anywhere for this
-table; the only removal path is the horizon-bounded superadmin retention
-purge implemented separately.
+table.
+
+`POST /security/audit-log/purge` is the table's **only** removal path (Phase
+7): a superadmin-gated, horizon-bounded bulk delete of rows older than a
+chosen retention window (`1w`/`1m`/`3m`/`6m`/`1y`), rejecting any window
+shorter than the configured minimum-retention floor. It writes its own
+maintenance audit row, which survives the purge that wrote it because it is
+timestamped after the horizon.
 """
 
 import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import col, func, select
+from sqlmodel import SQLModel, col, func, select
 
-from auth_user_service.core.client import AuditLogRateLimiter, SuperuserProbeRateLimiter
+from auth_user_service.core.client import (
+    AuditLogRateLimiter,
+    AuditPurgeRateLimiter,
+    SuperuserProbeRateLimiter,
+)
 from auth_user_service.core.config import settings
 from auth_user_service.core.deps import (
     RedisDep,
@@ -35,6 +45,11 @@ from auth_user_service.core.deps import (
 from auth_user_service.db_models.privileged_action_audit import (
     PrivilegedActionAudit,
     PrivilegedActionAuditsPublic,
+)
+from auth_user_service.services.audit import (
+    AuditRetentionFloorError,
+    RetentionWindow,
+    purge_expired_audit_rows,
 )
 from auth_sdk_m8.authorization import has_superuser_privileges
 from auth_sdk_m8.observability.metrics import get as _get_metrics
@@ -147,3 +162,78 @@ def read_audit_log(
     rows = session.exec(statement.offset(skip).limit(limit)).all()
 
     return PrivilegedActionAuditsPublic(data=rows, count=count)
+
+
+class AuditPurgeRequest(SQLModel):
+    """Request body for the superadmin retention-purge maintenance action."""
+
+    window: RetentionWindow
+
+
+class AuditPurgeResponse(SQLModel):
+    """Response for the superadmin retention-purge maintenance action."""
+
+    window: RetentionWindow
+    removed: int
+
+
+def _enforce_audit_purge_rate_limit(redis: RedisDep, user_id: str) -> None:
+    """Check and enforce the audit-purge rate limit. Raises 429 or 503."""
+    if redis is not None:
+        if not AuditPurgeRateLimiter(redis).is_allowed(user_id):
+            logger.warning("event=security.audit_purge.rate_limited")
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests. Try again later.",
+            )
+        return
+    _mode = settings.effective_failure_mode("rate_limit")
+    _m = _get_metrics()
+    if _m and _m.degraded_decision_total:
+        _m.degraded_decision_total.labels(
+            control="rate_limit", mode=_mode, reason="redis_unavailable"
+        ).inc()
+    if _mode == "fail_closed":
+        raise HTTPException(
+            status_code=503,
+            detail="Rate limiting service temporarily unavailable",
+        )
+
+
+@router.post(
+    "/audit-log/purge", include_in_schema=False, response_model=AuditPurgeResponse
+)
+def purge_audit_log(
+    *,
+    session: SessionDep,
+    redis: RedisDep,
+    payload: AuditPurgeRequest,
+    current_user: UserModel = Depends(get_current_active_superuser),
+) -> Any:
+    """Superadmin-only maintenance action: the audit table's sole removal path.
+
+    Bulk-deletes rows older than the chosen retention *window*, never a
+    targeted single row. Rejects with `400` any window shorter than the
+    configured minimum-retention floor (`AUDIT_PURGE_MIN_RETENTION_SECONDS`,
+    default >= 90 days) — lowering that floor is an explicit operator config
+    change, never a per-call parameter. Deletes happen in batches (`FOR UPDATE
+    SKIP LOCKED`), and the purge writes its own maintenance audit row
+    (actor, window, rows removed) in the same call, which survives because it
+    is newer than the horizon it was computed from (mirrors the tombstone
+    retention-horizon + guarded-cleanup pattern, 3.5.1). JWT-only (inherited
+    from `get_current_active_superuser`), excluded from the OpenAPI schema,
+    and rate limited.
+    """
+    _enforce_audit_purge_rate_limit(redis, str(current_user.id))
+
+    try:
+        result = purge_expired_audit_rows(
+            session,
+            window=payload.window,
+            actor_user_id=current_user.id,
+            actor_role=current_user.role,
+        )
+    except AuditRetentionFloorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return AuditPurgeResponse(window=result.window, removed=result.removed)

@@ -13,6 +13,33 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — Superadmin audit retention-purge maintenance action (Phase 7, 3.5.1)
+
+- `POST /security/audit-log/purge` (`auth_user_service/routes/security.py`):
+  the append-only `privileged_action_audit` table's sole removal path — a
+  `get_current_active_superuser`-gated bulk delete of rows older than a chosen
+  retention window (`1w`/`1m`/`3m`/`6m`/`1y`), enforcing a minimum-retention
+  floor (new settings `AUDIT_PURGE_MIN_RETENTION_SECONDS`, default >= 90 days,
+  and `AUDIT_PURGE_BATCH_SIZE`, default 500). A window shorter than the floor
+  is rejected with `400`; lowering the floor is an explicit operator config
+  change, never a per-call parameter.
+- `auth_user_service/services/audit.py::purge_expired_audit_rows`: the
+  batched (`FOR UPDATE SKIP LOCKED`) delete implementation, mirroring the
+  outbox worker's batching so a large purge never holds one long-lived lock.
+  There is deliberately no row-id parameter — the horizon is the only
+  selector, so this can never become a targeted single-row delete. The purge
+  always writes its own `delete` maintenance audit row (actor, window, rows
+  removed) via the existing `record_privileged_action`, timestamped after the
+  horizon it was computed from, so it always survives the purge that wrote it
+  (mirrors the tombstone retention-horizon + guarded-cleanup pattern, 3.5.1).
+- New `AuditPurgeRateLimiter` (`auth_user_service/core/client.py`), keyed by
+  caller user id under the existing `security:` ACL prefix (no ACL change
+  needed); route excluded from the OpenAPI schema like its `audit-log` sibling.
+- `auth_user_service/route_inventory.json` gains the new route entry
+  (`admin` exposure); `README.md` documents the audit trail and purge
+  contract in a new _Privileged-action audit trail and retention purge_
+  subsection.
+
 ### Added — Consume the SDK canonical fixture matrix (Phase 5, FIXTURE-01)
 
 - Raise the `auth-sdk-m8` floor in `auth_user_service/requirements_base.txt`

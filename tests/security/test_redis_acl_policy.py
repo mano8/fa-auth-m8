@@ -52,6 +52,7 @@ _RUNTIME_KEY_PREFIXES = [
     "api_key:luat",
     "security:superuser_probe:",
     "security:audit_log:",
+    "security:audit_purge:",
 ]
 
 

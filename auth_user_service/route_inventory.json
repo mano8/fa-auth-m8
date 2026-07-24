@@ -279,6 +279,15 @@
     "note": "Read-only privileged-action audit trail (Phase 7); ADMIN sees own rows only, SUPERADMIN sees all, no PII beyond recorded ids"
   },
   {
+    "path": "/user/security/audit-log/purge",
+    "method": "POST",
+    "tag": "security",
+    "exposure": "admin",
+    "in_openapi": false,
+    "traefik_router": "public",
+    "note": "Superadmin-only retention-purge maintenance action (Phase 7); the audit table's sole removal path, horizon-bounded and floor-enforced, writes its own maintenance audit row"
+  },
+  {
     "path": "/user/sessions/",
     "method": "GET",
     "tag": "sessions",

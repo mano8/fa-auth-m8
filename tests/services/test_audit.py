@@ -1,7 +1,11 @@
 """Tests for the transaction-bound privileged-action recorder (Phase 7)."""
 
+import inspect
 import uuid
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
+import pytest
 from sqlmodel import select
 
 from auth_sdk_m8.schemas.base import RoleType
@@ -10,7 +14,12 @@ from auth_user_service.db_models.privileged_action_audit import (
     AuditAction,
     PrivilegedActionAudit,
 )
-from auth_user_service.services.audit import record_privileged_action
+from auth_user_service.services.audit import (
+    AuditRetentionFloorError,
+    RetentionWindow,
+    purge_expired_audit_rows,
+    record_privileged_action,
+)
 
 
 def _rows_for_actor(session, actor) -> list[PrivilegedActionAudit]:
@@ -98,3 +107,203 @@ class TestRecordPrivilegedAction:
         assert len(_rows_for_actor(db_session, actor)) == 1
         db_session.rollback()
         assert _rows_for_actor(db_session, actor) == []
+
+
+def _old_row(actor: uuid.UUID, *, created_at: datetime) -> PrivilegedActionAudit:
+    return PrivilegedActionAudit(
+        actor_user_id=actor,
+        actor_role=RoleType.SUPERADMIN,
+        action=AuditAction.EDIT,
+        table_name="auth_user",
+        row_pk=str(uuid.uuid4()),
+        created_at=created_at,
+    )
+
+
+class TestPurgeExpiredAuditRows:
+    def test_rejects_window_below_the_default_floor(self, db_session) -> None:
+        actor = uuid.uuid4()
+        with pytest.raises(AuditRetentionFloorError):
+            purge_expired_audit_rows(
+                db_session,
+                window=RetentionWindow.ONE_WEEK,
+                actor_user_id=actor,
+                actor_role=RoleType.SUPERADMIN,
+            )
+        # Nothing was deleted and no maintenance row was written on rejection.
+        assert _rows_for_actor(db_session, actor) == []
+
+    def test_naive_now_is_normalised_to_aware_utc(self, db_session) -> None:
+        actor = uuid.uuid4()
+        naive_now = datetime.now(timezone.utc).replace(tzinfo=None)
+        old_row = _old_row(actor, created_at=naive_now - timedelta(days=400))
+        db_session.add(old_row)
+        db_session.commit()
+
+        result = purge_expired_audit_rows(
+            db_session,
+            window=RetentionWindow.ONE_YEAR,
+            actor_user_id=actor,
+            actor_role=RoleType.SUPERADMIN,
+            now=naive_now,
+        )
+
+        assert result.removed == 1
+
+    def test_allows_window_at_the_default_floor(self, db_session) -> None:
+        actor = uuid.uuid4()
+        result = purge_expired_audit_rows(
+            db_session,
+            window=RetentionWindow.THREE_MONTHS,
+            actor_user_id=actor,
+            actor_role=RoleType.SUPERADMIN,
+        )
+        assert result.window == RetentionWindow.THREE_MONTHS
+        assert result.removed == 0
+
+    def test_shorter_window_allowed_under_explicit_config_opt_in(
+        self, db_session
+    ) -> None:
+        actor = uuid.uuid4()
+        with patch(
+            "auth_user_service.services.audit.settings.AUDIT_PURGE_MIN_RETENTION_SECONDS",
+            0,
+        ):
+            result = purge_expired_audit_rows(
+                db_session,
+                window=RetentionWindow.ONE_WEEK,
+                actor_user_id=actor,
+                actor_role=RoleType.SUPERADMIN,
+            )
+        assert result.window == RetentionWindow.ONE_WEEK
+
+    def test_deletes_only_rows_older_than_the_window_horizon(self, db_session) -> None:
+        actor = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+        old_row = _old_row(actor, created_at=now - timedelta(days=400))
+        recent_row = _old_row(actor, created_at=now - timedelta(days=10))
+        db_session.add(old_row)
+        db_session.add(recent_row)
+        db_session.commit()
+
+        result = purge_expired_audit_rows(
+            db_session,
+            window=RetentionWindow.ONE_YEAR,
+            actor_user_id=actor,
+            actor_role=RoleType.SUPERADMIN,
+            now=now,
+        )
+
+        assert result.removed == 1
+        remaining_ids = {r.id for r in _rows_for_actor(db_session, actor)}
+        assert recent_row.id in remaining_ids
+        assert old_row.id not in remaining_ids
+
+    def test_never_deletes_a_row_at_or_after_the_horizon(self, db_session) -> None:
+        actor = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+        # A comfortable margin (not exactly 365 days) so this row's age can
+        # never drift past the horizon relative to a later test's own `now`
+        # in this session-scoped engine/table.
+        boundary_row = _old_row(
+            actor, created_at=now - timedelta(days=365) + timedelta(minutes=5)
+        )
+        db_session.add(boundary_row)
+        db_session.commit()
+
+        purge_expired_audit_rows(
+            db_session,
+            window=RetentionWindow.ONE_YEAR,
+            actor_user_id=actor,
+            actor_role=RoleType.SUPERADMIN,
+            now=now,
+        )
+
+        remaining_ids = {r.id for r in _rows_for_actor(db_session, actor)}
+        assert boundary_row.id in remaining_ids
+
+        # The db_engine fixture is session-scoped and the purge is table-wide
+        # (no actor filter, by design) — clean up this ~1-year-old row so it
+        # cannot become collateral damage of a *different* test's purge call
+        # using a shorter window later in the same test session.
+        db_session.delete(boundary_row)
+        db_session.commit()
+
+    def test_batches_deletes_across_multiple_batch_iterations(self, db_session) -> None:
+        actor = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+        old_rows = [
+            _old_row(actor, created_at=now - timedelta(days=400)) for _ in range(5)
+        ]
+        for row in old_rows:
+            db_session.add(row)
+        db_session.commit()
+
+        result = purge_expired_audit_rows(
+            db_session,
+            window=RetentionWindow.ONE_YEAR,
+            actor_user_id=actor,
+            actor_role=RoleType.SUPERADMIN,
+            batch_size=2,
+            now=now,
+        )
+
+        assert result.removed == 5
+
+    def test_writes_its_own_maintenance_row_that_survives_the_purge(
+        self, db_session
+    ) -> None:
+        actor = uuid.uuid4()
+        result = purge_expired_audit_rows(
+            db_session,
+            window=RetentionWindow.ONE_YEAR,
+            actor_user_id=actor,
+            actor_role=RoleType.SUPERADMIN,
+        )
+        rows = _rows_for_actor(db_session, actor)
+        assert len(rows) == 1
+        maintenance_row = rows[0]
+        assert maintenance_row.action == AuditAction.DELETE
+        assert maintenance_row.table_name == PrivilegedActionAudit.__tablename__
+        assert "1y" in maintenance_row.row_pk
+        assert f"removed={result.removed}" in maintenance_row.row_pk
+        assert maintenance_row.actor_role == RoleType.SUPERADMIN
+
+    def test_uses_batch_size_setting_when_not_overridden(self, db_session) -> None:
+        actor = uuid.uuid4()
+        with patch(
+            "auth_user_service.services.audit.settings.AUDIT_PURGE_BATCH_SIZE",
+            2,
+        ):
+            now = datetime.now(timezone.utc)
+            old_rows = [
+                _old_row(actor, created_at=now - timedelta(days=400)) for _ in range(3)
+            ]
+            for row in old_rows:
+                db_session.add(row)
+            db_session.commit()
+
+            result = purge_expired_audit_rows(
+                db_session,
+                window=RetentionWindow.ONE_YEAR,
+                actor_user_id=actor,
+                actor_role=RoleType.SUPERADMIN,
+                now=now,
+            )
+        assert result.removed == 3
+
+
+class TestPurgeHasNoTargetedDeletePath:
+    def test_signature_has_no_row_scoping_parameter(self) -> None:
+        # The horizon is the only selector — locking the signature shape
+        # prevents a future change from adding a row-id/target parameter that
+        # would turn this into a targeted single-row delete.
+        params = set(inspect.signature(purge_expired_audit_rows).parameters)
+        assert params == {
+            "session",
+            "window",
+            "actor_user_id",
+            "actor_role",
+            "batch_size",
+            "now",
+        }

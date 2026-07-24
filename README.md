@@ -839,6 +839,12 @@ Superadmin authority over API keys is deliberately narrowed to **list + revoke**
 
 Deactivation-driven key revocation (a user going inactive revokes their keys in the same transaction) is unchanged. Every other `/profile/api-keys/*` route stays scoped to the caller's own keys (`APIKEY-OWNER-01`).
 
+### Privileged-action audit trail and retention purge (Phase 7, 3.5.1)
+
+`GET /security/audit-log` (excluded from the OpenAPI schema, JWT-only, rate limited) is the read-only surface over the append-only `privileged_action_audit` table: a superadmin sees every row, an admin sees only rows it authored. No create/update endpoint exists for this table, and no per-row delete path exists anywhere — the sole removal path is the retention purge below.
+
+`POST /security/audit-log/purge` (same JWT-only/schema-excluded/rate-limited posture, superadmin-only) bulk-deletes audit rows older than a chosen retention window — `1w`/`1m`/`3m`/`6m`/`1y` — and rejects any window shorter than the configured minimum-retention floor (`AUDIT_PURGE_MIN_RETENTION_SECONDS`, default >= 90 days; lowering it is an explicit operator config change, never a per-call parameter). Deletes run in `AUDIT_PURGE_BATCH_SIZE`-row batches (`FOR UPDATE SKIP LOCKED`, mirroring the outbox worker) so a large purge never holds one long-lived lock over the table. The purge always writes its own `delete` maintenance audit row (actor, window, rows removed) — it is timestamped after the horizon it was computed from, so it always survives the purge that wrote it, mirroring the tombstone retention-horizon + guarded-cleanup pattern.
+
 ### Access mode and audiences (§3.11–§3.12)
 
 A key is an opaque **pointer to its owner** — it stores no role, so a request is authorized as the owner at the owner's *current* role and can never exceed it. Two additive, explicit-only fields fix a key's reach at issuance and are **immutable afterwards** (change requires issuing a replacement key):

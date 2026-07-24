@@ -1,5 +1,6 @@
-"""Tests for routes/security.py — the non-disclosing superuser-probe canary (3.9)
-and the read-only privileged-action audit-log route (Phase 7)."""
+"""Tests for routes/security.py — the non-disclosing superuser-probe canary (3.9),
+the read-only privileged-action audit-log route, and the superadmin
+retention-purge maintenance action (Phase 7)."""
 
 import uuid
 from unittest.mock import MagicMock, patch
@@ -11,12 +12,15 @@ from auth_sdk_m8.schemas.base import RoleType
 
 from auth_user_service.db_models.privileged_action_audit import AuditAction
 from auth_user_service.routes.security import (
+    AuditPurgeRequest,
     _enforce_audit_log_rate_limit,
+    _enforce_audit_purge_rate_limit,
     _enforce_probe_rate_limit,
+    purge_audit_log,
     read_audit_log,
     superuser_probe,
 )
-from auth_user_service.services.audit import record_privileged_action
+from auth_user_service.services.audit import RetentionWindow, record_privileged_action
 
 
 def _user() -> MagicMock:
@@ -286,3 +290,120 @@ class TestReadAuditLog:
         with pytest.raises(HTTPException) as exc_info:
             read_audit_log(session=db_session, redis=redis, current_user=viewer)
         assert exc_info.value.status_code == 429
+
+
+class TestPurgeAuditLogRoute:
+    def test_route_registration_and_guard(self) -> None:
+        from auth_user_service.core.deps import get_current_active_superuser
+        from auth_user_service.routes.security import router
+
+        route = next(r for r in router.routes if r.path == "/security/audit-log/purge")
+        assert route.include_in_schema is False
+        assert "POST" in route.methods
+        dependants = [
+            d.call for d in route.dependant.dependencies if d.call is not None
+        ]
+        assert get_current_active_superuser in dependants
+
+    def test_superadmin_purge_removes_only_expired_rows(self, db_session) -> None:
+        actor = _principal(RoleType.SUPERADMIN, is_superuser=True)
+        redis = MagicMock()
+        redis.incr.return_value = 1
+
+        result = purge_audit_log(
+            session=db_session,
+            redis=redis,
+            payload=AuditPurgeRequest(window=RetentionWindow.THREE_MONTHS),
+            current_user=actor,
+        )
+
+        assert result.window == RetentionWindow.THREE_MONTHS
+        assert result.removed == 0
+
+    def test_window_below_floor_returns_400(self, db_session) -> None:
+        actor = _principal(RoleType.SUPERADMIN, is_superuser=True)
+        redis = MagicMock()
+        redis.incr.return_value = 1
+
+        with pytest.raises(HTTPException) as exc_info:
+            purge_audit_log(
+                session=db_session,
+                redis=redis,
+                payload=AuditPurgeRequest(window=RetentionWindow.ONE_WEEK),
+                current_user=actor,
+            )
+        assert exc_info.value.status_code == 400
+
+    def test_enforces_rate_limit(self, db_session) -> None:
+        actor = _principal(RoleType.SUPERADMIN, is_superuser=True)
+        redis = MagicMock()
+        redis.incr.return_value = 11
+
+        with pytest.raises(HTTPException) as exc_info:
+            purge_audit_log(
+                session=db_session,
+                redis=redis,
+                payload=AuditPurgeRequest(window=RetentionWindow.ONE_YEAR),
+                current_user=actor,
+            )
+        assert exc_info.value.status_code == 429
+
+
+class TestEnforceAuditPurgeRateLimit:
+    def test_allows_within_limit(self) -> None:
+        redis = MagicMock()
+        redis.incr.return_value = 1
+        _enforce_audit_purge_rate_limit(redis, "user-1")
+        redis.expire.assert_called_once()
+
+    def test_rejects_over_limit_with_429(self) -> None:
+        redis = MagicMock()
+        redis.incr.return_value = 11
+        with pytest.raises(HTTPException) as exc_info:
+            _enforce_audit_purge_rate_limit(redis, "user-1")
+        assert exc_info.value.status_code == 429
+
+    def test_keys_by_user_id_not_shared_across_users(self) -> None:
+        redis = MagicMock()
+        redis.incr.return_value = 1
+        _enforce_audit_purge_rate_limit(redis, "user-a")
+        _enforce_audit_purge_rate_limit(redis, "user-b")
+        called_keys = {call.args[0] for call in redis.incr.call_args_list}
+        assert called_keys == {
+            "security:audit_purge:user-a",
+            "security:audit_purge:user-b",
+        }
+
+    def test_redis_unavailable_fail_closed_raises_503(self) -> None:
+        mock_metrics = MagicMock()
+        with (
+            patch("auth_user_service.routes.security.settings") as mock_settings,
+            patch(
+                "auth_user_service.routes.security._get_metrics",
+                return_value=mock_metrics,
+            ),
+        ):
+            mock_settings.effective_failure_mode.return_value = "fail_closed"
+            with pytest.raises(HTTPException) as exc_info:
+                _enforce_audit_purge_rate_limit(None, "user-1")
+        assert exc_info.value.status_code == 503
+
+    def test_redis_unavailable_fail_open_does_not_raise(self) -> None:
+        with patch("auth_user_service.routes.security.settings") as mock_settings:
+            mock_settings.effective_failure_mode.return_value = "fail_open"
+            _enforce_audit_purge_rate_limit(None, "user-1")
+
+    def test_redis_unavailable_emits_degraded_decision_metric(self) -> None:
+        mock_metrics = MagicMock()
+        with (
+            patch("auth_user_service.routes.security.settings") as mock_settings,
+            patch(
+                "auth_user_service.routes.security._get_metrics",
+                return_value=mock_metrics,
+            ),
+        ):
+            mock_settings.effective_failure_mode.return_value = "fail_open"
+            _enforce_audit_purge_rate_limit(None, "user-1")
+        mock_metrics.degraded_decision_total.labels.assert_called_once_with(
+            control="rate_limit", mode="fail_open", reason="redis_unavailable"
+        )

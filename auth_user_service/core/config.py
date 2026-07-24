@@ -158,6 +158,18 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     # How long a completed row is retained (idempotency window) before reaping.
     OUTBOX_COMPLETED_RETENTION_SECONDS: int = Field(3600, ge=0, le=2592000)
 
+    # ── Privileged-action audit retention purge (Phase 7) ───────────────────
+    # The append-only privileged_action_audit table's only removal path: a
+    # superadmin-gated bulk delete of rows older than a chosen window
+    # (1w/1m/3m/6m/1y). This floor is the minimum retention window the purge
+    # will honour; a request for a shorter window is rejected unless an
+    # operator explicitly lowers this setting (config opt-in), never per-call.
+    AUDIT_PURGE_MIN_RETENTION_SECONDS: int = Field(90 * 86400, ge=0, le=3155760000)
+    # Rows claimed per delete batch (FOR UPDATE SKIP LOCKED), mirroring the
+    # outbox worker's batching so a large purge never holds one long-lived
+    # transaction/lock over the whole table.
+    AUDIT_PURGE_BATCH_SIZE: int = Field(500, ge=1, le=10000)
+
     # Optional static scoped credential for scraping {API_PREFIX}/metrics (1.4).
     # Metrics are internal-only by default — the network boundary (internal
     # entrypoint) is the control and this stays unset. Set it only when metrics
