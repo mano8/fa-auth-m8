@@ -23,6 +23,29 @@ services:
         echo "    For trusted certs: mkcert -install, then bash init.sh --rotate-certs"
     restart: "no"
 
+  # One-shot: prepares the shared Alembic migration tree so the app services can
+  # write to it. ./shared_migrations is a bind mount; on a fresh `compose up` its
+  # host source does not exist, so the Docker daemon creates it as root:root. The
+  # app containers all run as the non-root `appuser` (uid/gid 1000) and each
+  # autogenerates its initial revision into /opt/shared_migrations/<service>/versions
+  # (auth_user for the issuer, m8_app for the fastapi_full consumer, one subdir per
+  # consumer microservice). Creating that subdir fails with EACCES while the root is
+  # root-owned. Handing the shared root to uid 1000 lets every m8 service create and
+  # write its own migration subdir. Runs to completion before any service starts.
+  migrations-init:
+    image: alpine:3.22
+    volumes:
+      - ./shared_migrations:/opt/shared_migrations
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        chown -R 1000:1000 /opt/shared_migrations
+        chmod -R u+rwX,g+rwX /opt/shared_migrations
+        echo "==> migrations-init: shared_migrations owned by uid 1000, writable by all m8 services"
+    restart: "no"
+
   traefik:
     image: traefik:v3.7.5
     ports:
@@ -146,6 +169,8 @@ services:
       - ./auth.env:/opt/auth_user_service/.env:ro
       - ./shared_migrations:/opt/shared_migrations
     depends_on:
+      migrations-init:
+        condition: service_completed_successfully
       m8_db:
         condition: service_healthy
       redis_cache:
@@ -171,6 +196,8 @@ services:
       - ./api.env:/opt/fastapi_full/.env:ro
       - ./shared_migrations:/opt/shared_migrations
     depends_on:
+      migrations-init:
+        condition: service_completed_successfully
       m8_db:
         condition: service_healthy
       auth_user_service:

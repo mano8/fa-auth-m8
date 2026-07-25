@@ -6,7 +6,6 @@ from sqlmodel import select
 from sqlmodel import func
 
 from fastapi_full.app.deps import (
-    CurrentUser,
     SessionDep,
     get_current_active_reader,
     get_current_active_writer,
@@ -18,7 +17,7 @@ from fastapi_full.db_models.categories import (
     CategoryUpdate,
     CategoriesPublic,
 )
-from fastapi_m8 import BaseController, ResponseMessage, ResponseModelBase
+from fastapi_m8 import BaseController, ResponseMessage, ResponseModelBase, UserModel
 from fastapi_m8 import has_superuser_privileges
 
 router = APIRouter(prefix="/category", tags=["category"])
@@ -32,7 +31,7 @@ router = APIRouter(prefix="/category", tags=["category"])
 )
 async def read_root(
     session: SessionDep,
-    current_user: CurrentUser = Depends(get_current_active_reader),
+    current_user: UserModel = Depends(get_current_active_reader),
     skip: int = 0,
     limit: int = 100,
 ) -> Any:
@@ -71,7 +70,7 @@ async def read_root(
 def read_item(
     item_id: int,
     session: SessionDep,
-    current_user: CurrentUser = Depends(get_current_active_reader),
+    current_user: UserModel = Depends(get_current_active_reader),
 ) -> Any:
     """
     Get item by ID.
@@ -99,7 +98,7 @@ def read_item(
 def create_item(
     *,
     session: SessionDep,
-    current_user: CurrentUser = Depends(get_current_active_writer),
+    current_user: UserModel = Depends(get_current_active_writer),
     item_in: CategoryCreate,
 ) -> Any:
     """
@@ -124,7 +123,7 @@ def update_item(
     *,
     item_id: int,
     session: SessionDep,
-    current_user: CurrentUser = Depends(get_current_active_writer),
+    current_user: UserModel = Depends(get_current_active_writer),
     item_in: CategoryUpdate,
 ) -> Any:
     """
@@ -156,7 +155,7 @@ def update_item(
 def delete_item(
     item_id: int,
     session: SessionDep,
-    current_user: CurrentUser = Depends(get_current_active_writer),
+    current_user: UserModel = Depends(get_current_active_writer),
 ) -> ResponseMessage:
     """
     Delete an item.
