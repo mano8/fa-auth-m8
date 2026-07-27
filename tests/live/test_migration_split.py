@@ -160,6 +160,119 @@ def test_enforce_check_rejects_role_flag_mismatch(migrated_engine):
             trans.rollback()
 
 
+def test_privileged_action_audit_table_shape(migrated_engine):
+    """The Phase 7 Expand migration creates the audit table with the exact
+    columns the model declares, indexed on ``actor_user_id`` (schema-level
+    proof the migration matches ``PrivilegedActionAudit``, independent of the
+    guard-trigger tests below).
+    """
+    inspector = sa.inspect(migrated_engine)
+    columns = {
+        c["name"]: c for c in inspector.get_columns("auth_privileged_action_audit")
+    }
+    assert set(columns) == {
+        "id",
+        "created_at",
+        "actor_user_id",
+        "actor_role",
+        "action",
+        "table_name",
+        "row_pk",
+        "target_owner_id",
+    }
+    assert columns["target_owner_id"]["nullable"] is True
+    for name in (
+        "id",
+        "created_at",
+        "actor_user_id",
+        "actor_role",
+        "action",
+        "table_name",
+        "row_pk",
+    ):
+        assert columns[name]["nullable"] is False
+    indexed_columns = {
+        col
+        for index in inspector.get_indexes("auth_privileged_action_audit")
+        for col in index["column_names"]
+    }
+    assert "actor_user_id" in indexed_columns
+
+
+def _insert_audit_row(conn: sa.Connection, *, row_id: str) -> None:
+    conn.execute(
+        sa.text(
+            "INSERT INTO auth_privileged_action_audit "
+            "(id, created_at, actor_user_id, actor_role, action, table_name, row_pk) "
+            "VALUES (:id, CURRENT_TIMESTAMP, :id, 'SUPERADMIN', 'edit', 'auth_user', 'x')"
+        ),
+        {"id": row_id},
+    )
+
+
+def test_privileged_action_audit_rejects_update(migrated_engine):
+    """The guard trigger unconditionally rejects any ``UPDATE`` — schema-level
+    enforcement of the write-once contract (Phase 7 Expand migration).
+    """
+    row_id = "11111111-1111-1111-1111-111111111111"
+    with migrated_engine.connect() as conn:
+        trans = conn.begin()
+        try:
+            _insert_audit_row(conn, row_id=row_id)
+            with pytest.raises(_CONSTRAINT_VIOLATION):
+                conn.execute(
+                    sa.text(
+                        "UPDATE auth_privileged_action_audit SET row_pk = 'y' WHERE id = :id"
+                    ),
+                    {"id": row_id},
+                )
+        finally:
+            trans.rollback()
+
+
+def test_privileged_action_audit_rejects_unauthorized_targeted_delete(migrated_engine):
+    """A raw, targeted single-row ``DELETE`` is rejected: the guard trigger
+    only admits a ``DELETE`` when the purge-authorization flag is set, which
+    only :func:`purge_expired_audit_rows` ever sets (Phase 7 Expand migration).
+    """
+    row_id = "22222222-2222-2222-2222-222222222222"
+    with migrated_engine.connect() as conn:
+        trans = conn.begin()
+        try:
+            _insert_audit_row(conn, row_id=row_id)
+            with pytest.raises(_CONSTRAINT_VIOLATION):
+                conn.execute(
+                    sa.text("DELETE FROM auth_privileged_action_audit WHERE id = :id"),
+                    {"id": row_id},
+                )
+        finally:
+            trans.rollback()
+
+
+def test_privileged_action_audit_allows_delete_when_purge_authorized(migrated_engine):
+    """The exact authorization dance :func:`purge_expired_audit_rows` performs
+    (dialect-specific flag set immediately before the ``DELETE``) succeeds —
+    proving the trigger's exemption is real, not merely a rejection-only stub.
+    """
+    row_id = "33333333-3333-3333-3333-333333333333"
+    with migrated_engine.connect() as conn:
+        trans = conn.begin()
+        try:
+            _insert_audit_row(conn, row_id=row_id)
+            if migrated_engine.dialect.name == "postgresql":
+                conn.execute(
+                    sa.text("SELECT set_config('audit.purge_active', 'true', true)")
+                )
+            else:
+                conn.execute(sa.text("SET @audit_purge_active = 1"))
+            conn.execute(
+                sa.text("DELETE FROM auth_privileged_action_audit WHERE id = :id"),
+                {"id": row_id},
+            )
+        finally:
+            trans.rollback()
+
+
 def test_enforce_not_null_rejects_missing_session_generation(migrated_engine):
     """A raw INSERT with ``auth_generation IS NULL`` on ``auth_client_session``
     fails NOT NULL, proven independent of the CHECK constraint (which lives on
@@ -221,16 +334,23 @@ def test_downgrade_then_upgrade_round_trip(alembic_config, migrated_engine):
     re-upgrade (§4.5 — downgrade drops only the constraint, never data;
     re-upgrade is always safe afterward).
 
-    Stops exactly at the baseline revision (two relative ``-1`` steps: Enforce
-    then Expand) rather than downgrading past it to ``base`` — reaching the
-    baseline revision runs only *this pair's* ``downgrade()`` functions, the
-    ones owned by this TODO. Downgrading past baseline would additionally
-    invoke the pre-existing (pre-plan) baseline migration's own downgrade(),
-    which is out of scope here and not certified by this test.
+    Stops exactly at the baseline revision (three relative ``-1`` steps: the
+    Phase 7 audit-table Expand, then Enforce, then the generation Expand)
+    rather than downgrading past it to ``base`` — reaching the baseline
+    revision runs only *this pair's plus the audit revision's*
+    ``downgrade()`` functions, the ones owned by this TODO. Downgrading past
+    baseline would additionally invoke the pre-existing (pre-plan) baseline
+    migration's own downgrade(), which is out of scope here and not
+    certified by this test.
     """
     inspector = sa.inspect(migrated_engine)
 
-    # head -> Enforce.downgrade() -> Expand revision.
+    # head -> audit-table Expand.downgrade() -> Enforce revision.
+    command.downgrade(alembic_config, "-1")
+    inspector = sa.inspect(migrated_engine)
+    assert "auth_privileged_action_audit" not in inspector.get_table_names()
+
+    # Enforce revision -> Enforce.downgrade() -> Expand revision.
     command.downgrade(alembic_config, "-1")
     inspector = sa.inspect(migrated_engine)
     checks = inspector.get_check_constraints("auth_user")
@@ -258,6 +378,7 @@ def test_downgrade_then_upgrade_round_trip(alembic_config, migrated_engine):
     assert any(c["name"] == "ck_user_superuser_role_consistency" for c in checks)
     session_cols = {c["name"]: c for c in inspector.get_columns("auth_client_session")}
     assert session_cols["auth_generation"]["nullable"] is False
+    assert "auth_privileged_action_audit" in inspector.get_table_names()
     with migrated_engine.connect() as conn:
         seeded = conn.execute(
             sa.text(

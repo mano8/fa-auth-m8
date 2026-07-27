@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Final, Optional, Union
 
+import sqlalchemy as sa
 from sqlmodel import Session, col, select
 
 from auth_sdk_m8.schemas.base import RoleType
@@ -40,6 +41,14 @@ from auth_user_service.db_models.privileged_action_audit import (
     AuditAction,
     PrivilegedActionAudit,
 )
+
+# Dialect names (per ``Session.get_bind().dialect.name``) whose Expand
+# migration installs the ``BEFORE DELETE`` guard trigger (4.6: the real-dialect
+# matrix is Postgres/MySQL/MariaDB; MariaDB shares the ``mysql`` dialect name
+# via the ``mysql+pymysql`` driver family). SQLite (unit-test surrogate only,
+# 4.6) never runs the migration and carries no trigger, so the authorization
+# calls below are a no-op there.
+_PURGE_GUARDED_DIALECTS: Final[frozenset[str]] = frozenset({"postgresql", "mysql"})
 
 
 def _coerce_actor_id(actor_user_id: Union[uuid.UUID, str]) -> uuid.UUID:
@@ -139,6 +148,34 @@ def _as_aware_utc(value: datetime) -> datetime:
     return value
 
 
+def _dialect_name(session: Session) -> str:
+    bind = session.get_bind()
+    return bind.dialect.name
+
+
+def _set_purge_delete_authorized(
+    session: Session, dialect: str, *, active: bool
+) -> None:
+    """Toggle the transaction/session-local flag the Expand migration's
+    ``BEFORE DELETE`` guard trigger checks (schema-level enforcement of the
+    no-targeted-delete contract, 4.6). Only this function ever sets it, so a
+    raw/ad-hoc ``DELETE`` against the audit table is rejected by the trigger
+    on every guarded dialect.
+
+    PostgreSQL's ``set_config(..., true)`` is transaction-local and resets
+    itself at commit/rollback, so clearing it explicitly is only required for
+    MySQL/MariaDB, whose session variables (``@audit_purge_active``) persist
+    on the pooled connection past the transaction boundary.
+    """
+    if dialect == "postgresql":
+        session.execute(
+            sa.text("SELECT set_config('audit.purge_active', :value, true)"),
+            {"value": "true" if active else "false"},
+        )
+    elif dialect == "mysql":
+        session.execute(sa.text(f"SET @audit_purge_active = {1 if active else 'NULL'}"))
+
+
 def purge_expired_audit_rows(
     session: Session,
     *,
@@ -198,6 +235,8 @@ def purge_expired_audit_rows(
     batch = batch_size or settings.AUDIT_PURGE_BATCH_SIZE
     current = _as_aware_utc(now or datetime.now(timezone.utc))
     horizon = current - timedelta(seconds=window_seconds)
+    dialect = _dialect_name(session)
+    guarded = dialect in _PURGE_GUARDED_DIALECTS
 
     removed = 0
     while True:
@@ -210,9 +249,13 @@ def purge_expired_audit_rows(
         ).all()
         if not rows:
             break
+        if guarded:
+            _set_purge_delete_authorized(session, dialect, active=True)
         for row in rows:
             session.delete(row)
         session.commit()
+        if guarded:
+            _set_purge_delete_authorized(session, dialect, active=False)
         removed += len(rows)
         if len(rows) < batch:
             break

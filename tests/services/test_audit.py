@@ -3,7 +3,7 @@
 import inspect
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlmodel import select
@@ -14,6 +14,7 @@ from auth_user_service.db_models.privileged_action_audit import (
     AuditAction,
     PrivilegedActionAudit,
 )
+from auth_user_service.services import audit as audit_service
 from auth_user_service.services.audit import (
     AuditRetentionFloorError,
     RetentionWindow,
@@ -291,6 +292,95 @@ class TestPurgeExpiredAuditRows:
                 now=now,
             )
         assert result.removed == 3
+
+
+class TestPurgeDeleteAuthorizationDialectHelper:
+    """The purge's dialect-specific flag toggle (which the Expand migration's
+    ``BEFORE DELETE`` guard trigger checks, 4.6) is a no-op on any dialect the
+    migration never runs against — in particular SQLite, the unit-test
+    surrogate the ``db_session`` fixture uses, which carries no such trigger.
+    """
+
+    def test_unguarded_dialect_is_a_no_op(self, db_session) -> None:
+        assert audit_service._dialect_name(db_session) not in (
+            audit_service._PURGE_GUARDED_DIALECTS
+        )
+        # No trigger exists on the sqlite unit-test schema, so if this were
+        # anything other than a no-op it would raise here.
+        audit_service._set_purge_delete_authorized(
+            db_session, audit_service._dialect_name(db_session), active=True
+        )
+        audit_service._set_purge_delete_authorized(
+            db_session, audit_service._dialect_name(db_session), active=False
+        )
+
+    def test_purge_still_deletes_on_the_unguarded_unit_test_dialect(
+        self, db_session
+    ) -> None:
+        # End-to-end proof the authorization toggle never blocks the purge's
+        # own deletes on the dialect the rest of this module's tests run on.
+        actor = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+        old_row = _old_row(actor, created_at=now - timedelta(days=400))
+        db_session.add(old_row)
+        db_session.commit()
+
+        result = purge_expired_audit_rows(
+            db_session,
+            window=RetentionWindow.ONE_YEAR,
+            actor_user_id=actor,
+            actor_role=RoleType.SUPERADMIN,
+            now=now,
+        )
+        assert result.removed == 1
+
+    @pytest.mark.parametrize("dialect", ["postgresql", "mysql"])
+    def test_guarded_dialects_emit_the_expected_statement(self, dialect: str) -> None:
+        session = MagicMock()
+        audit_service._set_purge_delete_authorized(session, dialect, active=True)
+        session.execute.assert_called_once()
+        statement_text = str(session.execute.call_args[0][0])
+        if dialect == "postgresql":
+            assert "set_config" in statement_text
+        else:
+            assert "@audit_purge_active" in statement_text
+
+    def test_purge_toggles_authorization_around_each_batch_on_a_guarded_dialect(
+        self, db_session
+    ) -> None:
+        # Forces the guarded branch the real Postgres/MySQL dialects take
+        # (unreachable on the sqlite unit-test engine otherwise) without
+        # sending dialect-specific SQL to sqlite: the toggle itself is
+        # mocked, isolating this test to the call sequence purge performs.
+        actor = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+        old_row = _old_row(actor, created_at=now - timedelta(days=400))
+        db_session.add(old_row)
+        db_session.commit()
+
+        with (
+            patch.object(audit_service, "_dialect_name", return_value="postgresql"),
+            patch.object(audit_service, "_set_purge_delete_authorized") as mock_toggle,
+        ):
+            result = purge_expired_audit_rows(
+                db_session,
+                window=RetentionWindow.ONE_YEAR,
+                actor_user_id=actor,
+                actor_role=RoleType.SUPERADMIN,
+                now=now,
+            )
+
+        assert result.removed == 1
+        mock_toggle.assert_any_call(db_session, "postgresql", active=True)
+        mock_toggle.assert_any_call(db_session, "postgresql", active=False)
+
+    def test_purge_guarded_dialects_are_exactly_postgres_and_mysql(self) -> None:
+        # Locks the guarded-dialect set: MariaDB shares the "mysql" dialect
+        # name via the mysql+pymysql driver family (4.6), so no separate
+        # "mariadb" entry is expected here.
+        assert audit_service._PURGE_GUARDED_DIALECTS == frozenset(
+            {"postgresql", "mysql"}
+        )
 
 
 class TestPurgeHasNoTargetedDeletePath:
