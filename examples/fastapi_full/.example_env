@@ -80,6 +80,10 @@ TOKEN_STRICT_VALIDATION=false
 # ── Token revocation (stateful mode only) ─────────────────────────────────────
 # Required when TOKEN_MODE=stateful. Must match auth_user_service PRIVATE_API_SECRET.
 # The auth service exposes this endpoint on its Docker-internal network only.
+# Also derives the issuer user-lookup URL (…/users/get/{user_id}/) that a
+# superadmin cross-owner create uses to confirm its explicit target_owner_id —
+# the user table belongs to auth_user_service and is never read from here. Leave
+# it unset (stateless mode) and a cross-owner create fails closed with 503.
 INTROSPECTION_URL=http://auth_user_service:8000/user/private/v1/jti-status
 PRIVATE_API_SECRET=changethis
 

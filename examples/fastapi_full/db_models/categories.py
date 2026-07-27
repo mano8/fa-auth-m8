@@ -1,6 +1,6 @@
-from typing import List
+from typing import List, Optional
 import uuid
-from pydantic import model_validator
+from pydantic import ConfigDict, model_validator
 from sqlalchemy import UniqueConstraint
 from sqlmodel import CHAR, Column, Field, SQLModel
 from slugify import slugify
@@ -54,13 +54,35 @@ class CategoryGenerators(CategoryBase):
 class CategoryCreate(CategoryGenerators):
     """
     Schema for creating a new category.
+
+    ``extra="forbid"`` is what makes ownership preservation an enforced rule
+    rather than an accident of the field list: a body carrying ``owner_id`` is
+    rejected outright instead of being silently ignored. The only ownership
+    input a client may send is ``target_owner_id``, the explicit superadmin
+    cross-owner request resolved by ``app.ownership.resolve_create_owner_id``.
     """
+
+    model_config = ConfigDict(extra="forbid")  # type: ignore[assignment]
+
+    target_owner_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description=(
+            "Create this category on behalf of another user. Canonical "
+            "superusers only; must resolve to an existing user."
+        ),
+    )
 
 
 class CategoryUpdate(CategoryGenerators):
     """
     Schema for updating an existing category.
+
+    An edit never changes ownership, so it accepts no ownership field at all:
+    ``extra="forbid"`` rejects ``owner_id`` and ``target_owner_id`` alike, and
+    the edit operates on the ``owner_id`` already persisted on the fetched row.
     """
+
+    model_config = ConfigDict(extra="forbid")  # type: ignore[assignment]
 
 
 class Category(TimestampMixin, CategoryBase, SQLModel, table=True):
@@ -109,3 +131,21 @@ class CategoriesPublic(SQLModel):
     count: int = Field(
         description="Total categories count",
     )
+
+
+def build_category(item_in: CategoryCreate, *, owner_id: uuid.UUID) -> Category:
+    """Build a persistable ``Category`` whose owner comes only from *owner_id*.
+
+    Only the content fields are copied across, so no request body can reach the
+    ownership column — not through ``owner_id`` (rejected by the schema) and
+    not through ``target_owner_id`` (an input to the ownership rules, never a
+    persisted value).
+
+    Args:
+        item_in: The validated creation payload.
+        owner_id: The owner resolved by ``app.ownership.resolve_create_owner_id``.
+
+    Returns:
+        The unsaved ``Category`` row.
+    """
+    return Category(name=item_in.name, slug=item_in.slug, owner_id=owner_id)

@@ -13,6 +13,37 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security — Ownership preservation in `examples/fastapi_full` (Phase 7, G7-5)
+
+- Owner is now resolved by the server, never set by a request body.
+  `CategoryCreate`/`CategoryUpdate` (`examples/fastapi_full/db_models/categories.py`)
+  set `extra="forbid"`, so a body carrying `owner_id` is rejected with `422`
+  instead of being silently dropped — previously ownership survived an edit
+  only because `CategoryUpdate` happened to omit the field.
+- New `examples/fastapi_full/app/ownership.py` owns the rules:
+  `resolve_create_owner_id()` returns the actor's id only when the actor is the
+  intended owner, `category_update_values()` strips every ownership key before
+  an edit reaches the row, and `is_canonical_superuser()` centralises the
+  dual-evidence predicate. New `db_models.categories.build_category()` copies
+  only content fields onto the row, so no payload can reach the ownership
+  column.
+- A cross-owner create is superadmin-only and requires an explicit
+  `target_owner_id` that must resolve to an existing user. It never defaults to
+  the actor: a non-superadmin actor gets `403`, an unknown target `404`, and an
+  unreachable or unconfigured issuer `503` — no path substitutes the actor's id
+  for a target that was refused, unknown, or unverifiable. The API-key-gated
+  create always refuses a cross-owner target (§3.11 caps key decisions at
+  WRITER).
+- New `examples/fastapi_full/core/user_directory.py` resolves the target owner
+  over the issuer's owned HTTP contract
+  (`GET {AUTH_PREFIX}/users/get/{user_id}/`, derived from `INTROSPECTION_URL`)
+  with the caller's own bearer token — the consumer never reads the auth
+  service's user table. Fail-closed on every non-definitive outcome; errors
+  carry a bounded reason code only, never the token or the response body.
+- New bundled-example unit suite (`examples/fastapi_full/tests/`) with its own
+  `pytest.ini`, gated by the new `example-tests` CI job and locked by
+  `tests/test_ci_policy.py`.
+
 ### Added — Superadmin audit retention-purge maintenance action (Phase 7, 3.5.1)
 
 - `POST /security/audit-log/purge` (`auth_user_service/routes/security.py`):

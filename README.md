@@ -1013,6 +1013,17 @@ pip install fastapi-m8 --upgrade                        # minimal consumer
 pip install "fastapi-m8[db,postgres,mysql]" --upgrade   # with SQLModel + DB drivers (fastapi_full)
 ```
 
+### Ownership preservation
+
+`fastapi_full` treats the owner of a row as something the server resolves, never something a request body sets (`app/ownership.py`):
+
+- `owner_id` is not a request field. `CategoryCreate` and `CategoryUpdate` forbid unknown fields, so a body carrying `owner_id` is rejected with `422` instead of silently ignored, and `category_update_values()` strips every ownership key before an edit reaches the row.
+- An edit or a delete authorizes against — and preserves — the `owner_id` already persisted on the fetched row. No mutation path writes an ownership column.
+- A cross-owner create is superadmin-only and requires an explicit `target_owner_id`. It never defaults to the actor: omitting it creates a row owned by the actor, supplying it creates a row owned by that exact user, and a refusal, an unknown target, or an issuer outage raises (`403` / `404` / `503`) rather than falling back to the actor's id.
+- Because the user table belongs to `auth_user_service`, `target_owner_id` is confirmed over the issuer's HTTP contract (`GET {AUTH_PREFIX}/users/get/{user_id}/`, derived from `INTROSPECTION_URL`) using the caller's own bearer token — never by reading the auth database. An API-key-authorized create always refuses a cross-owner target: §3.11 caps every key decision at WRITER.
+
+The rules have their own unit suite (`examples/fastapi_full/tests/`), run by the `example-tests` CI job through `examples/fastapi_full/pytest.ini`.
+
 ### Minimal integration
 
 ```python

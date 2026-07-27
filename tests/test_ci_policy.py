@@ -85,3 +85,29 @@ def test_ci_yaml_bans_direct_superuser_auth_in_bundled_example() -> None:
         "CI.yaml must run check_no_direct_superuser_auth against both "
         "auth_user_service and examples/fastapi_full."
     )
+
+
+# ── Phase 7 — the bundled example's own unit suite is gated ────────────────
+
+
+def test_ci_yaml_runs_the_bundled_example_unit_tests() -> None:
+    """The example's ownership/authorization rules must be gated by CI.
+
+    ``pytest`` at the repo root has ``testpaths = tests`` and measures
+    ``auth_user_service`` only, so ``examples/fastapi_full/tests`` (the
+    ownership-preservation suite) runs solely through its own pytest config in
+    a dedicated job. This locks that job so the suite cannot silently stop
+    running.
+    """
+    wf = _load_yaml(CI_YAML)
+    assert "example-tests" in wf["jobs"], (
+        "CI.yaml must include the example-tests job running the bundled "
+        "fastapi_full unit suite."
+    )
+    assert (
+        "pytest -c examples/fastapi_full/pytest.ini examples/fastapi_full/tests"
+        in CI_YAML.read_text()
+    ), (
+        "CI.yaml's example-tests job must run the bundled example suite through "
+        "examples/fastapi_full/pytest.ini."
+    )

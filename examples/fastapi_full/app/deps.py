@@ -2,6 +2,7 @@
 
 __all__ = [
     "CurrentUser",
+    "OwnerVerifierDep",
     "SessionDep",
     "get_current_api_key_writer",
     "get_current_active_reader",
@@ -11,6 +12,7 @@ __all__ = [
 
 from fastapi_full.core.deps import (
     CurrentUser as CurrentUser,
+    OwnerVerifierDep as OwnerVerifierDep,
     SessionDep as SessionDep,
     get_current_api_key_writer as get_current_api_key_writer,
     get_current_active_reader as get_current_active_reader,
