@@ -10,12 +10,16 @@ from fastapi import HTTPException
 
 from auth_sdk_m8.schemas.base import RoleType
 
+from auth_user_service.db_models.api_keys import ApiKey
 from auth_user_service.db_models.privileged_action_audit import AuditAction
 from auth_user_service.routes.security import (
+    ApiKeyPurgeRequest,
     AuditPurgeRequest,
+    _enforce_api_key_purge_rate_limit,
     _enforce_audit_log_rate_limit,
     _enforce_audit_purge_rate_limit,
     _enforce_probe_rate_limit,
+    purge_api_keys,
     purge_audit_log,
     read_audit_log,
     superuser_probe,
@@ -404,6 +408,139 @@ class TestEnforceAuditPurgeRateLimit:
         ):
             mock_settings.effective_failure_mode.return_value = "fail_open"
             _enforce_audit_purge_rate_limit(None, "user-1")
+        mock_metrics.degraded_decision_total.labels.assert_called_once_with(
+            control="rate_limit", mode="fail_open", reason="redis_unavailable"
+        )
+
+
+class TestPurgeApiKeysRoute:
+    """`POST /security/api-keys/purge` (APIKEY-LIFECYCLE-01, Phase 7 addendum)."""
+
+    def test_route_registration_and_guard(self) -> None:
+        from auth_user_service.core.deps import get_current_active_superuser
+        from auth_user_service.routes.security import router
+
+        route = next(r for r in router.routes if r.path == "/security/api-keys/purge")
+        assert route.include_in_schema is False
+        assert "POST" in route.methods
+        dependants = [
+            d.call for d in route.dependant.dependencies if d.call is not None
+        ]
+        assert get_current_active_superuser in dependants
+
+    def test_superadmin_purge_removes_dead_key(self, db_session, sample_user) -> None:
+        import uuid as _uuid
+        from datetime import datetime, timedelta, timezone
+
+        dead = ApiKey(
+            key_hash=(_uuid.uuid4().hex + _uuid.uuid4().hex),
+            user_id=sample_user.id,
+            name="dead",
+            revoked=True,
+            expires_at=None,
+            updated_at=datetime.now(timezone.utc) - timedelta(days=400),
+        )
+        db_session.add(dead)
+        db_session.commit()
+
+        actor = _principal(RoleType.SUPERADMIN, is_superuser=True)
+        redis = MagicMock()
+        redis.incr.return_value = 1
+
+        result = purge_api_keys(
+            session=db_session,
+            redis=redis,
+            payload=ApiKeyPurgeRequest(window=RetentionWindow.ONE_YEAR),
+            current_user=actor,
+        )
+
+        assert result.window == RetentionWindow.ONE_YEAR
+        assert result.removed == 1
+
+    def test_window_below_floor_returns_400(self, db_session) -> None:
+        actor = _principal(RoleType.SUPERADMIN, is_superuser=True)
+        redis = MagicMock()
+        redis.incr.return_value = 1
+
+        with pytest.raises(HTTPException) as exc_info:
+            purge_api_keys(
+                session=db_session,
+                redis=redis,
+                payload=ApiKeyPurgeRequest(window=RetentionWindow.ONE_WEEK),
+                current_user=actor,
+            )
+        assert exc_info.value.status_code == 400
+
+    def test_enforces_rate_limit(self, db_session) -> None:
+        actor = _principal(RoleType.SUPERADMIN, is_superuser=True)
+        redis = MagicMock()
+        redis.incr.return_value = 11
+
+        with pytest.raises(HTTPException) as exc_info:
+            purge_api_keys(
+                session=db_session,
+                redis=redis,
+                payload=ApiKeyPurgeRequest(window=RetentionWindow.ONE_YEAR),
+                current_user=actor,
+            )
+        assert exc_info.value.status_code == 429
+
+
+class TestEnforceApiKeyPurgeRateLimit:
+    def test_allows_within_limit(self) -> None:
+        redis = MagicMock()
+        redis.incr.return_value = 1
+        _enforce_api_key_purge_rate_limit(redis, "user-1")
+        redis.expire.assert_called_once()
+
+    def test_rejects_over_limit_with_429(self) -> None:
+        redis = MagicMock()
+        redis.incr.return_value = 11
+        with pytest.raises(HTTPException) as exc_info:
+            _enforce_api_key_purge_rate_limit(redis, "user-1")
+        assert exc_info.value.status_code == 429
+
+    def test_keys_by_user_id_not_shared_across_users(self) -> None:
+        redis = MagicMock()
+        redis.incr.return_value = 1
+        _enforce_api_key_purge_rate_limit(redis, "user-a")
+        _enforce_api_key_purge_rate_limit(redis, "user-b")
+        called_keys = {call.args[0] for call in redis.incr.call_args_list}
+        assert called_keys == {
+            "security:api_key_purge:user-a",
+            "security:api_key_purge:user-b",
+        }
+
+    def test_redis_unavailable_fail_closed_raises_503(self) -> None:
+        mock_metrics = MagicMock()
+        with (
+            patch("auth_user_service.routes.security.settings") as mock_settings,
+            patch(
+                "auth_user_service.routes.security._get_metrics",
+                return_value=mock_metrics,
+            ),
+        ):
+            mock_settings.effective_failure_mode.return_value = "fail_closed"
+            with pytest.raises(HTTPException) as exc_info:
+                _enforce_api_key_purge_rate_limit(None, "user-1")
+        assert exc_info.value.status_code == 503
+
+    def test_redis_unavailable_fail_open_does_not_raise(self) -> None:
+        with patch("auth_user_service.routes.security.settings") as mock_settings:
+            mock_settings.effective_failure_mode.return_value = "fail_open"
+            _enforce_api_key_purge_rate_limit(None, "user-1")
+
+    def test_redis_unavailable_emits_degraded_decision_metric(self) -> None:
+        mock_metrics = MagicMock()
+        with (
+            patch("auth_user_service.routes.security.settings") as mock_settings,
+            patch(
+                "auth_user_service.routes.security._get_metrics",
+                return_value=mock_metrics,
+            ),
+        ):
+            mock_settings.effective_failure_mode.return_value = "fail_open"
+            _enforce_api_key_purge_rate_limit(None, "user-1")
         mock_metrics.degraded_decision_total.labels.assert_called_once_with(
             control="rate_limit", mode="fail_open", reason="redis_unavailable"
         )

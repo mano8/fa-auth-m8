@@ -53,6 +53,7 @@ _RUNTIME_KEY_PREFIXES = [
     "security:superuser_probe:",
     "security:audit_log:",
     "security:audit_purge:",
+    "security:api_key_purge:",
 ]
 
 

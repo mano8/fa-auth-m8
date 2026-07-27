@@ -854,6 +854,14 @@ A key is an opaque **pointer to its owner** — it stores no role, so a request 
 
 Effective downstream authority is the intersection *owner's current role ∩ key `access_mode` ∩ matching audience ∩ route policy* — each dimension only narrows. A key with **no audience rows is issuer-local only**: remote introspection answers `active: false`, so no legacy key silently becomes a cross-service credential. Audiences on existing (legacy) keys are set by the audited operator command `python -m auth_user_service.scripts.bind_api_key_audiences --key-id <uuid> --actor <who> --reason <why> --audience <consumer-id>` (audiences only; idempotent; refuses to change an already-bound set).
 
+### Dead-key retention purge (Phase 7 addendum, `APIKEY-LIFECYCLE-01`)
+
+Revocation is delete-**equivalent** for authorization but not a delete: a revoked key's row persists (`revoked = true`), and an expired key's row persists unchanged. Nothing removes an `ApiKey` row except `ON DELETE CASCADE` from a deleted owner, so dead rows — and their `api_key_audiences` and per-key `RateLimit` children — accumulate indefinitely without an explicit purge.
+
+`POST /security/api-keys/purge` (excluded from the OpenAPI schema, JWT-only, rate limited, superadmin-only) is that purge, mirroring the audit-log purge above: a key is **dead** when it is revoked (dated by `updated_at`, which stops advancing once revoked) or carries a non-null `expires_at` in the past (`expires_at IS NULL` never qualifies). Rows dead longer than a chosen window — `1w`/`1m`/`3m`/`6m`/`1y` — are bulk-deleted; a window shorter than `API_KEY_PURGE_MIN_RETENTION_SECONDS` (default >= 90 days, a **dedicated** floor independent of the audit table's) is rejected with `400`. Deletes run in `API_KEY_PURGE_BATCH_SIZE`-row `FOR UPDATE SKIP LOCKED` batches; deleting the parent row cascades `api_key_audiences` and `RateLimit` in the same operation — there is deliberately no audience-only delete path. The purge writes its own `delete` maintenance audit row (actor, window, rows removed), timestamped after the horizon so it survives the purge that wrote it. Its request/signature shape carries no key-id/owner-id parameter, so a targeted single-key purge is not expressible.
+
+The per-user creation cap (`API_KEY_MAX_PER_USER`) excludes both revoked **and** expired keys, so it bounds only *live* credentials — an expired row no longer forces a manual revoke before a replacement can be issued. The purge, not the cap, is what bounds total rows.
+
 ### Rate limiting
 
 Each key is checked against up to four fixed windows (MINUTE, HOUR, DAY, MONTH). Priority chain: per-key `RateLimit` rows → per-user defaults → `API_KEY_DEFAULT_LIMIT_*` settings.

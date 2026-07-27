@@ -481,6 +481,43 @@ class AuditPurgeRateLimiter:
         return count <= self.max_requests
 
 
+class ApiKeyPurgeRateLimiter:
+    """Fixed-window limiter for ``POST /security/api-keys/purge``, keyed by user ID.
+
+    Mirrors :class:`AuditPurgeRateLimiter`: the route is authenticated (canonical
+    superadmin guard) rather than anonymous, so it keys on the caller's user ID.
+    A mutating maintenance action, so it is deliberately tighter than a
+    read-only limiter. Its ``security:`` prefix is already covered by every
+    maintained compose example's ``~security:*`` ACL pattern, so no ACL change
+    is needed.
+    """
+
+    DEFAULT_MAX_REQUESTS: Final[int] = 10
+    DEFAULT_WINDOW_SECONDS: Final[int] = 60
+    PREFIX: Final[str] = "security:api_key_purge:"
+
+    def __init__(
+        self,
+        client: Redis,
+        max_requests: int = DEFAULT_MAX_REQUESTS,
+        window_seconds: int = DEFAULT_WINDOW_SECONDS,
+    ) -> None:
+        self.client = client
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+
+    def _key(self, user_id: str) -> str:
+        return f"{self.PREFIX}{user_id}"
+
+    def is_allowed(self, user_id: str) -> bool:
+        """Increment the per-user counter and return True if still within limit."""
+        key = self._key(user_id)
+        count = cast(int, self.client.incr(key))
+        if count == 1:
+            self.client.expire(key, self.window_seconds)
+        return count <= self.max_requests
+
+
 _ROTATE_SCRIPT = """
 local old = KEYS[1]
 local new = KEYS[2]

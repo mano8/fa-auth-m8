@@ -288,6 +288,15 @@
     "note": "Superadmin-only retention-purge maintenance action (Phase 7); the audit table's sole removal path, horizon-bounded and floor-enforced, writes its own maintenance audit row"
   },
   {
+    "path": "/user/security/api-keys/purge",
+    "method": "POST",
+    "tag": "security",
+    "exposure": "admin",
+    "in_openapi": false,
+    "traefik_router": "public",
+    "note": "Superadmin-only dead-key retention-purge maintenance action (APIKEY-LIFECYCLE-01, Phase 7 addendum); deletes revoked/expired ApiKey rows older than the chosen window, cascades api_key_audiences/RateLimit children, horizon-bounded and floor-enforced, writes its own maintenance audit row"
+  },
+  {
     "path": "/user/sessions/",
     "method": "GET",
     "tag": "sessions",

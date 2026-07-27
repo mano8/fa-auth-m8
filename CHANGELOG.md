@@ -13,6 +13,33 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — Dead-key retention purge + live-key cap correction (Phase 7, `APIKEY-LIFECYCLE-01`)
+
+- New `purge_dead_api_keys()` (`services/api_keys.py`), modelled directly on
+  `purge_expired_audit_rows`: a superadmin-gated, horizon-bounded bulk delete
+  of dead `ApiKey` rows — revoked (dated by `updated_at`) or expired (dated by
+  `expires_at`, with `expires_at IS NULL` never eligible on the expiry basis) —
+  checked against a **dedicated** `API_KEY_PURGE_MIN_RETENTION_SECONDS` floor
+  (default ≥ 90 days, independent of `AUDIT_PURGE_MIN_RETENTION_SECONDS`) and
+  batched under `FOR UPDATE SKIP LOCKED`. Deleting the parent row lets the
+  existing `ON DELETE CASCADE` clear its `api_key_audiences` and `RateLimit`
+  children in one operation — no audience-only delete path exists. The purge
+  accepts no key-id/owner-id/row-scoping parameter (signature-shape locked)
+  and writes one `delete` privileged-action audit row (actor, window, rows
+  removed) timestamped after the horizon so it survives its own purge (G7-8).
+- Exposed as `POST /security/api-keys/purge` — `get_current_active_superuser`-
+  gated, `include_in_schema=False`, rate limited by the new
+  `ApiKeyPurgeRateLimiter` (`security:api_key_purge:` prefix, already covered
+  by every maintained compose example's `~security:*` ACL pattern), floor
+  rejection → `400`.
+- The per-user creation cap (`routes/api_keys.py::create_api_key`) now
+  excludes expired-but-unrevoked keys in addition to revoked ones, so the
+  live-key maximum bounds *usable* credentials — an expired row no longer
+  forces a manual revoke before a replacement can be issued. The purge, not
+  the cap, is what bounds total rows.
+- No schema, migration, or introspection request/response shape change:
+  `auth-sdk-m8` stays `3.1.0` and `fastapi-m8` stays `4.2.0`.
+
 ### Added — API-key audience readback on owner and superadmin key views (Phase 7, `APIKEY-AUD-02`)
 
 - `ApiKeyPublic` (`GET /profile/api-keys/`, `GET /profile/api-keys/{key_id}`,

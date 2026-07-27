@@ -22,6 +22,13 @@ chosen retention window (`1w`/`1m`/`3m`/`6m`/`1y`), rejecting any window
 shorter than the configured minimum-retention floor. It writes its own
 maintenance audit row, which survives the purge that wrote it because it is
 timestamped after the horizon.
+
+`POST /security/api-keys/purge` is the dead-`ApiKey`-row lifecycle's only
+removal path (`APIKEY-LIFECYCLE-01`, Phase 7 addendum): the same
+superadmin-gated, horizon-bounded bulk delete pattern as the audit purge above,
+applied to revoked/expired API keys. Deleting the parent row lets the existing
+`ON DELETE CASCADE` clear its `api_key_audiences` and `RateLimit` children in
+the same operation; it writes its own privileged-action audit row.
 """
 
 import logging
@@ -31,6 +38,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import SQLModel, col, func, select
 
 from auth_user_service.core.client import (
+    ApiKeyPurgeRateLimiter,
     AuditLogRateLimiter,
     AuditPurgeRateLimiter,
     SuperuserProbeRateLimiter,
@@ -45,6 +53,10 @@ from auth_user_service.core.deps import (
 from auth_user_service.db_models.privileged_action_audit import (
     PrivilegedActionAudit,
     PrivilegedActionAuditsPublic,
+)
+from auth_user_service.services.api_keys import (
+    ApiKeyPurgeRetentionFloorError,
+    purge_dead_api_keys,
 )
 from auth_user_service.services.audit import (
     AuditRetentionFloorError,
@@ -237,3 +249,81 @@ def purge_audit_log(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return AuditPurgeResponse(window=result.window, removed=result.removed)
+
+
+class ApiKeyPurgeRequest(SQLModel):
+    """Request body for the superadmin dead-key retention-purge maintenance action."""
+
+    window: RetentionWindow
+
+
+class ApiKeyPurgeResponse(SQLModel):
+    """Response for the superadmin dead-key retention-purge maintenance action."""
+
+    window: RetentionWindow
+    removed: int
+
+
+def _enforce_api_key_purge_rate_limit(redis: RedisDep, user_id: str) -> None:
+    """Check and enforce the API-key-purge rate limit. Raises 429 or 503."""
+    if redis is not None:
+        if not ApiKeyPurgeRateLimiter(redis).is_allowed(user_id):
+            logger.warning("event=security.api_key_purge.rate_limited")
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests. Try again later.",
+            )
+        return
+    _mode = settings.effective_failure_mode("rate_limit")
+    _m = _get_metrics()
+    if _m and _m.degraded_decision_total:
+        _m.degraded_decision_total.labels(
+            control="rate_limit", mode=_mode, reason="redis_unavailable"
+        ).inc()
+    if _mode == "fail_closed":
+        raise HTTPException(
+            status_code=503,
+            detail="Rate limiting service temporarily unavailable",
+        )
+
+
+@router.post(
+    "/api-keys/purge", include_in_schema=False, response_model=ApiKeyPurgeResponse
+)
+def purge_api_keys(
+    *,
+    session: SessionDep,
+    redis: RedisDep,
+    payload: ApiKeyPurgeRequest,
+    current_user: UserModel = Depends(get_current_active_superuser),
+) -> Any:
+    """Superadmin-only maintenance action: the dead-`ApiKey`-row lifecycle's
+    only removal path (`APIKEY-LIFECYCLE-01`).
+
+    Bulk-deletes revoked/expired key rows older than the chosen retention
+    *window*, never a targeted single row. Rejects with `400` any window
+    shorter than the configured minimum-retention floor
+    (`API_KEY_PURGE_MIN_RETENTION_SECONDS`, default >= 90 days, a dedicated
+    floor independent of the audit table's) — lowering that floor is an
+    explicit operator config change, never a per-call parameter. Deletes
+    happen in batches (`FOR UPDATE SKIP LOCKED`); deleting the parent row lets
+    the existing `ON DELETE CASCADE` clear `api_key_audiences` and `RateLimit`
+    children. The purge writes its own maintenance audit row (actor, window,
+    rows removed) in the same call, which survives because it is newer than
+    the horizon it was computed from. JWT-only (inherited from
+    `get_current_active_superuser`), excluded from the OpenAPI schema, and
+    rate limited.
+    """
+    _enforce_api_key_purge_rate_limit(redis, str(current_user.id))
+
+    try:
+        result = purge_dead_api_keys(
+            session,
+            window=payload.window,
+            actor_user_id=current_user.id,
+            actor_role=current_user.role,
+        )
+    except ApiKeyPurgeRetentionFloorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ApiKeyPurgeResponse(window=result.window, removed=result.removed)

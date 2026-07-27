@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import selectinload
@@ -95,9 +96,17 @@ def create_api_key(
             ApiKeyService.validate_audiences(body.audiences) if body.audiences else []
         )
 
+        # The cap bounds *live* credentials only (APIKEY-LIFECYCLE-01): an
+        # expired-but-unrevoked key must not force a manual revoke before a
+        # replacement can be issued. The purge, not this cap, bounds total rows.
+        now = datetime.now(timezone.utc)
         count_stmt = select(func.count()).where(
             ApiKey.user_id == current_user.id,
             col(ApiKey.revoked).is_(False),
+            sa.or_(
+                col(ApiKey.expires_at).is_(None),
+                col(ApiKey.expires_at) >= now,
+            ),
         )
         active_count = session.exec(count_stmt).one()
         if active_count >= settings.API_KEY_MAX_PER_USER:

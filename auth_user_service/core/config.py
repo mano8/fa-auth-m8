@@ -261,6 +261,19 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     # guidance still recommends one key per integration.
     API_KEY_MAX_AUDIENCES: int = Field(3, ge=1, le=50)
 
+    # ── Dead-key retention purge (APIKEY-LIFECYCLE-01, Phase 7 addendum) ────
+    # A revoked or expired ApiKey row is never removed except via ON DELETE
+    # CASCADE from a deleted owner, so dead rows (and their api_key_audiences/
+    # RateLimit children) accumulate indefinitely. This floor is a dedicated
+    # minimum-retention window — separate from AUDIT_PURGE_MIN_RETENTION_SECONDS
+    # so the two horizons tune independently — below which the purge rejects a
+    # requested window unless an operator explicitly lowers this setting.
+    API_KEY_PURGE_MIN_RETENTION_SECONDS: int = Field(90 * 86400, ge=0, le=3155760000)
+    # Rows claimed per delete batch (FOR UPDATE SKIP LOCKED), mirroring the
+    # audit-table purge's batching so a large sweep never holds one long-lived
+    # lock over the key table.
+    API_KEY_PURGE_BATCH_SIZE: int = Field(500, ge=1, le=10000)
+
     # Per-consumer anti-abuse ceiling for POST /private/v1/api-keys/introspect
     # (§3.12 step 3), consumed on every authenticated attempt — separate from and
     # in addition to the introspected key's own functional quota. A fixed

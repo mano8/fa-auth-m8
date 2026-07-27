@@ -10,17 +10,26 @@ Responsibilities:
 import logging
 import secrets
 import uuid
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Iterable, Optional
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Iterable, Optional, Union
 
+import sqlalchemy as sa
 from redis import Redis
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from auth_sdk_m8.observability import metrics as _metrics
-from auth_sdk_m8.schemas.base import Period
+from auth_sdk_m8.schemas.base import Period, RoleType
 from auth_user_service.core.client import RateLimitResult, RedisRateLimiter
 from auth_user_service.core.security import SecurityHelper
 from auth_user_service.db_models.api_keys import ApiKey, ApiKeyAudience, RateLimit
+from auth_user_service.db_models.privileged_action_audit import AuditAction
+from auth_user_service.services.audit import (
+    _WINDOW_SECONDS,
+    _as_aware_utc,
+    RetentionWindow,
+    record_privileged_action,
+)
 
 if TYPE_CHECKING:
     from auth_user_service.core.config import Settings
@@ -53,6 +62,24 @@ def _emit_rate_hit_metric(exceeded_period: Optional[Period]) -> None:
     m = _metrics.get()
     if m and m.api_key_rate_limit_hits_total and exceeded_period:
         m.api_key_rate_limit_hits_total.labels(period=exceeded_period.value).inc()
+
+
+class ApiKeyPurgeRetentionFloorError(ValueError):
+    """Raised when the requested dead-key purge window is below the configured floor.
+
+    The floor (default >= 90 days, ``API_KEY_PURGE_MIN_RETENTION_SECONDS``) is a
+    deployment-level setting, not a per-call parameter: shortening it below the
+    default is an explicit operator config opt-in, never something a caller of
+    the purge action can request directly.
+    """
+
+
+@dataclass(frozen=True)
+class ApiKeyPurgeResult:
+    """Outcome of one dead-key retention-purge run."""
+
+    window: RetentionWindow
+    removed: int
 
 
 class ApiKeyAudienceError(ValueError):
@@ -364,3 +391,113 @@ class RateLimitEnforcer:
         if s.API_KEY_DEFAULT_LIMIT_MONTH > 0:
             limits.append((Period.MONTH, s.API_KEY_DEFAULT_LIMIT_MONTH))
         return limits
+
+
+def purge_dead_api_keys(
+    session: Session,
+    *,
+    window: RetentionWindow,
+    actor_user_id: Union[uuid.UUID, str],
+    actor_role: RoleType,
+    batch_size: Optional[int] = None,
+    now: Optional[datetime] = None,
+) -> ApiKeyPurgeResult:
+    """Bulk-delete dead ``ApiKey`` rows older than *window* (``APIKEY-LIFECYCLE-01``).
+
+    Modelled directly on :func:`auth_user_service.services.audit.purge_expired_audit_rows`.
+    A key is *dead* when it is revoked (dated by ``updated_at``, which stops
+    advancing once revocation happens because the ``last_used_at``
+    write-behind no longer touches it) or when it carries a non-null
+    ``expires_at`` in the past (``expires_at IS NULL`` never qualifies on the
+    expiry basis). Enforces the configured minimum-retention floor
+    (``API_KEY_PURGE_MIN_RETENTION_SECONDS``, a dedicated floor separate from
+    the audit table's) before touching any row: a *window* shorter than the
+    floor raises :class:`ApiKeyPurgeRetentionFloorError` and deletes nothing.
+
+    The purge unit is the parent ``ApiKey`` row, never an audience row alone —
+    deleting it lets the existing ``ON DELETE CASCADE`` clear its
+    ``api_key_audiences`` and ``RateLimit`` children in the same operation.
+    Rows are claimed in ``API_KEY_PURGE_BATCH_SIZE``-row batches with
+    ``FOR UPDATE SKIP LOCKED``, each batch committed before the next is
+    claimed, so a large purge never holds one long-lived lock over the key
+    table.
+
+    There is deliberately no key-id/owner-id/row-scoping parameter — the
+    horizon is the only selector, so this can never become a targeted
+    single-row delete.
+
+    Once the sweep completes, the purge writes **its own** privileged-action
+    audit row via :func:`record_privileged_action` (actor, window, and the
+    removed-row count packed into ``row_pk``), timestamped *now* — always
+    newer than the horizon it was just computed from — so it survives this
+    and every subsequent purge.
+
+    Args:
+        session: DB session; each batch commit is on this session.
+        window: The chosen retention window.
+        actor_user_id: Id of the authenticated superadmin performing the purge.
+        actor_role: The actor's role snapshot, from the authenticated principal.
+        batch_size: Rows per delete batch; defaults to
+            ``settings.API_KEY_PURGE_BATCH_SIZE``.
+        now: Override for the current time (tests only); defaults to the
+            actual current UTC time.
+
+    Returns:
+        :class:`ApiKeyPurgeResult` with the window and the total rows removed.
+
+    Raises:
+        ApiKeyPurgeRetentionFloorError: *window* is shorter than the
+            configured floor.
+    """
+    from auth_user_service.core.config import settings
+
+    window_seconds = _WINDOW_SECONDS[window]
+    floor_seconds = settings.API_KEY_PURGE_MIN_RETENTION_SECONDS
+    if window_seconds < floor_seconds:
+        raise ApiKeyPurgeRetentionFloorError(
+            f"retention window {window.value!r} ({window_seconds}s) is below "
+            f"the configured minimum-retention floor ({floor_seconds}s); "
+            "lowering the floor requires an explicit operator config change"
+        )
+
+    batch = batch_size or settings.API_KEY_PURGE_BATCH_SIZE
+    current = _as_aware_utc(now or datetime.now(timezone.utc))
+    horizon = current - timedelta(seconds=window_seconds)
+
+    dead_predicate = sa.or_(
+        sa.and_(col(ApiKey.revoked).is_(True), col(ApiKey.updated_at) < horizon),
+        sa.and_(
+            col(ApiKey.expires_at).is_not(None),
+            col(ApiKey.expires_at) < horizon,
+        ),
+    )
+
+    removed = 0
+    while True:
+        rows = session.exec(
+            select(ApiKey)
+            .where(dead_predicate)
+            .order_by(col(ApiKey.id))
+            .limit(batch)
+            .with_for_update(skip_locked=True)
+        ).all()
+        if not rows:
+            break
+        for row in rows:
+            session.delete(row)
+        session.commit()
+        removed += len(rows)
+        if len(rows) < batch:
+            break
+
+    record_privileged_action(
+        session,
+        actor_user_id=actor_user_id,
+        actor_role=actor_role,
+        action=AuditAction.DELETE,
+        table_name=ApiKey.__tablename__,
+        row_pk=f"retention_purge:window={window.value}:removed={removed}",
+        target_owner_id=None,
+    )
+    session.commit()
+    return ApiKeyPurgeResult(window=window, removed=removed)
