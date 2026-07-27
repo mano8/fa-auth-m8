@@ -11,7 +11,12 @@ import uuid
 from sqlmodel import select
 
 from auth_sdk_m8.schemas.base import ApiKeyAccessMode
-from auth_user_service.db_models.api_keys import ApiKey, ApiKeyAudience
+from auth_user_service.db_models.api_keys import (
+    ApiKey,
+    ApiKeyAdminPublic,
+    ApiKeyAudience,
+    ApiKeyPublic,
+)
 
 
 def _make_key(db_session, owner, **attrs) -> ApiKey:
@@ -69,3 +74,54 @@ class TestAudienceRelation:
             select(ApiKeyAudience).where(ApiKeyAudience.api_key_id == api_key.id)
         ).all()
         assert remaining == []
+
+
+class TestAudienceReadback:
+    """APIKEY-AUD-02: the owner and superadmin views read back bound audiences
+    as an explicit ``list[str]`` projection, never a bare ORM passthrough."""
+
+    def test_owner_view_empty_when_no_audience_bound(self, db_session, sample_user):
+        api_key = _make_key(db_session, sample_user)
+        public = ApiKeyPublic.from_key(api_key)
+        assert public.audiences == []
+
+    def test_owner_view_reads_back_bound_audiences(self, db_session, sample_user):
+        api_key = _make_key(db_session, sample_user)
+        db_session.add(
+            ApiKeyAudience(api_key_id=api_key.id, audience_id="prompt-engine-m8")
+        )
+        db_session.commit()
+        db_session.refresh(api_key)
+
+        public = ApiKeyPublic.from_key(api_key)
+
+        assert public.audiences == ["prompt-engine-m8"]
+
+    def test_owner_view_never_exposes_secret_fields(self, db_session, sample_user):
+        api_key = _make_key(db_session, sample_user)
+        dumped = ApiKeyPublic.from_key(api_key).model_dump()
+        assert "key_hash" not in dumped
+        assert "plaintext" not in dumped
+
+    def test_admin_view_empty_when_no_audience_bound(self, db_session, sample_user):
+        api_key = _make_key(db_session, sample_user)
+        admin_public = ApiKeyAdminPublic.from_key(api_key)
+        assert admin_public.audiences == []
+
+    def test_admin_view_reads_back_bound_audiences(self, db_session, sample_user):
+        api_key = _make_key(db_session, sample_user)
+        db_session.add(
+            ApiKeyAudience(api_key_id=api_key.id, audience_id="media-service-m8")
+        )
+        db_session.commit()
+        db_session.refresh(api_key)
+
+        admin_public = ApiKeyAdminPublic.from_key(api_key)
+
+        assert admin_public.audiences == ["media-service-m8"]
+
+    def test_admin_view_never_exposes_secret_fields(self, db_session, sample_user):
+        api_key = _make_key(db_session, sample_user)
+        dumped = ApiKeyAdminPublic.from_key(api_key).model_dump()
+        assert "key_hash" not in dumped
+        assert "plaintext" not in dumped

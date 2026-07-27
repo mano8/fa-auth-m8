@@ -160,6 +160,34 @@ class ApiKeyPublic(ApiKeyBase, SQLModel):
         default=ApiKeyAccessMode.READ_ONLY,
         description="The key's immutable operation-category cap (APIKEY-MODE-01).",
     )
+    audiences: List[str] = Field(
+        default_factory=list,
+        description="Registered consumer ids permitted to introspect this key "
+        "remotely (APIKEY-AUD-01/APIKEY-AUD-02). Empty ⇒ issuer-local use only. "
+        "Immutable after issuance.",
+    )
+
+    @classmethod
+    def from_key(cls, api_key: "ApiKey") -> "ApiKeyPublic":
+        """Project an ``ApiKey`` ORM row to its owner-facing public view.
+
+        An explicit projection — never a bare ``from_attributes`` validation of
+        the ORM row — because ``ApiKey.audiences`` is a list of
+        :class:`ApiKeyAudience` rows, not ``list[str]``; validating the ORM
+        object directly against this model's ``audiences: list[str]`` field
+        would fail (``APIKEY-AUD-02``).
+        """
+        return cls(
+            id=api_key.id,
+            name=api_key.name,
+            expires_at=api_key.expires_at,
+            revoked=api_key.revoked,
+            created_at=api_key.created_at,
+            updated_at=api_key.updated_at,
+            last_used_at=api_key.last_used_at,
+            access_mode=api_key.access_mode,
+            audiences=[a.audience_id for a in (api_key.audiences or [])],
+        )
 
 
 class ApiKeyAdminPublic(SQLModel):
@@ -192,6 +220,12 @@ class ApiKeyAdminPublic(SQLModel):
     status: str = Field(
         description="Derived lifecycle status: 'active', 'revoked', or 'expired'.",
     )
+    audiences: List[str] = Field(
+        default_factory=list,
+        description="Registered consumer ids permitted to introspect this key "
+        "remotely (APIKEY-AUD-01/APIKEY-AUD-02). Empty ⇒ issuer-local use only. "
+        "Immutable after issuance.",
+    )
 
     @classmethod
     def from_key(cls, api_key: "ApiKey") -> "ApiKeyAdminPublic":
@@ -222,6 +256,7 @@ class ApiKeyAdminPublic(SQLModel):
             created_at=api_key.created_at,
             access_mode=api_key.access_mode,
             status=status,
+            audiences=[a.audience_id for a in (api_key.audiences or [])],
         )
 
 

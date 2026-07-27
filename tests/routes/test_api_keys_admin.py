@@ -115,6 +115,7 @@ class TestAdminListUserApiKeys:
             "created_at",
             "access_mode",
             "status",
+            "audiences",
         }
 
     def test_status_reflects_active_revoked_and_expired(

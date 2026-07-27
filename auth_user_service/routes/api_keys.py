@@ -13,6 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
+from sqlalchemy.orm import selectinload
 from sqlmodel import Field, col, select
 
 from auth_sdk_m8.controllers.base import BaseController
@@ -63,7 +64,7 @@ def verify_api_key(api_key: CurrentApiKey) -> Any:
     Rate limits are enforced; ``X-RateLimit-*`` headers are always present when
     Redis is available. Returns 429 when the rate limit is exceeded.
     """
-    return api_key
+    return ApiKeyPublic.from_key(api_key)
 
 
 @router.post(
@@ -155,9 +156,13 @@ def list_api_keys(
 ) -> Any:
     """List all API keys belonging to the authenticated user."""
     try:
-        stmt = select(ApiKey).where(ApiKey.user_id == current_user.id)
+        stmt = (
+            select(ApiKey)
+            .where(ApiKey.user_id == current_user.id)
+            .options(selectinload(ApiKey.audiences))  # type: ignore[arg-type]
+        )
         keys = session.exec(stmt).all()
-        return keys
+        return [ApiKeyPublic.from_key(key) for key in keys]
     except Exception as ex:
         return handle_route_exception(ex=ex, session=session)
 
@@ -180,7 +185,7 @@ def get_api_key(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="API key not found"
             )
-        return api_key
+        return ApiKeyPublic.from_key(api_key)
     except HTTPException:
         raise
     except Exception as ex:
@@ -262,6 +267,7 @@ def admin_list_user_api_keys(
         keys = session.exec(
             select(ApiKey)
             .where(ApiKey.user_id == user_id)
+            .options(selectinload(ApiKey.audiences))  # type: ignore[arg-type]
             .order_by(col(ApiKey.created_at).desc())
         ).all()
         return ApiKeysAdminPublic(

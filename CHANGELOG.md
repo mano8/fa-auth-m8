@@ -13,6 +13,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — API-key audience readback on owner and superadmin key views (Phase 7, `APIKEY-AUD-02`)
+
+- `ApiKeyPublic` (`GET /profile/api-keys/`, `GET /profile/api-keys/{key_id}`,
+  `GET /profile/api-keys/verify`) and `ApiKeyAdminPublic`
+  (`GET /api-keys/by-user/{user_id}/`) now return the key's persisted
+  audience ids as a plain `audiences: list[str]`, read back from the
+  normalized `api_key_audiences` relation — a previously set-once, invisible
+  binding is now auditable by the owner and by a superadmin (G7-7).
+- Implemented as an explicit projection (`ApiKeyPublic.from_key`/
+  `ApiKeyAdminPublic.from_key` in `db_models/api_keys.py`), never a bare
+  `list[str]` field validated straight off the ORM row — `ApiKey.audiences` is
+  a list of `ApiKeyAudience` rows, and a direct `from_attributes` validation
+  against `list[str]` would fail. The owner and superadmin list queries add
+  `selectinload(ApiKey.audiences)` so a listing stays single-query.
+- No schema, migration, or introspection request/response shape change:
+  `auth-sdk-m8` stays `3.1.0` and `fastapi-m8` stays `4.2.0`.
+
 ### Added — Consumer-side privileged-action audit trail in `examples/fastapi_full` (Phase 7, G7-6)
 
 - New `app_privileged_action_audit` table
