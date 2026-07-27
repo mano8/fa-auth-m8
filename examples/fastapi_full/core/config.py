@@ -29,6 +29,13 @@ class Settings(ConsumerServiceSettings):
     CONTRACT_VERSION: str = "2.0"
     CONTRACT_RANGE: str = ">=2.0.0 <3.0.0"
 
+    # Privileged-action audit retention (Phase 7). The floor is what makes the
+    # retention purge safe: a window shorter than this is refused outright, so
+    # shortening retention is an explicit operator config change and never a
+    # per-call parameter. Mirrors the issuer's identically named settings.
+    AUDIT_PURGE_MIN_RETENTION_SECONDS: int = 90 * 86400
+    AUDIT_PURGE_BATCH_SIZE: int = 500
+
     # Vault/`_FILE` source ordering is handled by the inherited
     # CommonSettings.settings_customise_sources classmethod — no override needed.
     model_config = SettingsConfigDict(

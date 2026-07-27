@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlmodel import select
 from sqlmodel import func
 
+from fastapi_full.app.audit import record_cross_owner_category_action
 from fastapi_full.app.deps import (
     OwnerVerifierDep,
     SessionDep,
@@ -15,6 +16,7 @@ from fastapi_full.app.ownership import (
     OwnershipError,
     category_update_values,
     is_canonical_superuser,
+    is_owned_by,
     resolve_create_owner_id,
 )
 
@@ -25,6 +27,7 @@ from fastapi_full.db_models.categories import (
     CategoriesPublic,
     build_category,
 )
+from fastapi_full.db_models.privileged_action_audit import AuditAction
 from fastapi_m8 import BaseController, ResponseMessage, ResponseModelBase, UserModel
 
 router = APIRouter(prefix="/category", tags=["category"])
@@ -86,8 +89,8 @@ def read_item(
         item = session.get(Category, item_id)
         if not item:
             return ResponseMessage(success=False, msg="Item not found.")
-        if not is_canonical_superuser(current_user) and (
-            item.owner_id != current_user.id
+        if not is_canonical_superuser(current_user) and not is_owned_by(
+            item.owner_id, current_user.id
         ):
             raise HTTPException(status_code=403, detail="Not enough permissions")
         return ResponseModelBase(success=True, data=dict(item))
@@ -116,6 +119,10 @@ def create_item(
     without ``target_owner_id`` the row belongs to the actor, and with one it
     belongs to that exact user — a canonical superuser only, and only after the
     issuer confirms the user exists.
+
+    A create on behalf of another user is a privileged action: the audit row is
+    written in this same transaction, so the category and its record commit or
+    roll back together.
     """
     try:
         owner_id = resolve_create_owner_id(
@@ -126,6 +133,14 @@ def create_item(
         )
         item = build_category(item_in, owner_id=owner_id)
         session.add(item)
+        session.flush()
+        record_cross_owner_category_action(
+            session,
+            actor=current_user,
+            action=AuditAction.ADD,
+            row_pk=item.id,
+            target_owner_id=owner_id,
+        )
         session.commit()
         session.refresh(item)
         return ResponseModelBase(success=True, data=dict(item))
@@ -153,17 +168,29 @@ def update_item(
     The edit operates on the fetched row's existing ``owner_id``: the payload
     carries no ownership field and the applied values are stripped of every
     ownership key, so an edit can never re-home a category.
+
+    Editing another user's category is a privileged action: the audit row is
+    written in this same transaction, against the owner read off the persisted
+    row rather than anything the request supplied.
     """
     try:
         item = session.get(Category, item_id)
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
-        if not is_canonical_superuser(current_user) and (
-            item.owner_id != current_user.id
+        if not is_canonical_superuser(current_user) and not is_owned_by(
+            item.owner_id, current_user.id
         ):
             raise HTTPException(status_code=403, detail="Not enough permissions")
+        target_owner_id = item.owner_id
         item.sqlmodel_update(category_update_values(item_in))
         session.add(item)
+        record_cross_owner_category_action(
+            session,
+            actor=current_user,
+            action=AuditAction.EDIT,
+            row_pk=item.id,
+            target_owner_id=target_owner_id,
+        )
         session.commit()
         session.refresh(item)
         return ResponseModelBase(success=True, data=dict(item))
@@ -186,16 +213,29 @@ def delete_item(
 
     Authorization reads the fetched row's existing ``owner_id``; nothing about
     the actor is written onto the row on the way out.
+
+    Deleting another user's category is a privileged action. The primary key and
+    the owner are captured **before** the row is removed, so the audit row —
+    written in the same transaction — outlives the row it describes.
     """
     try:
         item = session.get(Category, item_id)
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
-        if not is_canonical_superuser(current_user) and (
-            item.owner_id != current_user.id
+        if not is_canonical_superuser(current_user) and not is_owned_by(
+            item.owner_id, current_user.id
         ):
             raise HTTPException(status_code=403, detail="Not enough permissions")
+        deleted_row_pk = item.id
+        target_owner_id = item.owner_id
         session.delete(item)
+        record_cross_owner_category_action(
+            session,
+            actor=current_user,
+            action=AuditAction.DELETE,
+            row_pk=deleted_row_pk,
+            target_owner_id=target_owner_id,
+        )
         session.commit()
         return ResponseMessage(success=True, msg="Category deleted successfully")
     except Exception as ex:

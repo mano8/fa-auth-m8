@@ -5,11 +5,12 @@ Main routes
 from fastapi import APIRouter
 
 from fastapi_full.app.deps import get_current_api_key_writer
-from fastapi_full.app.routes import api_key_category, category, dashboard
+from fastapi_full.app.routes import api_key_category, audit, category, dashboard
 
 api_router = APIRouter()
 api_router.include_router(dashboard.router)
 api_router.include_router(category.router)
+api_router.include_router(audit.router)
 
 # The API-key-gated route only exists when this deployment enables remote
 # API-key introspection (API_KEY_INTROSPECTION_ENABLED=true, see

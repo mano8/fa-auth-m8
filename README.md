@@ -999,12 +999,14 @@ The suite covers:
 
 ## Consumer Service Integration
 
-`examples/fastapi_full` and `examples/fastapi_minimal` are reference implementations showing how a downstream microservice integrates with `auth_user_service` using [fastapi-m8](https://github.com/mano8/fastapi-m8) `>=4.0.0,<5.0.0` and [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8). `fastapi_full` demonstrates DB session, health checks, auth deps, and lifespan teardown; `fastapi_minimal` is the minimal three-step setup.
+`examples/fastapi_full` and `examples/fastapi_minimal` are reference implementations showing how a downstream microservice integrates with `auth_user_service` using [fastapi-m8](https://github.com/mano8/fastapi-m8) `>=4.2.0,<5.0.0` and [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8). `fastapi_full` demonstrates DB session, health checks, auth deps, and lifespan teardown; `fastapi_minimal` is the minimal three-step setup. The `4.2.0` floor is what supplies the centralized reader-tier guard (`get_current_active_reader`) the full example's category surface is gated on.
 
 Both examples wire every JWT guard straight from the single `build_auth_deps` call — no route re-implements a role or `is_superuser` check:
 
 - `fastapi_minimal` (`routes.py`) demonstrates all four JWT levels: `GET /hello/` (any authenticated user), `/hello/writer` (WRITER+), `/hello/admin` (ADMIN+), and `/hello/superuser` (canonical superuser only).
-- `fastapi_full` (`app/routes/api_key_category.py`) demonstrates the remote API-key principal dependency (§3.12): `POST /category/api-key/add/` depends on `get_current_api_key_writer` and resolves the key's owner live against `auth_user_service` on every call — capped at WRITER, never administrative or superuser. The route only exists when this deployment sets `API_KEY_INTROSPECTION_ENABLED=true` (plus `INTERNAL_CLIENT_ID` and an introspection URL, see `.example_env`); `get_current_api_key_writer` is `None` otherwise and the router is never built.
+- `fastapi_full` (`app/routes/category.py`) demonstrates the five-role capability surface on real owned data: reads (`GET /category/`, `GET /category/get/{id}/`) are gated at READER and writes (`add`/`edit`/`delete`) at WRITER, so a plain USER is denied everything and a `writer → reader` downgrade is immediately observable. Non-superadmins see and mutate their own categories only; a canonical superuser reaches every user's, and each of those cross-owner mutations writes an audit row (below). Authorization failures answer the canonical `403`.
+- `fastapi_full` (`app/routes/audit.py`) demonstrates the consumer-side privileged-action audit trail: `GET /security/audit-log` is ADMIN-gated and read-only, `POST /security/audit-log/purge` is superadmin-only, and no other endpoint touches the table.
+- `fastapi_full` (`app/routes/api_key_category.py`) demonstrates the remote API-key principal dependency (§3.12): `POST /category/api-key/add/` depends on `get_current_api_key_writer` and resolves the key's owner live against `auth_user_service` on every call — capped at WRITER, never administrative or superuser. The route only exists when this deployment sets `API_KEY_INTROSPECTION_ENABLED=true` (plus `INTERNAL_CLIENT_ID` and an introspection URL, see `.example_env`); `get_current_api_key_writer` is `None` otherwise and the router is never built. Because §3.11 caps every key decision at WRITER, this route can never perform a cross-owner mutation and therefore never writes an audit row.
 
 [fastapi-m8](https://github.com/mano8/fastapi-m8) is the recommended consumer integration package — it wires CORS, health, lifespan, and auth dependencies in a few lines and bundles `auth-sdk-m8` for JWT validation and shared schemas:
 
@@ -1023,6 +1025,18 @@ pip install "fastapi-m8[db,postgres,mysql]" --upgrade   # with SQLModel + DB dri
 - Because the user table belongs to `auth_user_service`, `target_owner_id` is confirmed over the issuer's HTTP contract (`GET {AUTH_PREFIX}/users/get/{user_id}/`, derived from `INTROSPECTION_URL`) using the caller's own bearer token — never by reading the auth database. An API-key-authorized create always refuses a cross-owner target: §3.11 caps every key decision at WRITER.
 
 The rules have their own unit suite (`examples/fastapi_full/tests/`), run by the `example-tests` CI job through `examples/fastapi_full/pytest.ini`.
+
+### Consumer-side privileged-action audit
+
+`fastapi_full` mirrors the issuer's audit contract for the data it owns (`app/audit.py`, `db_models/privileged_action_audit.py`), so a service copied from this example inherits the same guarantees rather than having to invent them:
+
+- **Every superadmin mutation of a category it does not own is recorded**, and only those: an `add` on behalf of another user, an `edit`, or a `delete` of someone else's row writes exactly one `app_privileged_action_audit` row. Ordinary work on one's own data records nothing, and a refused mutation records nothing. `actor_role` is snapshotted from the authenticated principal, never from client input.
+- **The row and the mutation share one transaction.** The recorder flushes into the route's session and never commits, so a category and its audit row commit or roll back together — an audited action cannot commit without its record. On a delete, the primary key and the owner are captured *before* the row is removed, so the record outlives what it describes.
+- **The table is write-once.** No update path and no targeted single-row delete exists anywhere in the code, and the Expand migration installs `BEFORE UPDATE`/`BEFORE DELETE` guard triggers on every certified dialect, so an ad-hoc `UPDATE` or a targeted `DELETE` is rejected by the database itself — not merely absent from the API.
+- **Read scope is decided server-side**: `GET /security/audit-log` (schema-excluded, JWT-only, ADMIN-gated) shows a superadmin every row and any other caller only the rows it authored, filtered against the authenticated principal's id. USER/READER/WRITER are denied `403` by the guard. In this example only a superadmin can mutate non-owned data, so an admin's own view is legitimately empty.
+- **The only removal path is the retention purge.** `POST /security/audit-log/purge` (superadmin-only) bulk-deletes rows older than a chosen window — `1w`/`1m`/`3m`/`6m`/`1y` — and rejects with `400` any window below `AUDIT_PURGE_MIN_RETENTION_SECONDS` (default >= 90 days; lowering it is an explicit operator config change). Deletes run in `AUDIT_PURGE_BATCH_SIZE`-row `FOR UPDATE SKIP LOCKED` batches, and the purge writes its own maintenance row, timestamped after the horizon so it survives the purge that wrote it. The request body and the purge signature carry no row identifier, so a targeted purge is not expressible.
+
+The audit table is created by the additive **Expand** migration chained onto each maintained compose example's `m8_app` head; it is a new table, so there is no Enforce step and no interaction with the issuer's migration sequence.
 
 ### Minimal integration
 

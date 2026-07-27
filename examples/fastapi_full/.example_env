@@ -131,3 +131,11 @@ REVOCATION_CACHE_TTL_SECONDS=0
 #HSTS_MAX_AGE=31536000
 #HSTS_INCLUDE_SUBDOMAINS=true
 #CONTENT_SECURITY_POLICY=
+
+# ── Privileged-action audit retention (Phase 7) ───────────────────────────────
+# The superadmin retention purge (POST /security/audit-log/purge) refuses any
+# window shorter than this floor, so shortening retention is an explicit
+# operator config change and never a per-call parameter. Rows are deleted in
+# batches so a large purge never holds one long-lived lock over the table.
+#AUDIT_PURGE_MIN_RETENTION_SECONDS=7776000
+#AUDIT_PURGE_BATCH_SIZE=500

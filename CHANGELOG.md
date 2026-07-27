@@ -13,6 +13,51 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — Consumer-side privileged-action audit trail in `examples/fastapi_full` (Phase 7, G7-6)
+
+- New `app_privileged_action_audit` table
+  (`examples/fastapi_full/db_models/privileged_action_audit.py`) mirroring the
+  issuer's contract for the data the example owns: append-only, no foreign key
+  to the actor or the target row (so it outlives both), `row_pk` and
+  `target_owner_id` stored as text, `actor_role` stored as a text snapshot.
+- New `examples/fastapi_full/app/audit.py` owns the rules:
+  `record_privileged_action()` writes exactly one row **in the caller's
+  transaction** (flush, never commit), so a category mutation can never commit
+  without its audit row; `record_cross_owner_category_action()` is the single
+  place deciding that only a mutation of *non-owned* data is privileged; and
+  `read_audit_page()` owns the superadmin-all / admin-own read scope.
+- The category routes now record every superadmin cross-owner `add`/`edit`/
+  `delete`. A delete captures the primary key and the owner **before** the row
+  is removed. Mutations of one's own data and refused mutations write nothing.
+  The API-key-gated create can never reach a cross-owner mutation (§3.11), so it
+  writes no audit row.
+- New `GET /security/audit-log` (ADMIN-gated, `include_in_schema=False`,
+  read-only) and `POST /security/audit-log/purge` (superadmin-only) in
+  `examples/fastapi_full/app/routes/audit.py`. The purge is the table's only
+  removal path: horizon-bounded, batched (`FOR UPDATE SKIP LOCKED`),
+  floor-enforced (new example settings `AUDIT_PURGE_MIN_RETENTION_SECONDS`,
+  default >= 90 days, and `AUDIT_PURGE_BATCH_SIZE`, default 500 — a shorter
+  window is rejected with `400`), and it writes its own maintenance row
+  timestamped after the horizon. Neither the request body nor the purge
+  signature accepts a row identifier, so a targeted delete is not expressible.
+- Additive **Expand** Alembic migration creating the table on every maintained
+  compose example's `m8_app` chain (`postgres_m8`, `metrics_m8`,
+  `quickstart_m8`, `rs256_m8`), installing the `BEFORE UPDATE`/`BEFORE DELETE`
+  guard triggers that make the write-once/no-targeted-delete contract
+  schema-level on Postgres, MySQL, and MariaDB alike.
+- `examples/fastapi_full/core/deps.py` and `app/deps.py` now also surface
+  `get_current_active_admin` (from `fastapi-m8` 4.2.0).
+
+### Fixed — Owner comparison in `examples/fastapi_full` category authorization
+
+- `Category.owner_id` is a raw `CHAR(36)`, so a row loaded from the database
+  carries its owner as **text** while the authenticated principal's id is a
+  `uuid.UUID`. The direct `item.owner_id != current_user.id` comparison was
+  therefore true for every owner, denying a non-superadmin WRITER `403` on the
+  row it owns. New `app.ownership.as_owner_id()`/`is_owned_by()` normalise both
+  sides; the category read/edit/delete authorization and the audit
+  cross-owner classification now both use them.
+
 ### Security — Ownership preservation in `examples/fastapi_full` (Phase 7, G7-5)
 
 - Owner is now resolved by the server, never set by a request body.

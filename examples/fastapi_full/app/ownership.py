@@ -9,7 +9,9 @@ incidental:
   rejected rather than silently dropped, and :func:`category_update_values`
   additionally strips every ownership key before an update reaches the row.
 * An edit or a delete operates on the ``owner_id`` already persisted on the
-  fetched row. No mutation path writes an ownership column.
+  fetched row, compared through :func:`is_owned_by` so the comparison holds for
+  the text form the column actually returns. No mutation path writes an
+  ownership column.
 * A cross-owner create is superadmin-only, takes an explicit
   ``target_owner_id`` that must resolve to an existing user at the issuer, and
   never defaults to the actor: omitting it creates a row owned by the actor,
@@ -23,7 +25,7 @@ stays free of business logic and each rule is directly testable.
 from __future__ import annotations
 
 import uuid
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from fastapi_m8 import UserModel, has_superuser_privileges
 
@@ -65,6 +67,39 @@ class OwnerVerificationUnavailable(OwnershipError):
 
     status_code = 503
     detail = "target_owner_id could not be verified with the auth service"
+
+
+def as_owner_id(value: Union[uuid.UUID, str]) -> uuid.UUID:
+    """Normalise a persisted owner id to :class:`uuid.UUID`.
+
+    ``Category.owner_id`` is a raw ``CHAR(36)`` column, so a row loaded from the
+    database carries its owner as **text** even though the model annotates it as
+    a UUID — SQLAlchemy does not re-validate on load. Comparing that text to an
+    authenticated principal's ``uuid.UUID`` id would be false for every owner,
+    so both sides are normalised here before any comparison.
+
+    Args:
+        value: An owner id as stored or as carried on a principal.
+
+    Returns:
+        The same id as a :class:`uuid.UUID`.
+    """
+    if isinstance(value, uuid.UUID):
+        return value
+    return uuid.UUID(str(value))
+
+
+def is_owned_by(row_owner_id: Union[uuid.UUID, str], actor_id: uuid.UUID) -> bool:
+    """Return whether *actor_id* is the owner recorded on the row.
+
+    Args:
+        row_owner_id: The ``owner_id`` read off the persisted row.
+        actor_id: The authenticated principal's id.
+
+    Returns:
+        ``True`` when the actor owns the row.
+    """
+    return as_owner_id(row_owner_id) == as_owner_id(actor_id)
 
 
 def is_canonical_superuser(actor: UserModel) -> bool:

@@ -48,7 +48,9 @@ def build_router(get_current_api_key_writer: Callable) -> APIRouter:
 
         A cross-owner create is always refused here: §3.11 caps every
         key-authorized decision at ``WRITER``, so an API key never carries the
-        canonical superuser authority a ``target_owner_id`` requires.
+        canonical superuser authority a ``target_owner_id`` requires. This route
+        therefore never writes a privileged-action audit row — it cannot reach a
+        mutation of non-owned data in the first place.
         """
         try:
             owner_id = resolve_create_owner_id(

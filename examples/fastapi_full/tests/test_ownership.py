@@ -17,8 +17,10 @@ from fastapi_full.app.ownership import (
     OwnershipError,
     OwnerVerificationUnavailable,
     TargetOwnerNotFound,
+    as_owner_id,
     category_update_values,
     is_canonical_superuser,
+    is_owned_by,
     resolve_create_owner_id,
 )
 from fastapi_full.core.user_directory import UserDirectoryUnavailable
@@ -144,6 +146,23 @@ class TestIsCanonicalSuperuser:
     @pytest.mark.parametrize("role", ["user", "reader", "writer", "admin"])
     def test_lesser_roles_are_not_superusers(self, role: str) -> None:
         assert is_canonical_superuser(_user(role, False)) is False
+
+
+class TestOwnerIdNormalisation:
+    """``owner_id`` is a raw ``CHAR(36)``: a loaded row carries it as text."""
+
+    def test_uuid_passes_through(self) -> None:
+        assert as_owner_id(ACTOR_ID) == ACTOR_ID
+
+    def test_text_form_is_normalised(self) -> None:
+        assert as_owner_id(str(ACTOR_ID)) == ACTOR_ID
+
+    def test_persisted_text_owner_matches_the_principals_uuid_id(self) -> None:
+        """Without the normalisation an owner would be denied on their own row."""
+        assert is_owned_by(str(ACTOR_ID), ACTOR_ID) is True
+
+    def test_a_different_owner_never_matches(self) -> None:
+        assert is_owned_by(str(TARGET_ID), ACTOR_ID) is False
 
 
 class TestResolveCreateOwnerId:
