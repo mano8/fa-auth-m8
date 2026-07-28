@@ -1,0 +1,185 @@
+name: Database integration
+
+# Layer B of the three-layer test policy (TEST-LAYER-01 / TEST-DB-01, §4.6).
+#
+# The default CI workflow stays Docker-free and owns the 100% unit-coverage
+# gate. This workflow owns the *other* guarantee: that the schema, constraints,
+# locking, and concurrency protocols behave on the three certified production
+# engines. It runs:
+#
+#   * on every database-sensitive pull request (path-filtered), and
+#   * in full on main, nightly, and release — where "database-sensitive" is
+#     never consulted, because a release must not proceed while any supported
+#     dialect fails (§4.6).
+#
+# `database-matrix` is the single stable required check for branch protection:
+# it reports success both when the matrix ran green and when path filtering
+# determined no database-sensitive file changed, so it can be marked required
+# without blocking documentation-only pull requests.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    # Nightly full matrix, independent of what changed.
+    - cron: "0 3 * * *"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Disposable credentials for the ephemeral instance. The password satisfies
+  # the SDK password-strength validator, which CommonSettings enforces when it
+  # builds SQLALCHEMY_DATABASE_URI.
+  IT_DATABASE: auth_it_db
+  IT_USER: auth_it_user
+  IT_PASSWORD: ItTestDb1!secure
+
+jobs:
+  scope:
+    name: Determine database sensitivity
+    runs-on: ubuntu-latest
+    outputs:
+      run_matrix: ${{ steps.decide.outputs.run_matrix }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the full matrix must run
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "run_matrix=true" >> "$GITHUB_OUTPUT"
+            echo "reason=main/nightly/release run — the complete matrix always runs (4.6)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch --no-tags --depth=0 origin "$BASE_REF"
+          changed="$(git diff --name-only "origin/$BASE_REF...HEAD")"
+          echo "Changed files:"
+          echo "$changed"
+
+          # Database-sensitive surfaces (TEST-LAYER-01): models, migrations,
+          # repositories/transactions, database configuration, the operator
+          # scripts that mutate authorization state, and this layer itself.
+          if echo "$changed" | grep -Eq \
+            '^auth_user_service/(db_models|alembic|services|scripts)/|^auth_user_service/core/(db_utils|engine_async|engine_sync|init_db|config)\.py$|^examples/docker_compose/[^/]+/shared_migrations/|^tests/integration/|^pytest\.ini$|^\.github/workflows/database-integration\.yaml$|requirements.*\.txt$'
+          then
+            echo "run_matrix=true" >> "$GITHUB_OUTPUT"
+            echo "reason=database-sensitive files changed" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_matrix=false" >> "$GITHUB_OUTPUT"
+            echo "reason=no database-sensitive file changed" >> "$GITHUB_OUTPUT"
+          fi
+
+  matrix:
+    name: Layer B (${{ matrix.database }})
+    needs: scope
+    if: needs.scope.outputs.run_matrix == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Exact pinned images — the certified version of each dialect (4.6).
+          # MySQL and MariaDB are separate certified dialects: passing on one is
+          # never evidence for the other.
+          - database: postgresql
+            image: postgres:18.4-alpine
+            port: 5432
+          - database: mysql
+            image: mysql:8.4.10
+            port: 3306
+          - database: mariadb
+            image: mariadb:12.3.2-ubi
+            port: 3306
+
+    services:
+      database:
+        image: ${{ matrix.image }}
+        # Every image ignores the other images' variables, so one env block
+        # provisions the disposable database on all three.
+        env:
+          POSTGRES_DB: auth_it_db
+          POSTGRES_USER: auth_it_user
+          POSTGRES_PASSWORD: ItTestDb1!secure
+          MYSQL_DATABASE: auth_it_db
+          MYSQL_USER: auth_it_user
+          MYSQL_PASSWORD: ItTestDb1!secure
+          MYSQL_ROOT_PASSWORD: ItTestDb1!secure
+          MARIADB_DATABASE: auth_it_db
+          MARIADB_USER: auth_it_user
+          MARIADB_PASSWORD: ItTestDb1!secure
+          MARIADB_ROOT_PASSWORD: ItTestDb1!secure
+        ports:
+          - ${{ matrix.port }}:${{ matrix.port }}
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+          cache: "pip"
+          cache-dependency-path: auth_user_service/requirements_dev.txt
+
+      - name: Install dependencies
+        run: pip install -r auth_user_service/requirements_dev.txt
+
+      # The suite waits for the service container with the real driver rather
+      # than a port probe, so no health-check options are needed here: a
+      # MySQL-family container accepts TCP well before the seeded user exists.
+      - name: Run the Layer B database integration suite
+        env:
+          FA_AUTH_IT_MODE: external
+          FA_AUTH_IT_HOST: 127.0.0.1
+          FA_AUTH_IT_PORT: ${{ matrix.port }}
+          FA_AUTH_IT_DATABASE: ${{ env.IT_DATABASE }}
+          FA_AUTH_IT_USER: ${{ env.IT_USER }}
+          FA_AUTH_IT_PASSWORD: ${{ env.IT_PASSWORD }}
+        run: |
+          pytest -m database_integration tests/integration/database \
+            --database=${{ matrix.database }} --no-cov
+
+  database-matrix:
+    # The one stable required check. Never remove or rename it: branch
+    # protection points at this job name, and it must also report success on
+    # pull requests where path filtering skipped the matrix.
+    name: Database integration matrix
+    needs: [scope, matrix]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate the matrix outcome
+        env:
+          RUN_MATRIX: ${{ needs.scope.outputs.run_matrix }}
+          REASON: ${{ needs.scope.outputs.reason }}
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          MATRIX_RESULT: ${{ needs.matrix.result }}
+        run: |
+          set -euo pipefail
+          echo "scope: $SCOPE_RESULT ($REASON)"
+          echo "matrix: $MATRIX_RESULT"
+          if [ "$SCOPE_RESULT" != "success" ]; then
+            echo "::error::could not determine database sensitivity — failing closed"
+            exit 1
+          fi
+          if [ "$RUN_MATRIX" != "true" ]; then
+            echo "No database-sensitive file changed; the three-dialect matrix was not required."
+            exit 0
+          fi
+          if [ "$MATRIX_RESULT" != "success" ]; then
+            echo "::error::the three-dialect matrix did not pass — a release must not proceed while any supported dialect fails (4.6)"
+            exit 1
+          fi
+          echo "PostgreSQL, MySQL, and MariaDB all passed."
