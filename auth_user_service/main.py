@@ -173,6 +173,10 @@ async def _outbox_drain_loop() -> None:
 
 def _startup_checks() -> None:
     """Log warnings when required infrastructure is unreachable at startup."""
+    from auth_user_service.core.db_utils import (
+        DialectMismatchError,
+        verify_selected_db_dialect,
+    )
     from auth_user_service.core.deps import get_redis_client
     from auth_user_service.core.engine_sync import engine
     from sqlmodel import text
@@ -232,7 +236,17 @@ def _startup_checks() -> None:
         try:
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
-            _logger.info("STARTUP: Database connected OK")
+                # Fail-closed dialect declaration check (4.6): a deployment
+                # declaring the wrong engine — including MariaDB-vs-MySQL —
+                # must never run half-configured.
+                verify_selected_db_dialect(conn, settings.SELECTED_DB)
+            _logger.info(
+                "STARTUP: Database connected OK (SELECTED_DB=%s)",
+                settings.SELECTED_DB,
+            )
+        except DialectMismatchError as ex:
+            _logger.critical("STARTUP: %s", ex)
+            raise
         except Exception as ex:
             _logger.critical("STARTUP: Database unreachable: %s", ex)
 

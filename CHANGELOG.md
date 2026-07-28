@@ -13,6 +13,48 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — 4.6 dialect-declaration contract (breaking configuration migration)
+
+- `SELECTED_DB` is now verified fail-closed at startup against the database
+  server the issuer actually connects to: the SQLAlchemy dialect name plus the
+  server version string (the only way to tell a MariaDB server from a MySQL
+  server on the shared `mysql+pymysql` wire protocol). Any mismatch —
+  `Postgres` declared against a MySQL-family server, `Mysql` declared against
+  MariaDB, or `Mariadb` declared against real MySQL — fails startup cleanly
+  with a `DialectMismatchError` instead of running half-configured
+  (`auth_user_service/core/db_utils.py`, wired into `main.py`'s startup
+  checks).
+- `core/db_utils.py`'s `get_table_args()` now treats `SELECTED_DB=Mariadb`
+  identically to `Mysql` (both are the same driver family at the ORM layer);
+  `core/engine_async.py` already generalized correctly and needed no
+  behavioral change.
+- **Breaking configuration migration:** existing MariaDB deployments that
+  declare `SELECTED_DB=Mysql` (the only spelling available before this
+  release distinguished the two) must change it to `SELECTED_DB=Mariadb`
+  before upgrading. The value is never rewritten automatically — a
+  deployment that skips this step now fails startup with a clear
+  dialect-mismatch error rather than running against the wrong declared
+  engine. See [README § Choosing a Database](README.md#choosing-a-database).
+- **Maintained-example dialect reassignment (one example per certified
+  engine, §4.6):** `examples/docker_compose/rs256_m8` moves from
+  `mariadb:12.3.2-ubi` to the pinned `mysql:8.4.10`, with `SELECTED_DB=Mysql`
+  — it is now the maintained example that certifies real MySQL.
+  `examples/docker_compose/quickstart_m8` keeps `mariadb:12.3.2-ubi` and now
+  declares `SELECTED_DB=Mariadb` (previously `Mysql`, which is exactly the
+  breaking migration above). `hardened_m8`, `metrics_m8`, `postgres_m8`, and
+  `vault_dev_m8` are unchanged (PostgreSQL). The shared
+  `examples/docker_compose/shared/db_init/init-db.sh` provisioning script
+  gained real-MySQL client detection (`mysql` alongside `mariadb`/`psql`) so
+  the reassigned `rs256_m8` stack can actually provision its databases.
+- New automated maintained-example smoke flow
+  (`.github/workflows/example-smoke.yaml`) exercises every maintained compose
+  example on main/nightly/release CI: database startup → `alembic upgrade
+  head` → application startup → health check → a minimal
+  authentication/database smoke test.
+- New `tests/integration/database/test_dialect_declaration.py` (Layer B) and
+  `tests/core/db_utils_test.py` unit coverage prove every valid and invalid
+  declared/actual engine combination across the three certified dialects.
+
 ### Added — Layer B database integration matrix and CI policy (`TEST-DB-01`, `TEST-LAYER-01`, §4.6)
 
 - New `tests/integration/database/` suite: white-box validation of ORM

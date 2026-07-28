@@ -11,6 +11,19 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 CI_YAML = WORKFLOWS / "CI.yaml"
 DOCKER_PUBLISH_YAML = WORKFLOWS / "docker-publish.yaml"
 DATABASE_YAML = WORKFLOWS / "database-integration.yaml"
+EXAMPLE_SMOKE_YAML = WORKFLOWS / "example-smoke.yaml"
+
+#: One maintained example per certified engine plus every distinct
+#: signing/monitoring/hardening posture (§4.6) — the exact reassignment
+#: decided for the 4.6 dialect-declaration contract.
+MAINTAINED_EXAMPLES = {
+    "quickstart_m8",
+    "postgres_m8",
+    "rs256_m8",
+    "metrics_m8",
+    "hardened_m8",
+    "vault_dev_m8",
+}
 
 #: The exact pinned image of every certified dialect (supported database
 #: contract, §4.6). MySQL and MariaDB are separate certified dialects: one never
@@ -223,6 +236,62 @@ def test_unit_gate_stays_docker_free() -> None:
     assert "database_integration" not in CI_YAML.read_text(), (
         "The Layer B suite must not run inside the Docker-free unit workflow."
     )
+
+
+# ── Maintained-example smoke automation (§4.6, TEST-LAYER-01) ───────────────
+
+
+def test_example_smoke_workflow_exists() -> None:
+    """The maintained-example smoke flow must be wired, not merely documented."""
+    assert EXAMPLE_SMOKE_YAML.exists(), (
+        "The maintained-example smoke flow (§4.6) must run in CI; expected "
+        ".github/workflows/example-smoke.yaml."
+    )
+
+
+def test_example_smoke_actions_are_sha_pinned() -> None:
+    refs = _action_refs(EXAMPLE_SMOKE_YAML)
+    assert refs, "No action references found in example-smoke.yaml."
+    for full_ref, sha_part in refs:
+        assert _SHA_RE.match(sha_part), (
+            f"example-smoke.yaml: '{full_ref}' is not SHA-pinned — use a full "
+            "40-char commit hash."
+        )
+
+
+def test_example_smoke_covers_every_maintained_example() -> None:
+    """Every maintained compose example is exercised — no silent drop (§4.6)."""
+    wf = _load_yaml(EXAMPLE_SMOKE_YAML)
+    covered = set(wf["jobs"]["smoke"]["strategy"]["matrix"]["example"])
+    assert covered == MAINTAINED_EXAMPLES, (
+        f"example-smoke.yaml must cover exactly {MAINTAINED_EXAMPLES}; found {covered}."
+    )
+
+
+def test_example_smoke_does_not_fail_fast() -> None:
+    """One example failing to start must not hide the others' results."""
+    wf = _load_yaml(EXAMPLE_SMOKE_YAML)
+    assert wf["jobs"]["smoke"]["strategy"]["fail-fast"] is False
+
+
+def test_example_smoke_aggregate_check_always_reports() -> None:
+    """The required check exists and always runs, mirroring the Layer B gate."""
+    wf = _load_yaml(EXAMPLE_SMOKE_YAML)
+    aggregate = wf["jobs"]["example-smoke"]
+    assert aggregate["if"] is True or str(aggregate["if"]).strip() == "always()", (
+        "The example-smoke aggregate job must run with if: always() so the "
+        "required check always reports."
+    )
+    assert aggregate["needs"] == "smoke"
+
+
+def test_example_smoke_runs_on_main_nightly_and_release() -> None:
+    """Every maintained example is exercised on main/nightly/release (§4.6)."""
+    wf = _load_yaml(EXAMPLE_SMOKE_YAML)
+    triggers = wf[True] if True in wf else wf["on"]
+    assert "schedule" in triggers, "the nightly full smoke-run trigger is missing"
+    assert "release" in triggers, "the release smoke-run trigger is missing"
+    assert "main" in triggers["push"]["branches"]
 
 
 def test_layer_b_is_excluded_from_the_default_pytest_run() -> None:

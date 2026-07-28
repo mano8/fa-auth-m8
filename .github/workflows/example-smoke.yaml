@@ -1,0 +1,120 @@
+name: Maintained example smoke
+
+# Automated maintained-example smoke flow (§4.6, TEST-LAYER-01).
+#
+# Every maintained `examples/docker_compose/*` stack is exercised end to end —
+# database startup -> `alembic upgrade head` (applied automatically on
+# container start) -> application startup -> health check -> a minimal
+# authentication/database smoke test — on every push/PR touching an example
+# or this workflow, and in full on main, nightly, and release.
+#
+# This is deliberately not the Layer B database-integration matrix
+# (`database-integration.yaml`, which proves migrations/constraints/locking
+# against ephemeral containers): it proves the *deployment artifact* a real
+# operator runs — the compose file, the bootstrap script, the Dockerfile, and
+# the actual pinned engine image — actually comes up and serves traffic.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "examples/docker_compose/**"
+      - "auth_user_service/**"
+      - ".github/workflows/example-smoke.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "examples/docker_compose/**"
+      - "auth_user_service/**"
+      - ".github/workflows/example-smoke.yaml"
+  schedule:
+    # Nightly full run, independent of what changed.
+    - cron: "0 4 * * *"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  smoke:
+    name: Smoke (${{ matrix.example }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # One maintained example per certified engine plus every distinct
+        # signing/monitoring/hardening posture (§4.6): quickstart_m8/rs256_m8
+        # certify MariaDB/MySQL respectively, the rest certify PostgreSQL.
+        example:
+          - quickstart_m8
+          - postgres_m8
+          - rs256_m8
+          - metrics_m8
+          - hardened_m8
+          - vault_dev_m8
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Bootstrap env files, keys, and certs
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: bash init.sh
+
+      - name: Start the stack
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: docker compose up -d --build --wait --wait-timeout 600
+
+      - name: Health check — auth service
+        run: curl --fail --silent --show-error http://localhost:9000/user/health/
+
+      - name: Health check — consumer service
+        run: curl --fail --silent --show-error http://localhost:9000/fastapi/health/
+
+      - name: Minimal authentication/database smoke test
+        # A bogus login must reach the DB-backed credential lookup and come
+        # back as a structured 401 — not a 500/502/503 — proving the
+        # migrated schema, the seeded application user/grants, and the
+        # auth service's DB round trip all actually work end to end.
+        run: |
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -X POST http://localhost:9000/user/login/access-token \
+            -d 'username=smoke-test-nonexistent@example.invalid' \
+            -d 'password=wrong-password-not-a-real-account')"
+          echo "login status: $status"
+          if [[ "$status" != "401" ]]; then
+            echo "::error::expected 401 (invalid credentials against a live DB lookup), got $status"
+            exit 1
+          fi
+
+      - name: Dump logs on failure
+        if: failure()
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: docker compose logs --no-color --tail 500
+
+      - name: Tear down
+        if: always()
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: docker compose down -v --remove-orphans
+
+  example-smoke:
+    # The one stable required check, mirroring `database-matrix`'s
+    # always()/pass-on-skip shape so it can be marked required in branch
+    # protection without blocking documentation-only pull requests.
+    name: Maintained example smoke matrix
+    needs: smoke
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate the matrix outcome
+        env:
+          SMOKE_RESULT: ${{ needs.smoke.result }}
+        run: |
+          set -euo pipefail
+          echo "smoke: $SMOKE_RESULT"
+          if [[ "$SMOKE_RESULT" != "success" && "$SMOKE_RESULT" != "skipped" ]]; then
+            echo "::error::one or more maintained examples failed to start cleanly (4.6)"
+            exit 1
+          fi

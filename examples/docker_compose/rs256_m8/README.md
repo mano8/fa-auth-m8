@@ -1,6 +1,6 @@
 # rs256_m8
 
-**MariaDB 12** + **RS256 asymmetric token signing** + **hybrid** token mode. No monitoring services.
+**MySQL 8.4** + **RS256 asymmetric token signing** + **hybrid** token mode. No monitoring services.
 
 Access tokens are signed with a private RSA key (auth service only) and verified with the corresponding public key (consumer services). Consumers discover the public key automatically via the **JWKS endpoint** — no manual key distribution required.
 
@@ -42,7 +42,7 @@ Browser / Frontend
                 │
        ┌────────┴────────┐
        ▼                 ▼
-  m8_db (MariaDB 12)  redis_cache (Redis 8.8)
+  m8_db (MySQL 8.4)   redis_cache (Redis 8.8)
 ```
 
 The auth service holds the **private key** and issues signed tokens. The fastapi service holds **no key** — it verifies tokens by fetching the public key from the JWKS endpoint.
@@ -54,7 +54,7 @@ The auth service holds the **private key** and issues signed tokens. The fastapi
 | Service | Image | Accessible at |
 | --- | --- | --- |
 | traefik | traefik:v3.7.5 | `:8000` (HTTP), `:4430` (HTTPS), `:9000` (API), `127.0.0.1:8080` (dashboard) |
-| m8_db | mariadb:12.3.2-ubi | `127.0.0.1:3306` |
+| m8_db | mysql:8.4.10 | `127.0.0.1:3306` |
 | redis_cache | redis:8.8.0-alpine | `127.0.0.1:6379` |
 | auth_user_service | local build | via Traefik at `/user` |
 | fastapi_full | local build | via Traefik at `/fastapi` |
@@ -65,7 +65,7 @@ The auth service holds the **private key** and issues signed tokens. The fastapi
 
 - **No Prometheus / Grafana.** Use [hardened_m8](../hardened_m8/) for RS256+metrics or [metrics_m8](../metrics_m8/) for HS256+metrics.
 - **No Vault.** The RSA private key is stored as a file mounted into the container. Use [vault_dev_m8](../vault_dev_m8/) for secrets-manager integration.
-- **MariaDB only.** For PostgreSQL with RS256, use [hardened_m8](../hardened_m8/) or [vault_dev_m8](../vault_dev_m8/).
+- **MySQL only.** For PostgreSQL with RS256, use [hardened_m8](../hardened_m8/) or [vault_dev_m8](../vault_dev_m8/).
 
 ---
 
@@ -192,7 +192,7 @@ In `hybrid` mode, access tokens remain valid for their full lifetime after logou
 | `4430` | `0.0.0.0` | Traefik HTTPS |
 | `9000` | `127.0.0.1` | API services entry (set `API_BIND_IP` in `auth.env` to expose on LAN) |
 | `8080` | `127.0.0.1` | Traefik dashboard |
-| `3306` | `127.0.0.1` | MariaDB |
+| `3306` | `127.0.0.1` | MySQL |
 | `6379` | `127.0.0.1` | Redis |
 
 ---
@@ -211,6 +211,7 @@ In `hybrid` mode, access tokens remain valid for their full lifetime after logou
 | `REFRESH_SECRET_KEY` | — | HMAC secret for refresh tokens |
 | `TOKEN_MODE` | `hybrid` | `stateless` / `hybrid` / `stateful` |
 | `AUTH_SERVICE_ROLE` | `issuer` | Signs tokens with the RSA private key |
+| `SELECTED_DB` | `Mysql` | `Mysql`, `Mariadb`, or `Postgres` — this stack runs real MySQL, so it must declare `Mysql` (4.6 dialect declaration); a MariaDB deployment must declare `Mariadb` instead |
 | `LOGIN_RATE_LIMIT_REQUESTS` | `5` | Max login attempts per window per email |
 | `LOGIN_RATE_LIMIT_WINDOW_MINUTES` | `15` | Login rate-limit window in minutes |
 | `REFRESH_RATE_LIMIT_REQUESTS` | `10` | Max refresh rotations per window per user |
@@ -280,7 +281,7 @@ CORS_ALLOWED_ORIGIN_SCHEMES=chrome-extension://
 | Path | Purpose |
 | --- | --- |
 | `./keys` | RSA key pair (mounted read-only into auth container) |
-| `./db_data` | Persistent MariaDB data |
+| `./db_data` | Persistent MySQL data |
 | `./redis/redis_data` | Persistent Redis snapshots |
 | `./shared_migrations` | Alembic migration files (auto-created, shared between services) |
 | `../../../auth_user_service` | Live source mount — Python changes apply without rebuild |

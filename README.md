@@ -374,7 +374,28 @@ Set `SELECTED_DB` in `.env` (or `auth.env`):
 | Value | Driver | Default port |
 | ----- | ------ | ------------ |
 | `Mysql` (default) | `pymysql` / `aiomysql` | 3306 |
+| `Mariadb` | `pymysql` / `aiomysql` | 3306 |
 | `Postgres` | `psycopg2` / `asyncpg` | 5432 |
+
+**`Mysql` and `Mariadb` are separate certified dialects (§4.6), never
+interchangeable declarations.** They share the same `mysql+pymysql` driver
+family, but `SELECTED_DB` must name the engine actually deployed: `Mysql` is
+valid only against a real MySQL server, `Mariadb` only against a real MariaDB
+server. At startup the issuer compares `SELECTED_DB` against the connected
+server's SQLAlchemy dialect **and** its version string (the only thing that
+distinguishes a MariaDB server from a MySQL server on the shared wire
+protocol) and **fails startup cleanly with a dialect-mismatch error on any
+mismatch** — a deployment never runs half-configured.
+
+> **Breaking configuration migration — existing MariaDB deployments.**
+> Before this contract, a MariaDB deployment could declare
+> `SELECTED_DB=Mysql` (the two dialects were not distinguished). That is no
+> longer valid: **every existing MariaDB deployment must change
+> `SELECTED_DB` to `Mariadb` before upgrading**, or the issuer refuses to
+> start with a dialect-mismatch error. This is not automatic — the setting is
+> never rewritten silently. Deployments already declaring `Mysql` against a
+> real MySQL server are unaffected. See the CHANGELOG for the release that
+> introduced strict dialect verification.
 
 ---
 
@@ -451,7 +472,7 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 
 | Variable | Required | Default | Description |
 | -------- | -------- | ------- | ----------- |
-| `SELECTED_DB` | no | `Mysql` | `Mysql` or `Postgres` |
+| `SELECTED_DB` | no | `Mysql` | `Mysql`, `Mariadb`, or `Postgres` — must name the actually-deployed engine; verified fail-closed at startup (§4.6, see [Choosing a Database](#choosing-a-database)) |
 | `DB_HOST` | yes | — | Database host |
 | `DB_PORT` | yes | — | Database port |
 | `DB_DATABASE` | yes | — | Database name |

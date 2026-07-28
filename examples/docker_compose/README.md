@@ -24,7 +24,7 @@ Six ready-to-run stacks, each targeting a distinct use case. Each runs the same 
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | [quickstart_m8](quickstart_m8/) | MariaDB | HS256 | `stateful` | env file | — | — | **Start here** — fastest onboarding (**dev-only**) |
 | [postgres_m8](postgres_m8/) | PostgreSQL 18 | HS256 | `stateful` | env file | — | — | PostgreSQL projects (**dev-only**) |
-| [rs256_m8](rs256_m8/) | MariaDB | RS256 | `hybrid` | env file | — | — | Asymmetric signing + JWKS (**dev-only**) |
+| [rs256_m8](rs256_m8/) | MySQL 8.4 | RS256 | `hybrid` | env file | — | — | Asymmetric signing + JWKS (**dev-only**) |
 | [metrics_m8](metrics_m8/) | PostgreSQL 18 | HS256 | `stateful` | env file | Prometheus + Grafana | — | Metrics dashboards (**dev-only**) |
 | [hardened_m8](hardened_m8/) | PostgreSQL 18 | RS256 | `stateful` | env file | Prometheus + Grafana | container + network | Hardened posture — **production-capable via overlay** |
 | [vault_dev_m8](vault_dev_m8/) | PostgreSQL 18 | RS256 | `stateful` | **HashiCorp Vault** (dev mode) | Prometheus + Grafana | container + network | Vault injection pattern (**dev/learning only**) |
@@ -65,7 +65,7 @@ auth_user_service :8000            fastapi_full :8000
           ┌───────┴────────┐
           ▼                ▼
         m8_db          redis_cache
-   (MariaDB / PG)      (Redis 8.8)
+ (MariaDB / MySQL / PG) (Redis 8.8)
 
 (metrics_m8, hardened_m8, and vault_dev_m8 also include Prometheus + Grafana)
 ```
