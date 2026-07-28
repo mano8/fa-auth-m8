@@ -48,7 +48,11 @@ BEGIN
             RAISE EXCEPTION 'app_privileged_action_audit rows can only be removed by the horizon-bounded retention purge';
         END IF;
     END IF;
-    RETURN NULL;
+    -- A BEFORE ... FOR EACH ROW trigger that returns NULL *silently suppresses*
+    -- the row operation. The UPDATE branch above always raises, so reaching
+    -- here means an authorized DELETE, which must return OLD so the horizon
+    -- purge's delete actually happens instead of being discarded.
+    RETURN OLD;
 END;
 $$ LANGUAGE plpgsql;
 """

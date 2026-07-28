@@ -118,11 +118,31 @@ def count_active_canonical_superusers(
 
     Evaluated under the superuser-set lock so a concurrent transaction cannot
     change set membership between the count and the mutation (3.5.3).
+
+    **The count is a locking read (``FOR UPDATE``), and that is load-bearing on
+    MySQL/MariaDB.** Their default isolation level is ``REPEATABLE READ``, where
+    a *plain* ``SELECT`` returns the transaction's snapshot — which, for the
+    transaction that loses the race for the ``security_policy`` row, was
+    established *before* the winner committed. Such a reader would still see the
+    winner's account as an active superuser, conclude the set is safe, and
+    demote the last one: two concurrent demotions both commit and the invariant
+    is lost. A locking read is defined to see the latest committed row versions
+    instead, so the loser counts the post-commit state — which is exactly what
+    the lock protocol promises on *every* supported engine (§4.6), not only on
+    PostgreSQL's ``READ COMMITTED``. Locking the counted rows is safe by
+    construction: it happens only under the already-held policy-row lock, so no
+    two set mutations can interleave and acquire them in conflicting orders.
+    ``FOR UPDATE`` is a no-op on the SQLite unit surrogate; the real behaviour is
+    certified by the two-connection race in the Layer B matrix (``TEST-DB-01``).
     """
-    stmt = select(User).where(
-        col(User.role) == RoleType.SUPERADMIN,
-        User.is_superuser == True,  # noqa: E712
-        User.is_active == True,  # noqa: E712
+    stmt = (
+        select(User)
+        .where(
+            col(User.role) == RoleType.SUPERADMIN,
+            User.is_superuser == True,  # noqa: E712
+            User.is_active == True,  # noqa: E712
+        )
+        .with_for_update()
     )
     if exclude_user_id is not None:
         stmt = stmt.where(col(User.id) != exclude_user_id)
