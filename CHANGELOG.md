@@ -11,285 +11,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [2.0.0] - 2026-07-29
 
-### Added — 4.6 dialect-declaration contract (breaking configuration migration)
+### Security
 
-- `SELECTED_DB` is now verified fail-closed at startup against the database
+- **Breaking configuration migration — `SELECTED_DB` dialect declaration (§4.6).** 
+  `SELECTED_DB` is now verified fail-closed at startup against the database
   server the issuer actually connects to: the SQLAlchemy dialect name plus the
   server version string (the only way to tell a MariaDB server from a MySQL
   server on the shared `mysql+pymysql` wire protocol). Any mismatch —
   `Postgres` declared against a MySQL-family server, `Mysql` declared against
   MariaDB, or `Mariadb` declared against real MySQL — fails startup cleanly
-  with a `DialectMismatchError` instead of running half-configured
-  (`auth_user_service/core/db_utils.py`, wired into `main.py`'s startup
-  checks).
-- `core/db_utils.py`'s `get_table_args()` now treats `SELECTED_DB=Mariadb`
+  with a `DialectMismatchError` instead of running half-configured.
+  
+  **Existing MariaDB deployments that declare `SELECTED_DB=Mysql` must change
+  it to `SELECTED_DB=Mariadb` before upgrading.** The value is never rewritten
+  automatically — a deployment that skips this step now fails startup with a
+  clear dialect-mismatch error rather than running against the wrong declared
+  engine. See [README § Choosing a Database](README.md#choosing-a-database) and
+  the database-migration prerequisites in the runbook.
+  
+  `core/db_utils.py`'s `get_table_args()` now treats `SELECTED_DB=Mariadb`
   identically to `Mysql` (both are the same driver family at the ORM layer);
   `core/engine_async.py` already generalized correctly and needed no
   behavioral change.
-- **Breaking configuration migration:** existing MariaDB deployments that
-  declare `SELECTED_DB=Mysql` (the only spelling available before this
-  release distinguished the two) must change it to `SELECTED_DB=Mariadb`
-  before upgrading. The value is never rewritten automatically — a
-  deployment that skips this step now fails startup with a clear
-  dialect-mismatch error rather than running against the wrong declared
-  engine. See [README § Choosing a Database](README.md#choosing-a-database).
-- **Maintained-example dialect reassignment (one example per certified
-  engine, §4.6):** `examples/docker_compose/rs256_m8` moves from
-  `mariadb:12.3.2-ubi` to the pinned `mysql:8.4.10`, with `SELECTED_DB=Mysql`
-  — it is now the maintained example that certifies real MySQL.
-  `examples/docker_compose/quickstart_m8` keeps `mariadb:12.3.2-ubi` and now
-  declares `SELECTED_DB=Mariadb` (previously `Mysql`, which is exactly the
-  breaking migration above). `hardened_m8`, `metrics_m8`, `postgres_m8`, and
-  `vault_dev_m8` are unchanged (PostgreSQL). The shared
-  `examples/docker_compose/shared/db_init/init-db.sh` provisioning script
-  gained real-MySQL client detection (`mysql` alongside `mariadb`/`psql`) so
-  the reassigned `rs256_m8` stack can actually provision its databases.
-- New automated maintained-example smoke flow
-  (`.github/workflows/example-smoke.yaml`) exercises every maintained compose
-  example on main/nightly/release CI: database startup → `alembic upgrade
-  head` → application startup → health check → a minimal
-  authentication/database smoke test.
-- New `tests/integration/database/test_dialect_declaration.py` (Layer B) and
-  `tests/core/db_utils_test.py` unit coverage prove every valid and invalid
-  declared/actual engine combination across the three certified dialects.
-
-### Added — Layer B database integration matrix and CI policy (`TEST-DB-01`, `TEST-LAYER-01`, §4.6)
-
-- New `tests/integration/database/` suite: white-box validation of ORM
-  mappings, transactions, Alembic migrations, constraints, locking, and
-  concurrency against **ephemeral real database containers** on all three
-  certified dialects at their pinned versions — PostgreSQL
-  `postgres:18.4-alpine`, MySQL `mysql:8.4.10`, MariaDB `mariadb:12.3.2-ubi`.
-  MySQL and MariaDB are separate certified dialects; one never certifies the
-  other. Select with `pytest -m database_integration tests/integration/database
-  --database=postgresql|mysql|mariadb`; the fixtures start a disposable
-  container, or consume a service container with `FA_AUTH_IT_MODE=external`.
-- Coverage: `upgrade head` from empty and from **every** supported prior
-  revision; ORM-metadata versus migrated-schema consistency; Enforce failing
-  and rolling back over un-repaired rows; the Expand → global
-  legacy-session-revocation → Enforce cutover proving legacy sessions are
-  revoked and never backfilled (previously proven only at service level); the
-  role/flag equivalence `CHECK` in both directions separated from `NOT NULL`;
-  native enum representation; `BIGINT auth_generation`; tombstone persistence
-  without a foreign key; `api_key_audiences`/`RateLimit` `ON DELETE CASCADE`;
-  `ApiKey.access_mode` default backfill; outbox uniqueness and indexes;
-  `security_policy` `SELECT ... FOR UPDATE` contention; outbox
-  `FOR UPDATE SKIP LOCKED` claiming; both horizon-bounded purges batching under
-  real contention; the **two-connection last-superuser race** and the
-  **concurrent-login-during-downgrade generation race** (neither expressible on
-  the SQLite surrogate); rollback after partial failure; and every 3.5.4
-  revocation path re-proven with Redis unavailable through the real v2
-  JTI-status route.
-- New `.github/workflows/database-integration.yaml`. The matrix runs on every
-  database-sensitive pull request (path-filtered) and in full on main, nightly,
-  and release. **`Database integration matrix` is the single stable required
-  check** — it also reports success when path filtering determined no
-  database-sensitive file changed. `tests/test_ci_policy.py` locks the pinned
-  images, the dialect coverage, the aggregate check's name and pass-on-skip
-  behaviour, and the Docker-free unit gate against silent drift.
-- The default `pytest` run is unchanged and still Docker-free: `pytest.ini`
-  deselects the new `database_integration` marker, so the 100% unit-coverage
-  gate measures exactly what it measured before.
-
-### Fixed — PostgreSQL privileged-action audit guard suppressed the retention purge
-
-- The PostgreSQL guard trigger installed by the audit-table Expand migration
-  returned `NULL`. In a `BEFORE ... FOR EACH ROW` trigger that **silently
-  suppresses** the row operation, so the authorized retention purge deleted
-  nothing and `purge_expired_audit_rows` looped forever against PostgreSQL. The
-  function now returns `OLD` on the authorized delete path (the `UPDATE` branch
-  raises unconditionally and never reaches it). MySQL/MariaDB were unaffected —
-  their triggers only `SIGNAL` and have no return-value semantics. Fixed in the
-  issuer chain (`postgres_m8`) and in the bundled example's `m8_app` chains
-  (`postgres_m8`, `metrics_m8`); no deployment has applied these unreleased
-  revisions, so they are corrected in place rather than chained. Found by the
-  new Layer B suite: the pre-existing live test asserted only that the
-  authorized delete raised no exception, which it did not.
-
-### Added — Dead-key retention purge + live-key cap correction (Phase 7, `APIKEY-LIFECYCLE-01`)
-
-- New `purge_dead_api_keys()` (`services/api_keys.py`), modelled directly on
-  `purge_expired_audit_rows`: a superadmin-gated, horizon-bounded bulk delete
-  of dead `ApiKey` rows — revoked (dated by `updated_at`) or expired (dated by
-  `expires_at`, with `expires_at IS NULL` never eligible on the expiry basis) —
-  checked against a **dedicated** `API_KEY_PURGE_MIN_RETENTION_SECONDS` floor
-  (default ≥ 90 days, independent of `AUDIT_PURGE_MIN_RETENTION_SECONDS`) and
-  batched under `FOR UPDATE SKIP LOCKED`. Deleting the parent row lets the
-  existing `ON DELETE CASCADE` clear its `api_key_audiences` and `RateLimit`
-  children in one operation — no audience-only delete path exists. The purge
-  accepts no key-id/owner-id/row-scoping parameter (signature-shape locked)
-  and writes one `delete` privileged-action audit row (actor, window, rows
-  removed) timestamped after the horizon so it survives its own purge (G7-8).
-- Exposed as `POST /security/api-keys/purge` — `get_current_active_superuser`-
-  gated, `include_in_schema=False`, rate limited by the new
-  `ApiKeyPurgeRateLimiter` (`security:api_key_purge:` prefix, already covered
-  by every maintained compose example's `~security:*` ACL pattern), floor
-  rejection → `400`.
-- The per-user creation cap (`routes/api_keys.py::create_api_key`) now
-  excludes expired-but-unrevoked keys in addition to revoked ones, so the
-  live-key maximum bounds *usable* credentials — an expired row no longer
-  forces a manual revoke before a replacement can be issued. The purge, not
-  the cap, is what bounds total rows.
-- No schema, migration, or introspection request/response shape change:
-  `auth-sdk-m8` stays `3.1.0` and `fastapi-m8` stays `4.2.0`.
-
-### Added — API-key audience readback on owner and superadmin key views (Phase 7, `APIKEY-AUD-02`)
-
-- `ApiKeyPublic` (`GET /profile/api-keys/`, `GET /profile/api-keys/{key_id}`,
-  `GET /profile/api-keys/verify`) and `ApiKeyAdminPublic`
-  (`GET /api-keys/by-user/{user_id}/`) now return the key's persisted
-  audience ids as a plain `audiences: list[str]`, read back from the
-  normalized `api_key_audiences` relation — a previously set-once, invisible
-  binding is now auditable by the owner and by a superadmin (G7-7).
-- Implemented as an explicit projection (`ApiKeyPublic.from_key`/
-  `ApiKeyAdminPublic.from_key` in `db_models/api_keys.py`), never a bare
-  `list[str]` field validated straight off the ORM row — `ApiKey.audiences` is
-  a list of `ApiKeyAudience` rows, and a direct `from_attributes` validation
-  against `list[str]` would fail. The owner and superadmin list queries add
-  `selectinload(ApiKey.audiences)` so a listing stays single-query.
-- No schema, migration, or introspection request/response shape change:
-  `auth-sdk-m8` stays `3.1.0` and `fastapi-m8` stays `4.2.0`.
-
-### Added — Consumer-side privileged-action audit trail in `examples/fastapi_full` (Phase 7, G7-6)
-
-- New `app_privileged_action_audit` table
-  (`examples/fastapi_full/db_models/privileged_action_audit.py`) mirroring the
-  issuer's contract for the data the example owns: append-only, no foreign key
-  to the actor or the target row (so it outlives both), `row_pk` and
-  `target_owner_id` stored as text, `actor_role` stored as a text snapshot.
-- New `examples/fastapi_full/app/audit.py` owns the rules:
-  `record_privileged_action()` writes exactly one row **in the caller's
-  transaction** (flush, never commit), so a category mutation can never commit
-  without its audit row; `record_cross_owner_category_action()` is the single
-  place deciding that only a mutation of *non-owned* data is privileged; and
-  `read_audit_page()` owns the superadmin-all / admin-own read scope.
-- The category routes now record every superadmin cross-owner `add`/`edit`/
-  `delete`. A delete captures the primary key and the owner **before** the row
-  is removed. Mutations of one's own data and refused mutations write nothing.
-  The API-key-gated create can never reach a cross-owner mutation (§3.11), so it
-  writes no audit row.
-- New `GET /security/audit-log` (ADMIN-gated, `include_in_schema=False`,
-  read-only) and `POST /security/audit-log/purge` (superadmin-only) in
-  `examples/fastapi_full/app/routes/audit.py`. The purge is the table's only
-  removal path: horizon-bounded, batched (`FOR UPDATE SKIP LOCKED`),
-  floor-enforced (new example settings `AUDIT_PURGE_MIN_RETENTION_SECONDS`,
-  default >= 90 days, and `AUDIT_PURGE_BATCH_SIZE`, default 500 — a shorter
-  window is rejected with `400`), and it writes its own maintenance row
-  timestamped after the horizon. Neither the request body nor the purge
-  signature accepts a row identifier, so a targeted delete is not expressible.
-- Additive **Expand** Alembic migration creating the table on every maintained
-  compose example's `m8_app` chain (`postgres_m8`, `metrics_m8`,
-  `quickstart_m8`, `rs256_m8`), installing the `BEFORE UPDATE`/`BEFORE DELETE`
-  guard triggers that make the write-once/no-targeted-delete contract
-  schema-level on Postgres, MySQL, and MariaDB alike.
-- `examples/fastapi_full/core/deps.py` and `app/deps.py` now also surface
-  `get_current_active_admin` (from `fastapi-m8` 4.2.0).
-
-### Fixed — Owner comparison in `examples/fastapi_full` category authorization
-
-- `Category.owner_id` is a raw `CHAR(36)`, so a row loaded from the database
-  carries its owner as **text** while the authenticated principal's id is a
-  `uuid.UUID`. The direct `item.owner_id != current_user.id` comparison was
-  therefore true for every owner, denying a non-superadmin WRITER `403` on the
-  row it owns. New `app.ownership.as_owner_id()`/`is_owned_by()` normalise both
-  sides; the category read/edit/delete authorization and the audit
-  cross-owner classification now both use them.
-
-### Security — Ownership preservation in `examples/fastapi_full` (Phase 7, G7-5)
-
-- Owner is now resolved by the server, never set by a request body.
-  `CategoryCreate`/`CategoryUpdate` (`examples/fastapi_full/db_models/categories.py`)
-  set `extra="forbid"`, so a body carrying `owner_id` is rejected with `422`
-  instead of being silently dropped — previously ownership survived an edit
-  only because `CategoryUpdate` happened to omit the field.
-- New `examples/fastapi_full/app/ownership.py` owns the rules:
-  `resolve_create_owner_id()` returns the actor's id only when the actor is the
-  intended owner, `category_update_values()` strips every ownership key before
-  an edit reaches the row, and `is_canonical_superuser()` centralises the
-  dual-evidence predicate. New `db_models.categories.build_category()` copies
-  only content fields onto the row, so no payload can reach the ownership
-  column.
-- A cross-owner create is superadmin-only and requires an explicit
-  `target_owner_id` that must resolve to an existing user. It never defaults to
-  the actor: a non-superadmin actor gets `403`, an unknown target `404`, and an
-  unreachable or unconfigured issuer `503` — no path substitutes the actor's id
-  for a target that was refused, unknown, or unverifiable. The API-key-gated
-  create always refuses a cross-owner target (§3.11 caps key decisions at
-  WRITER).
-- New `examples/fastapi_full/core/user_directory.py` resolves the target owner
-  over the issuer's owned HTTP contract
-  (`GET {AUTH_PREFIX}/users/get/{user_id}/`, derived from `INTROSPECTION_URL`)
-  with the caller's own bearer token — the consumer never reads the auth
-  service's user table. Fail-closed on every non-definitive outcome; errors
-  carry a bounded reason code only, never the token or the response body.
-- New bundled-example unit suite (`examples/fastapi_full/tests/`) with its own
-  `pytest.ini`, gated by the new `example-tests` CI job and locked by
-  `tests/test_ci_policy.py`.
-
-### Added — Superadmin audit retention-purge maintenance action (Phase 7, 3.5.1)
-
-- `POST /security/audit-log/purge` (`auth_user_service/routes/security.py`):
-  the append-only `privileged_action_audit` table's sole removal path — a
-  `get_current_active_superuser`-gated bulk delete of rows older than a chosen
-  retention window (`1w`/`1m`/`3m`/`6m`/`1y`), enforcing a minimum-retention
-  floor (new settings `AUDIT_PURGE_MIN_RETENTION_SECONDS`, default >= 90 days,
-  and `AUDIT_PURGE_BATCH_SIZE`, default 500). A window shorter than the floor
-  is rejected with `400`; lowering the floor is an explicit operator config
-  change, never a per-call parameter.
-- `auth_user_service/services/audit.py::purge_expired_audit_rows`: the
-  batched (`FOR UPDATE SKIP LOCKED`) delete implementation, mirroring the
-  outbox worker's batching so a large purge never holds one long-lived lock.
-  There is deliberately no row-id parameter — the horizon is the only
-  selector, so this can never become a targeted single-row delete. The purge
-  always writes its own `delete` maintenance audit row (actor, window, rows
-  removed) via the existing `record_privileged_action`, timestamped after the
-  horizon it was computed from, so it always survives the purge that wrote it
-  (mirrors the tombstone retention-horizon + guarded-cleanup pattern, 3.5.1).
-- New `AuditPurgeRateLimiter` (`auth_user_service/core/client.py`), keyed by
-  caller user id under the existing `security:` ACL prefix (no ACL change
-  needed); route excluded from the OpenAPI schema like its `audit-log` sibling.
-- `auth_user_service/route_inventory.json` gains the new route entry
-  (`admin` exposure); `README.md` documents the audit trail and purge
-  contract in a new _Privileged-action audit trail and retention purge_
-  subsection.
-
-### Added — Consume the SDK canonical fixture matrix (Phase 5, FIXTURE-01)
-
-- Raise the `auth-sdk-m8` floor in `auth_user_service/requirements_base.txt`
-  to `>=3.1.0,<4.0.0` to consume the expanded, checksummed
-  `authorization_matrix.json` (schema version `"2"`) from
-  `auth_sdk_m8.testing.load_authorization_fixture_matrix()`.
-- `tests/routes/test_private_fixture_matrix_contract.py` drives the issuer's
-  own `JtiStatusRequest`/`ApiKeyIntrospectionRequest` schemas and the
-  `check_jti_status`/`introspect_api_key` route handlers directly from the
-  canonical fixture data (JTI-status v1/v2, API-key introspection shapes,
-  local/remote principal equivalence, and the audience/capability-policy
-  matrix) instead of locally invented expectations, so an SDK-side contract
-  drift fails this suite too.
-- Raise the bundled `examples/fastapi_minimal/requirements.txt` and
-  `examples/fastapi_full/requirements_base.txt` `fastapi-m8` floor to
-  `>=4.1.0,<5.0.0`, matching the coordinated `auth-sdk-m8 3.1.0` /
-  `fastapi-m8 4.1.0` fixture-consumption bump so both maintained examples
-  install the SDK/fastapi-m8 pair that ships the expanded fixture matrix.
-
-**Known gap:** `auth_user_service/requirements_prod.lock` still pins
-`auth-sdk-m8==3.0.0` — regenerating it with `pip-compile --generate-hashes`
-requires `auth-sdk-m8 3.1.0` to already be resolvable from the configured
-package index, which is a Phase 6 (coordinated release) precondition, not
-this Phase 5 test-consumption change. Regenerate the lock as part of the
-Phase 6 publish sequence. The same applies to the two bumped example
-`requirements*.txt` floors: `pip install` against them (including this
-repository's own CI, which installs `examples/fastapi_full/requirements_base.txt`)
-only resolves once `auth-sdk-m8 3.1.0` and `fastapi-m8 4.1.0` are actually
-published to the configured package index.
-
----
-
-## [2.0.0] - 2026-07-22
-
-### Security
 
 - **Every revocation path is database-authoritative (`REV-PATH-01`, 3.5.4;
   audit finding 8).** `SessionController.revoke_session_jti` was Redis-only — a
@@ -561,6 +306,201 @@ published to the configured package index.
   (default `600`) bounds the per-consumer anti-abuse ceiling, observed with the
   registry-bounded consumer id label only.
 
+### Added — 4.6 dialect-declaration contract (testing and deployment updates)
+
+- **Maintained-example dialect reassignment (one example per certified engine, §4.6):** 
+  `examples/docker_compose/rs256_m8` moves from `mariadb:12.3.2-ubi` to the pinned 
+  `mysql:8.4.10`, with `SELECTED_DB=Mysql` — it is now the maintained example that 
+  certifies real MySQL. `examples/docker_compose/quickstart_m8` keeps `mariadb:12.3.2-ubi` 
+  and now declares `SELECTED_DB=Mariadb` (previously `Mysql`, which is exactly the breaking 
+  migration above). `hardened_m8`, `metrics_m8`, `postgres_m8`, and `vault_dev_m8` are 
+  unchanged (PostgreSQL). The shared `examples/docker_compose/shared/db_init/init-db.sh` 
+  provisioning script gained real-MySQL client detection (`mysql` alongside `mariadb`/`psql`) 
+  so the reassigned `rs256_m8` stack can actually provision its databases.
+- New automated maintained-example smoke flow (`.github/workflows/example-smoke.yaml`) 
+  exercises every maintained compose example on main/nightly/release CI: database startup 
+  → `alembic upgrade head` → application startup → health check → a minimal 
+  authentication/database smoke test.
+- New `tests/integration/database/test_dialect_declaration.py` (Layer B) and 
+  `tests/core/db_utils_test.py` unit coverage prove every valid and invalid declared/actual 
+  engine combination across the three certified dialects.
+
+### Added — Layer B database integration matrix and CI policy (`TEST-DB-01`, `TEST-LAYER-01`, §4.6)
+
+- New `tests/integration/database/` suite: white-box validation of ORM mappings, 
+  transactions, Alembic migrations, constraints, locking, and concurrency against 
+  **ephemeral real database containers** on all three certified dialects at their pinned 
+  versions — PostgreSQL `postgres:18.4-alpine`, MySQL `mysql:8.4.10`, MariaDB 
+  `mariadb:12.3.2-ubi`. MySQL and MariaDB are separate certified dialects; one never 
+  certifies the other. Select with `pytest -m database_integration tests/integration/database 
+  --database=postgresql|mysql|mariadb`; the fixtures start a disposable container, or 
+  consume a service container with `FA_AUTH_IT_MODE=external`.
+- Coverage: `upgrade head` from empty and from **every** supported prior revision; ORM-metadata 
+  versus migrated-schema consistency; Enforce failing and rolling back over un-repaired rows; 
+  the Expand → global legacy-session-revocation → Enforce cutover proving legacy sessions are 
+  revoked and never backfilled (previously proven only at service level); the role/flag 
+  equivalence `CHECK` in both directions separated from `NOT NULL`; native enum representation; 
+  `BIGINT auth_generation`; tombstone persistence without a foreign key; `api_key_audiences`/
+  `RateLimit` `ON DELETE CASCADE`; `ApiKey.access_mode` default backfill; outbox uniqueness 
+  and indexes; `security_policy` `SELECT ... FOR UPDATE` contention; outbox `FOR UPDATE SKIP 
+  LOCKED` claiming; both horizon-bounded purges batching under real contention; the **two-connection 
+  last-superuser race** and the **concurrent-login-during-downgrade generation race** (neither 
+  expressible on the SQLite surrogate); rollback after partial failure; and every 3.5.4 revocation 
+  path re-proven with Redis unavailable through the real v2 JTI-status route.
+- New `.github/workflows/database-integration.yaml`. The matrix runs on every database-sensitive 
+  pull request (path-filtered) and in full on main, nightly, and release. **`Database integration 
+  matrix` is the single stable required check** — it also reports success when path filtering 
+  determined no database-sensitive file changed. `tests/test_ci_policy.py` locks the pinned 
+  images, the dialect coverage, the aggregate check's name and pass-on-skip behaviour, and the 
+  Docker-free unit gate against silent drift.
+- The default `pytest` run is unchanged and still Docker-free: `pytest.ini` deselects the new 
+  `database_integration` marker, so the 100% unit-coverage gate measures exactly what it measured 
+  before.
+
+### Fixed — PostgreSQL privileged-action audit guard suppressed the retention purge
+
+- The PostgreSQL guard trigger installed by the audit-table Expand migration returned `NULL`. 
+  In a `BEFORE ... FOR EACH ROW` trigger that **silently suppresses** the row operation, so the 
+  authorized retention purge deleted nothing and `purge_expired_audit_rows` looped forever against 
+  PostgreSQL. The function now returns `OLD` on the authorized delete path (the `UPDATE` branch 
+  raises unconditionally and never reaches it). MySQL/MariaDB were unaffected — their triggers only 
+  `SIGNAL` and have no return-value semantics. Fixed in the issuer chain (`postgres_m8`) and in 
+  the bundled example's `m8_app` chains (`postgres_m8`, `metrics_m8`); no deployment has applied 
+  these unreleased revisions, so they are corrected in place rather than chained. Found by the new 
+  Layer B suite: the pre-existing live test asserted only that the authorized delete raised no 
+  exception, which it did not.
+
+### Added — Dead-key retention purge + live-key cap correction (Phase 7, `APIKEY-LIFECYCLE-01`)
+
+- New `purge_dead_api_keys()` (`services/api_keys.py`), modelled directly on 
+  `purge_expired_audit_rows`: a superadmin-gated, horizon-bounded bulk delete of dead `ApiKey` 
+  rows — revoked (dated by `updated_at`) or expired (dated by `expires_at`, with `expires_at IS 
+  NULL` never eligible on the expiry basis) — checked against a **dedicated** 
+  `API_KEY_PURGE_MIN_RETENTION_SECONDS` floor (default ≥ 90 days, independent of 
+  `AUDIT_PURGE_MIN_RETENTION_SECONDS`) and batched under `FOR UPDATE SKIP LOCKED`. Deleting the 
+  parent row lets the existing `ON DELETE CASCADE` clear its `api_key_audiences` and `RateLimit` 
+  children in one operation — no audience-only delete path exists. The purge accepts no 
+  key-id/owner-id/row-scoping parameter (signature-shape locked) and writes one `delete` 
+  privileged-action audit row (actor, window, rows removed) timestamped after the horizon so it 
+  survives its own purge (G7-8).
+- Exposed as `POST /security/api-keys/purge` — `get_current_active_superuser`-gated, 
+  `include_in_schema=False`, rate limited by the new `ApiKeyPurgeRateLimiter` 
+  (`security:api_key_purge:` prefix, already covered by every maintained compose example's 
+  `~security:*` ACL pattern), floor rejection → `400`.
+- The per-user creation cap (`routes/api_keys.py::create_api_key`) now excludes expired-but-unrevoked 
+  keys in addition to revoked ones, so the live-key maximum bounds *usable* credentials — an expired 
+  row no longer forces a manual revoke before a replacement can be issued. The purge, not the cap, 
+  is what bounds total rows.
+
+### Added — API-key audience readback on owner and superadmin key views (Phase 7, `APIKEY-AUD-02`)
+
+- `ApiKeyPublic` (`GET /profile/api-keys/`, `GET /profile/api-keys/{key_id}`, `GET /profile/api-keys/verify`) 
+  and `ApiKeyAdminPublic` (`GET /api-keys/by-user/{user_id}/`) now return the key's persisted audience ids 
+  as a plain `audiences: list[str]`, read back from the normalized `api_key_audiences` relation — a 
+  previously set-once, invisible binding is now auditable by the owner and by a superadmin (G7-7).
+- Implemented as an explicit projection (`ApiKeyPublic.from_key`/`ApiKeyAdminPublic.from_key` in 
+  `db_models/api_keys.py`), never a bare `list[str]` field validated straight off the ORM row — 
+  `ApiKey.audiences` is a list of `ApiKeyAudience` rows, and a direct `from_attributes` validation 
+  against `list[str]` would fail. The owner and superadmin list queries add `selectinload(ApiKey.audiences)` 
+  so a listing stays single-query.
+
+### Added — Consumer-side privileged-action audit trail in `examples/fastapi_full` (Phase 7, G7-6)
+
+- New `app_privileged_action_audit` table (`examples/fastapi_full/db_models/privileged_action_audit.py`) 
+  mirroring the issuer's contract for the data the example owns: append-only, no foreign key to the actor 
+  or the target row (so it outlives both), `row_pk` and `target_owner_id` stored as text, `actor_role` 
+  stored as a text snapshot.
+- New `examples/fastapi_full/app/audit.py` owns the rules: `record_privileged_action()` writes exactly 
+  one row **in the caller's transaction** (flush, never commit), so a category mutation can never commit 
+  without its audit row; `record_cross_owner_category_action()` is the single place deciding that only a 
+  mutation of *non-owned* data is privileged; and `read_audit_page()` owns the superadmin-all / admin-own 
+  read scope.
+- The category routes now record every superadmin cross-owner `add`/`edit`/`delete`. A delete captures the 
+  primary key and the owner **before** the row is removed. Mutations of one's own data and refused mutations 
+  write nothing. The API-key-gated create can never reach a cross-owner mutation (§3.11), so it writes no 
+  audit row.
+- New `GET /security/audit-log` (ADMIN-gated, `include_in_schema=False`, read-only) and 
+  `POST /security/audit-log/purge` (superadmin-only) in `examples/fastapi_full/app/routes/audit.py`. 
+  The purge is the table's only removal path: horizon-bounded, batched (`FOR UPDATE SKIP LOCKED`), 
+  floor-enforced (new example settings `AUDIT_PURGE_MIN_RETENTION_SECONDS`, default >= 90 days, and 
+  `AUDIT_PURGE_BATCH_SIZE`, default 500 — a shorter window is rejected with `400`), and it writes its own 
+  maintenance row timestamped after the horizon. Neither the request body nor the purge signature accepts a 
+  row identifier, so a targeted delete is not expressible.
+- Additive **Expand** Alembic migration creating the table on every maintained compose example's `m8_app` 
+  chain (`postgres_m8`, `metrics_m8`, `quickstart_m8`, `rs256_m8`), installing the `BEFORE UPDATE`/
+  `BEFORE DELETE` guard triggers that make the write-once/no-targeted-delete contract schema-level on 
+  Postgres, MySQL, and MariaDB alike.
+- `examples/fastapi_full/core/deps.py` and `app/deps.py` now also surface `get_current_active_admin` 
+  (from `fastapi-m8` 4.2.0).
+
+### Fixed — Owner comparison in `examples/fastapi_full` category authorization
+
+- `Category.owner_id` is a raw `CHAR(36)`, so a row loaded from the database carries its owner as **text** 
+  while the authenticated principal's id is a `uuid.UUID`. The direct `item.owner_id != current_user.id` 
+  comparison was therefore true for every owner, denying a non-superadmin WRITER `403` on the row it owns. 
+  New `app.ownership.as_owner_id()`/`is_owned_by()` normalise both sides; the category read/edit/delete 
+  authorization and the audit cross-owner classification now both use them.
+
+### Security — Ownership preservation in `examples/fastapi_full` (Phase 7, G7-5)
+
+- Owner is now resolved by the server, never set by a request body. `CategoryCreate`/`CategoryUpdate` 
+  (`examples/fastapi_full/db_models/categories.py`) set `extra="forbid"`, so a body carrying `owner_id` 
+  is rejected with `422` instead of being silently dropped — previously ownership survived an edit only 
+  because `CategoryUpdate` happened to omit the field.
+- New `examples/fastapi_full/app/ownership.py` owns the rules: `resolve_create_owner_id()` returns the 
+  actor's id only when the actor is the intended owner, `category_update_values()` strips every ownership 
+  key before an edit reaches the row, and `is_canonical_superuser()` centralises the dual-evidence predicate. 
+  New `db_models.categories.build_category()` copies only content fields onto the row, so no payload can 
+  reach the ownership column.
+- A cross-owner create is superadmin-only and requires an explicit `target_owner_id` that must resolve to 
+  an existing user. It never defaults to the actor: a non-superadmin actor gets `403`, an unknown target 
+  `404`, and an unreachable or unconfigured issuer `503` — no path substitutes the actor's id for a target 
+  that was refused, unknown, or unverifiable. The API-key-gated create always refuses a cross-owner target 
+  (§3.11 caps key decisions at WRITER).
+- New `examples/fastapi_full/core/user_directory.py` resolves the target owner over the issuer's owned HTTP 
+  contract (`GET {AUTH_PREFIX}/users/get/{user_id}/`, derived from `INTROSPECTION_URL`) with the caller's 
+  own bearer token — the consumer never reads the auth service's user table. Fail-closed on every 
+  non-definitive outcome; errors carry a bounded reason code only, never the token or the response body.
+- New bundled-example unit suite (`examples/fastapi_full/tests/`) with its own `pytest.ini`, gated by the 
+  new `example-tests` CI job and locked by `tests/test_ci_policy.py`.
+
+### Added — Superadmin audit retention-purge maintenance action (Phase 7, 3.5.1)
+
+- `POST /security/audit-log/purge` (`auth_user_service/routes/security.py`): the append-only 
+  `privileged_action_audit` table's sole removal path — a `get_current_active_superuser`-gated bulk delete 
+  of rows older than a chosen retention window (`1w`/`1m`/`3m`/`6m`/`1y`), enforcing a minimum-retention 
+  floor (new settings `AUDIT_PURGE_MIN_RETENTION_SECONDS`, default >= 90 days, and `AUDIT_PURGE_BATCH_SIZE`, 
+  default 500). A window shorter than the floor is rejected with `400`; lowering the floor is an explicit 
+  operator config change, never a per-call parameter.
+- `auth_user_service/services/audit.py::purge_expired_audit_rows`: the batched (`FOR UPDATE SKIP LOCKED`) 
+  delete implementation, mirroring the outbox worker's batching so a large purge never holds one long-lived 
+  lock. There is deliberately no row-id parameter — the horizon is the only selector, so this can never 
+  become a targeted single-row delete. The purge always writes its own `delete` maintenance audit row 
+  (actor, window, rows removed) via the existing `record_privileged_action`, timestamped after the horizon 
+  it was computed from, so it always survives the purge that wrote it (mirrors the tombstone retention-horizon 
+  + guarded-cleanup pattern, 3.5.1).
+- New `AuditPurgeRateLimiter` (`auth_user_service/core/client.py`), keyed by caller user id under the 
+  existing `security:` ACL prefix (no ACL change needed); route excluded from the OpenAPI schema like its 
+  `audit-log` sibling.
+- `auth_user_service/route_inventory.json` gains the new route entry (`admin` exposure); `README.md` 
+  documents the audit trail and purge contract in a new _Privileged-action audit trail and retention purge_ 
+  subsection.
+
+### Added — Consume the SDK canonical fixture matrix (Phase 5, FIXTURE-01)
+
+- Raise the `auth-sdk-m8` floor in `auth_user_service/requirements_base.txt` to `>=3.1.0,<4.0.0` to consume 
+  the expanded, checksummed `authorization_matrix.json` (schema version `"2"`) from 
+  `auth_sdk_m8.testing.load_authorization_fixture_matrix()`.
+- `tests/routes/test_private_fixture_matrix_contract.py` drives the issuer's own `JtiStatusRequest`/
+  `ApiKeyIntrospectionRequest` schemas and the `check_jti_status`/`introspect_api_key` route handlers 
+  directly from the canonical fixture data (JTI-status v1/v2, API-key introspection shapes, local/remote 
+  principal equivalence, and the audience/capability-policy matrix) instead of locally invented expectations, 
+  so an SDK-side contract drift fails this suite too.
+- Raise the bundled `examples/fastapi_minimal/requirements.txt` and 
+  `examples/fastapi_full/requirements_base.txt` `fastapi-m8` floor to `>=4.1.0,<5.0.0`, matching the 
+  coordinated `auth-sdk-m8 3.1.0` / `fastapi-m8 4.1.0` fixture-consumption bump so both maintained examples 
+  install the SDK/fastapi-m8 pair that ships the expanded fixture matrix.
+
 ### Changed
 
 - **Issuer SDK floor raised to `auth-sdk-m8 >=3.0.0,<4.0.0`** (was
@@ -583,7 +523,7 @@ published to the configured package index.
   fixture now carries `role=SUPERADMIN` (was `role=USER`) so it satisfies the new
   role/flag invariant.
 
-### Security
+### Security (continued)
 
 - **Canonical superuser authorization — no flag-only privilege checks.**
   `get_current_active_superuser` and every direct privileged-flag check
