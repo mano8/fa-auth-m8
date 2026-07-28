@@ -173,7 +173,10 @@ class UserController:
         :meth:`apply_user_update` and owns the commit. A real role change is an
         authorization-state transition, so the generation is bumped
         transactionally (3.5.1) — a same-role update is a no-op for revocation
-        here (the repair path for a mismatched-flag row is a later plan item).
+        here. A mismatched-flag row is not repaired through this wrapper: the
+        audited repair command owns that path
+        (:mod:`auth_user_service.services.security_preflight`), and it propagates
+        the generation, event, and cache eviction exactly like a runtime change.
 
         Args:
             session (Session): The database session to use for the update.

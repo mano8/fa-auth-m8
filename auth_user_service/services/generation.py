@@ -12,9 +12,11 @@ fail-closed increment, staleness predicate) plus the DB-facing
 deletion tombstone, and the DB-authoritative subject-bound v2
 ``/private/v1/jti-status`` decision (3.5.2). The route composes that decision with
 the Redis-blacklist accelerator and the ``503``-on-DB-unavailable rule and owns
-the wire contract; the route-owned role-change transaction/lock and the
-transactional outbox are separate plan items that *compose* these primitives.
-Nothing here acquires the superuser-set lock or drains an outbox.
+the wire contract; the route-owned role-change transaction/lock
+(:mod:`auth_user_service.services.role_admin`) *composes* these primitives.
+Tombstone cleanup reads the revocation outbox to honour the "no undelivered
+effect references this subject" guard, but nothing here acquires the
+superuser-set lock, enqueues an effect, or drains an outbox.
 """
 
 import uuid
@@ -27,6 +29,12 @@ from sqlmodel import Session, col, select
 from auth_sdk_m8.authorization import privilege_claims_are_consistent
 
 from auth_user_service.core.config import settings
+from auth_user_service.db_models.outbox import (
+    STATUS_DEAD,
+    STATUS_LEASED,
+    STATUS_PENDING,
+    RevocationOutbox,
+)
 from auth_user_service.db_models.sessions import ClientSession
 from auth_user_service.db_models.tombstones import AuthTombstone
 from auth_user_service.db_models.users import GENERATION_START as _GENERATION_START
@@ -39,6 +47,16 @@ GENERATION_START: Final[int] = _GENERATION_START
 # Signed 64-bit ceiling (``BIGINT``). Wraparound is prohibited — an increment that
 # would exceed this fails closed rather than resetting the counter (3.5.1).
 GENERATION_MAX: Final[int] = 2**63 - 1
+# Outbox row states whose revocation effect has not been delivered yet. A
+# ``leased`` row is a ``pending`` row a worker currently holds, and a ``dead``
+# row awaits operator replay, so both still *reference* their subject exactly as
+# ``pending`` does; only ``completed`` rows are finished. A tombstone whose
+# subject is named by any of these must survive the retention horizon (3.5.1).
+UNDELIVERED_OUTBOX_STATUSES: Final[tuple[str, ...]] = (
+    STATUS_PENDING,
+    STATUS_LEASED,
+    STATUS_DEAD,
+)
 
 
 class GenerationOverflowError(RuntimeError):
@@ -78,14 +96,24 @@ def tombstone_retention_seconds() -> int:
     """Minimum seconds a deletion tombstone must be retained before cleanup.
 
     The tombstone must outlive every artefact that could still replay the deleted
-    subject's authorization: the access-token TTL and the refresh-session lifetime
-    (3.5.1). The consumer cache horizon, event-replay window, and outbox retention
-    fold in here once those systems land (later plan items); until then the token
-    lifetimes are the authoritative floor.
+    subject's authorization, so the horizon is the maximum of all four (3.5.1):
+
+    * the access-token TTL and the refresh-session lifetime — a token minted
+      before the delete stays parseable until it expires;
+    * the completed-outbox retention — a ``completed`` row is kept as the
+      idempotency window in which a duplicate delivery may still be replayed
+      against the subject (rows that have *not* been delivered are handled by
+      the reference guard in :meth:`GenerationController.cleanup_expired_tombstones`
+      rather than by this horizon);
+    * the operator-declared consumer cache / event-replay horizon, which the
+      issuer cannot observe from its own state.
     """
-    access_seconds = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
-    refresh_seconds = settings.REFRESH_TOKEN_EXPIRE_MINUTES * 60
-    return max(access_seconds, refresh_seconds)
+    return max(
+        settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        settings.REFRESH_TOKEN_EXPIRE_MINUTES * 60,
+        settings.OUTBOX_COMPLETED_RETENTION_SECONDS,
+        settings.TOMBSTONE_CONSUMER_HORIZON_SECONDS,
+    )
 
 
 def _as_aware_utc(value: datetime) -> datetime:
@@ -230,22 +258,43 @@ class GenerationController:
         )
 
     @staticmethod
+    def subjects_with_undelivered_effects(session: Session) -> set[uuid.UUID]:
+        """User ids named by an outbox effect that has not been delivered.
+
+        A ``pending``, ``leased``, or ``dead`` row is a revocation side effect the
+        worker (or an operator replaying a dead letter) may still apply, and it
+        carries the subject in its own columns, so that subject's tombstone must
+        outlive it (3.5.1). Returns an empty set when every effect is completed.
+        """
+        return set(
+            session.exec(
+                select(RevocationOutbox.user_id).where(
+                    col(RevocationOutbox.status).in_(UNDELIVERED_OUTBOX_STATUSES)
+                )
+            ).all()
+        )
+
+    @staticmethod
     def cleanup_expired_tombstones(
         session: Session, *, now: Optional[datetime] = None
     ) -> int:
-        """Delete tombstones older than the retention horizon; return the count.
+        """Delete eligible deletion tombstones; return the count.
 
-        Guarded cleanup: only rows last written before
-        ``now - tombstone_retention_seconds()`` are eligible (3.5.1). The further
-        guard "no pending/dead-letter outbox effect still references the subject"
-        is wired in when the transactional outbox lands (later plan item); until
-        then no outbox exists to reference a subject, so the retention horizon is
-        the only guard.
+        Guarded cleanup with **both** normative guards (3.5.1): a row is eligible
+        only when it was last written before ``now - tombstone_retention_seconds()``
+        **and** no undelivered outbox effect still references its subject. The two
+        are independent — an outbox row that is dead-lettered indefinitely holds
+        its subject's tombstone indefinitely, however long the horizon is — so a
+        referenced subject is skipped rather than deleted, and the tombstone keeps
+        denying every token minted for it.
         """
         current = _as_aware_utc(now or datetime.now(timezone.utc))
         horizon = timedelta(seconds=tombstone_retention_seconds())
+        referenced = GenerationController.subjects_with_undelivered_effects(session)
         deleted = 0
         for row in session.exec(select(AuthTombstone)).all():
+            if row.user_id in referenced:
+                continue
             if current - _as_aware_utc(row.updated_at) >= horizon:
                 session.delete(row)
                 deleted += 1

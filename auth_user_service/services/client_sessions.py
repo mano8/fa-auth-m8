@@ -296,7 +296,10 @@ class SessionController:
         with a TTL derived from its own expiry, revokes the matching refresh
         allowlist entry, and pushes the ``jti=None`` user-wide event so consumers
         flush every cached session for the user. The durable transactional outbox
-        that replaces this best-effort push is a later plan item.
+        (:mod:`auth_user_service.services.outbox`) replaces this push on the
+        **role-change** path only; the non-role-change revocation paths of 3.5.4
+        keep the best-effort accelerator, because there the authoritative delete
+        is the whole revocation and a lost push only delays cache eviction.
 
         ``user_wide=False`` narrows the eviction to the captured targets — one
         event per revoked JTI — for the administrative single-session path, whose

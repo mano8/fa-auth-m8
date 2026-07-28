@@ -568,6 +568,19 @@ Role-change revocation side effects (the Redis blacklist writes and the user-wid
 | `OUTBOX_BACKOFF_BASE_SECONDS` / `OUTBOX_BACKOFF_CAP_SECONDS` | no | `2.0` / `300.0` | Exponential-backoff base and cap between retries. |
 | `OUTBOX_COMPLETED_RETENTION_SECONDS` | no | `3600` | How long a completed row is retained (idempotency window) before reaping. |
 
+### Deletion tombstones
+
+Deleting a user removes the row that carries its `auth_generation`, so the delete transaction first writes a durable **authorization tombstone** — a `<prefix>_tombstone` row keyed by `user_id`, with no foreign key to the user, holding the subject's terminal generation. Introspection treats a tombstoned subject as fully revoked before it looks at anything else, and the write is an idempotent max upsert, so a replayed delete can only raise the terminal generation, never lower it. User ids are never reused, so a tombstone can never deny a legitimately new account.
+
+A tombstone is removed only when **both** guards allow it:
+
+- **Retention horizon.** It must be older than the maximum of the access-token TTL, the refresh-session lifetime, `OUTBOX_COMPLETED_RETENTION_SECONDS`, and `TOMBSTONE_CONSUMER_HORIZON_SECONDS` — i.e. it outlives every artefact that could still replay the deleted subject's authorization.
+- **No undelivered outbox effect references the subject.** A `pending`, `leased`, or `dead` row in the revocation outbox pins its subject's tombstone for as long as it exists (a leased row is a pending row a worker currently holds; a dead-lettered row awaits operator replay). This guard is independent of the horizon: an effect stuck in the dead-letter queue keeps the tombstone alive indefinitely. `completed` rows never pin — their idempotency window is already part of the horizon above.
+
+| Variable | Required | Default | Description |
+| -------- | -------- | ------- | ----------- |
+| `TOMBSTONE_CONSUMER_HORIZON_SECONDS` | no | `3600` | The part of the retention horizon the issuer cannot observe: how long a *consumer* may still hold a positive cache entry for the subject or replay a `session-revoked` event about it. Set it to the longest revocation-cache TTL / event-replay window across your consumers. A floor, never a ceiling — the effective retention is the maximum of all four values, so raising it is always safe. |
+
 ### Auth Degradation Policy
 
 Controls what happens to each security control when Redis is unavailable. All settings are optional; the defaults represent the recommended production posture.

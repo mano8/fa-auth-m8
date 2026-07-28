@@ -4,7 +4,8 @@ Covers the framework-neutral helpers (fail-closed increment, staleness
 predicate, retention horizon) and the DB-facing :class:`GenerationController`
 (generation bump, idempotent max tombstone upsert, tombstone lookup, the
 DB-authoritative stale-generation check used by the introspection path, and the
-horizon-guarded tombstone cleanup) — 3.5.1 ``REV-GEN-01``.
+tombstone cleanup guarded by *both* the retention horizon and the "no undelivered
+outbox effect references this subject" rule) — 3.5.1 ``REV-GEN-01``.
 """
 
 import uuid
@@ -14,6 +15,15 @@ import pytest
 
 from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 
+from auth_user_service.db_models.outbox import (
+    EFFECT_PUBLISH,
+    STATUS_COMPLETED,
+    STATUS_DEAD,
+    STATUS_LEASED,
+    STATUS_PENDING,
+    USER_WIDE_TARGET,
+    RevocationOutbox,
+)
 from auth_user_service.db_models.sessions import ClientSession
 from auth_user_service.db_models.tombstones import AuthTombstone
 from auth_user_service.db_models.users import User
@@ -27,6 +37,21 @@ from auth_user_service.services.generation import (
     next_generation,
     tombstone_retention_seconds,
 )
+
+
+def _add_outbox_row(db_session, user_id: uuid.UUID, *, status: str) -> RevocationOutbox:
+    """Commit one user-wide publish effect for *user_id* in the given state."""
+    row = RevocationOutbox(
+        user_id=user_id,
+        auth_generation=2,
+        effect_type=EFFECT_PUBLISH,
+        target_digest=USER_WIDE_TARGET,
+        payload={"user_id": str(user_id), "jti": None},
+        status=status,
+    )
+    db_session.add(row)
+    db_session.commit()
+    return row
 
 
 def _stamp_session(
@@ -76,14 +101,34 @@ class TestIsSessionGenerationStale:
 
 
 class TestTombstoneRetentionSeconds:
-    def test_uses_longest_token_lifetime(self):
+    def test_uses_longest_of_every_horizon_component(self):
         from auth_user_service.services import generation as gen
 
         expected = max(
             gen.settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
             gen.settings.REFRESH_TOKEN_EXPIRE_MINUTES * 60,
+            gen.settings.OUTBOX_COMPLETED_RETENTION_SECONDS,
+            gen.settings.TOMBSTONE_CONSUMER_HORIZON_SECONDS,
         )
         assert tombstone_retention_seconds() == expected
+
+    @pytest.mark.parametrize(
+        "attribute, value",
+        [
+            ("ACCESS_TOKEN_EXPIRE_MINUTES", 10**6 // 60),
+            ("REFRESH_TOKEN_EXPIRE_MINUTES", 10**6 // 60),
+            ("OUTBOX_COMPLETED_RETENTION_SECONDS", 10**6),
+            ("TOMBSTONE_CONSUMER_HORIZON_SECONDS", 10**6),
+        ],
+    )
+    def test_each_component_can_dominate(self, monkeypatch, attribute, value):
+        # Every component of the 3.5.1 horizon is load-bearing: raising any one
+        # of them alone raises the retention. Guards against a component being
+        # dropped from the max() without a test noticing.
+        from auth_user_service.services import generation as gen
+
+        monkeypatch.setattr(gen.settings, attribute, value)
+        assert tombstone_retention_seconds() >= 10**6 - 60
 
 
 class TestBumpUserGeneration:
@@ -290,6 +335,71 @@ class TestCleanupExpiredTombstones:
     def test_defaults_now_to_current_time(self, db_session):
         # No rows → nothing deleted, and the default ``now`` branch is exercised.
         assert GenerationController.cleanup_expired_tombstones(db_session) == 0
+
+    @pytest.mark.parametrize("status", [STATUS_PENDING, STATUS_LEASED, STATUS_DEAD])
+    def test_retains_row_referenced_by_undelivered_effect(self, db_session, status):
+        # 3.5.1: cleanup runs only when no undelivered outbox effect still names
+        # the subject — however far past the retention horizon the tombstone is.
+        now = datetime.now(timezone.utc)
+        horizon = tombstone_retention_seconds()
+        stale_id = self._write_tombstone(
+            db_session,
+            updated_at=(now - timedelta(seconds=horizon * 10)).replace(tzinfo=None),
+        )
+        _add_outbox_row(db_session, stale_id, status=status)
+
+        deleted = GenerationController.cleanup_expired_tombstones(db_session, now=now)
+
+        assert deleted == 0
+        assert db_session.get(AuthTombstone, stale_id) is not None
+
+    def test_deletes_row_once_its_effects_are_completed(self, db_session):
+        # A completed row is finished: its own idempotency window is already
+        # folded into the retention horizon, so it must not block cleanup.
+        now = datetime.now(timezone.utc)
+        horizon = tombstone_retention_seconds()
+        stale_id = self._write_tombstone(
+            db_session,
+            updated_at=(now - timedelta(seconds=horizon + 60)).replace(tzinfo=None),
+        )
+        _add_outbox_row(db_session, stale_id, status=STATUS_COMPLETED)
+
+        deleted = GenerationController.cleanup_expired_tombstones(db_session, now=now)
+
+        assert deleted == 1
+        assert db_session.get(AuthTombstone, stale_id) is None
+
+    def test_guard_is_scoped_to_the_referenced_subject(self, db_session):
+        # One subject's dead letter never pins another subject's tombstone.
+        now = datetime.now(timezone.utc)
+        horizon = tombstone_retention_seconds()
+        updated_at = (now - timedelta(seconds=horizon + 60)).replace(tzinfo=None)
+        pinned_id = self._write_tombstone(db_session, updated_at=updated_at)
+        free_id = self._write_tombstone(db_session, updated_at=updated_at)
+        _add_outbox_row(db_session, pinned_id, status=STATUS_DEAD)
+
+        deleted = GenerationController.cleanup_expired_tombstones(db_session, now=now)
+
+        assert deleted == 1
+        assert db_session.get(AuthTombstone, pinned_id) is not None
+        assert db_session.get(AuthTombstone, free_id) is None
+
+
+class TestSubjectsWithUndeliveredEffects:
+    def test_completed_effect_does_not_reference_its_subject(self, db_session):
+        completed_id = uuid.uuid4()
+        _add_outbox_row(db_session, completed_id, status=STATUS_COMPLETED)
+        referenced = GenerationController.subjects_with_undelivered_effects(db_session)
+        assert completed_id not in referenced
+
+    def test_collects_every_undelivered_status(self, db_session):
+        expected = set()
+        for status in (STATUS_PENDING, STATUS_LEASED, STATUS_DEAD):
+            user_id = uuid.uuid4()
+            _add_outbox_row(db_session, user_id, status=status)
+            expected.add(user_id)
+        referenced = GenerationController.subjects_with_undelivered_effects(db_session)
+        assert expected <= referenced
 
 
 class _StubExec:

@@ -306,6 +306,37 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   (default `600`) bounds the per-consumer anti-abuse ceiling, observed with the
   registry-bounded consumer id label only.
 
+### Security — Deletion-tombstone lifecycle completed (`REV-GEN-01`, 3.5.1)
+
+- **The tombstone retention horizon now covers every artefact that can replay a
+  deleted subject.** `tombstone_retention_seconds()` previously returned only
+  `max(access-token TTL, refresh-session lifetime)`, with the remaining
+  components deferred to "when the transactional outbox lands". It now returns
+  the maximum of the access-token TTL, the refresh-session lifetime, the
+  completed-outbox retention (`OUTBOX_COMPLETED_RETENTION_SECONDS`), and the new
+  operator-declared consumer horizon.
+- **New setting `TOMBSTONE_CONSUMER_HORIZON_SECONDS`** (default `3600`, range
+  `0`–`2592000`) declares the one part of that horizon the issuer cannot observe
+  from its own state: how long a *consumer* may still hold a positive cache
+  entry for the subject or replay a session-revoked event about it. Set it to
+  the longest revocation-cache TTL / event-replay window across your consumers.
+  It is a floor, never a ceiling — the effective retention is the maximum of all
+  four values, so raising it is always safe. Documented in
+  `auth_user_service/.example_env` and every maintained compose example's
+  `auth.env.example`.
+- **`cleanup_expired_tombstones` gained the normative outbox-reference guard.** A
+  tombstone is now deleted only when the retention horizon has passed **and** no
+  undelivered outbox effect still names its subject. `pending`, `leased`, and
+  `dead` rows all block: a leased row is a pending row a worker currently holds,
+  and a dead-lettered row awaits operator replay, so each can still act on the
+  subject. The two guards are independent — a row dead-lettered indefinitely
+  pins its subject's tombstone indefinitely, however long the horizon is — so the
+  tombstone keeps denying every token minted for that subject. `completed` rows
+  never block; their idempotency window is already folded into the horizon.
+- No schema, migration, token, event, or introspection shape change: the guard is
+  a read of the existing `revocation_outbox` table, and the widened horizon only
+  retains tombstones longer.
+
 ### Added — 4.6 dialect-declaration contract (testing and deployment updates)
 
 - **Maintained-example dialect reassignment (one example per certified engine, §4.6):** 

@@ -185,7 +185,8 @@ class AuthController:
         racing a role/activation change reads the committed row — its current
         ``role``/``is_superuser``/``is_active``/``auth_generation`` — immediately
         before signing (3.4). On SQLite ``FOR UPDATE`` is a no-op; the real
-        contention behaviour is certified on the engine matrix (later plan item).
+        contention behaviour is certified on the engine matrix
+        (``tests/integration/database/``, ``TEST-DB-01``).
         """
         statement = (
             select(User)

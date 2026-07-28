@@ -200,6 +200,22 @@ METRICS_GROUPS=all
 # Retention (seconds) for completed outbox rows before purge (0 = keep forever).
 #OUTBOX_COMPLETED_RETENTION_SECONDS=3600
 
+# ── Deletion-tombstone retention horizon (v2.0.0) ────────────────────────────
+# Deleting a user writes a durable tombstone that keeps denying every token ever
+# minted for that subject. It may only be cleaned up once nothing can still
+# replay that subject's authorization. The issuer derives most of that horizon
+# itself — access-token TTL, refresh-session lifetime, completed-outbox
+# retention — and never cleans up a tombstone whose subject is still named by an
+# undelivered (pending/leased/dead-letter) outbox effect, however old it is.
+# This setting declares the one part the issuer cannot observe: how long a
+# *consumer* may still hold a positive cache entry for the subject or replay a
+# session-revoked event about it. Set it to the longest revocation-cache TTL /
+# event-replay window across your consumers (in fastapi-m8 consumers, at least
+# `REVOCATION_CACHE_TTL_SECONDS`). It is a floor, never a ceiling — the effective
+# retention is the maximum of all four values, so raising it is always safe and
+# lowering it never shortens retention below the derived horizon.
+#TOMBSTONE_CONSUMER_HORIZON_SECONDS=3600
+
 # ── Privileged-action audit and API-key management retention (v2.0.0) ────────
 # Audit and dead-key lifecycle settings. Both retention floors default to 90 days
 # and CANNOT be lowered without explicit operator opt-in (changes to these

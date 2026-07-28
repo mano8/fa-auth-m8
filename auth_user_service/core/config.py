@@ -158,6 +158,18 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     # How long a completed row is retained (idempotency window) before reaping.
     OUTBOX_COMPLETED_RETENTION_SECONDS: int = Field(3600, ge=0, le=2592000)
 
+    # ── Deletion-tombstone retention horizon (3.5.1) ────────────────────────
+    # A deletion tombstone must outlive every artefact that could still replay a
+    # deleted subject's authorization. The issuer derives the token-lifetime and
+    # outbox-retention parts of that horizon itself; this setting declares the
+    # part it cannot observe — how long a *consumer* may still hold a positive
+    # cache entry for the subject or replay a session-revoked event about it.
+    # Set it to the longest consumer revocation-cache TTL / event-replay window
+    # across the deployment. It is a floor, never a ceiling: the effective
+    # retention is the maximum of this value, the access-token TTL, the
+    # refresh-session lifetime, and the completed-outbox retention.
+    TOMBSTONE_CONSUMER_HORIZON_SECONDS: int = Field(3600, ge=0, le=2592000)
+
     # ── Privileged-action audit retention purge (Phase 7) ───────────────────
     # The append-only privileged_action_audit table's only removal path: a
     # superadmin-gated bulk delete of rows older than a chosen window

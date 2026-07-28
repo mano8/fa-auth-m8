@@ -156,7 +156,8 @@ def acquire_superuser_set_lock(session: Session) -> SecurityPolicy:
     production the Expand migration seeds that row; this defensively seeds it if
     absent (first run / unit-test metadata schema) and re-locks it, so the lock
     is always held on return. On SQLite ``FOR UPDATE`` is a no-op — the real
-    contention behavior is certified on the engine matrix (later plan item).
+    contention behavior is certified on the engine matrix
+    (``tests/integration/database/``, ``TEST-DB-01``).
     """
     policy = session.exec(
         select(SecurityPolicy)
