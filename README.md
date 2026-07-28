@@ -1083,8 +1083,13 @@ CurrentUser = auth.CurrentUser
 from fastapi_m8 import AppLifecycle, create_app
 from .core.deps import auth
 
-app = create_app(settings, api_router, service_name="my-service", service_version="1.0.0",
-                 lifecycle=AppLifecycle(auth_deps=auth))
+app = create_app(
+    settings,
+    api_router,
+    service_name="my-service",
+    service_version="1.0.0",
+    lifecycle=AppLifecycle(auth_deps=auth),
+)
 ```
 
 `build_auth_deps` reads `ACCESS_TOKEN_ALGORITHM`, `ACCESS_SECRET_KEY` / `ACCESS_PUBLIC_KEY_FILE`, `TOKEN_ISSUER`, `TOKEN_AUDIENCE`, `JWKS_URI`, `TOKEN_MODE`, `INTROSPECTION_URL`, and failure-mode settings directly from a `ConsumerServiceSettings` instance.

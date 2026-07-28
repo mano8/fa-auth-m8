@@ -6,3 +6,8 @@ exclude = [
     "examples/docker_compose",   # infrastructure templates, auto-generated migrations
     "**/alembic/versions",       # auto-generated Alembic migration files
 ]
+
+[lint]
+# Explicitly state the historically enforced rule set rather than inherit
+# ruff's default, which widened between 0.15 and 0.16 (G8-2).
+select = ["E4", "E7", "E9", "F"]
