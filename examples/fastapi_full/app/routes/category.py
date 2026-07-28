@@ -19,6 +19,7 @@ from fastapi_full.app.ownership import (
     is_owned_by,
     resolve_create_owner_id,
 )
+from fastapi_full.core.exceptions import handle_route_exception
 
 from fastapi_full.db_models.categories import (
     Category,
@@ -69,7 +70,7 @@ async def read_root(
 
         return CategoriesPublic(data=items, count=count)
     except Exception as ex:
-        return BaseController.handle_exception(ex=ex, session=session)
+        return handle_route_exception(ex=ex, session=session)
 
 
 @router.get(
@@ -97,7 +98,7 @@ def read_item(
     except HTTPException as ex:
         raise ex
     except Exception as ex:
-        return BaseController.handle_exception(ex=ex, session=session)
+        return handle_route_exception(ex=ex, session=session)
 
 
 @router.post(
@@ -147,7 +148,7 @@ def create_item(
     except OwnershipError as ex:
         raise HTTPException(status_code=ex.status_code, detail=ex.detail) from ex
     except Exception as ex:
-        BaseController.handle_exception(ex=ex, session=session)
+        handle_route_exception(ex=ex, session=session)
 
 
 @router.put(
@@ -195,7 +196,7 @@ def update_item(
         session.refresh(item)
         return ResponseModelBase(success=True, data=dict(item))
     except Exception as ex:
-        BaseController.handle_exception(ex=ex, session=session)
+        handle_route_exception(ex=ex, session=session)
 
 
 @router.delete(
@@ -239,4 +240,4 @@ def delete_item(
         session.commit()
         return ResponseMessage(success=True, msg="Category deleted successfully")
     except Exception as ex:
-        BaseController.handle_exception(ex=ex, session=session)
+        handle_route_exception(ex=ex, session=session)

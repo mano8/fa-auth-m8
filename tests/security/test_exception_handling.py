@@ -5,16 +5,19 @@ Verifies that:
 - SQLAlchemy OperationalError → 503 (database unreachable)
 - Redis ConnectionError → 503 (cache unreachable)
 - Session is rolled back on OperationalError
-- Everything else is delegated to BaseController (500)
+- Everything else is rendered as an opaque 500 that carries no exception text
+- An integrity error still answers with its parsed table/column detail
 """
 
+import json
+import logging
 from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from redis.exceptions import ConnectionError as RedisConnectionError
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 
 from auth_user_service.core.exceptions import handle_route_exception
 
@@ -112,7 +115,7 @@ class TestRedisUnavailable:
 
 
 class TestOtherExceptionDelegation:
-    """Non-infra exceptions are delegated to BaseController (returns 500 JSONResponse)."""
+    """Non-infra exceptions produce a 500 JSONResponse."""
 
     def test_value_error_delegates_to_base_controller(self):
         ex = ValueError("something broke")
@@ -127,8 +130,89 @@ class TestOtherExceptionDelegation:
         assert result.status_code == 500
 
     def test_session_rolled_back_via_base_controller(self):
-        """BaseController rolls back the session for generic errors."""
+        """The session is rolled back for generic errors."""
         ex = ValueError("boom")
         mock_session = MagicMock()
         handle_route_exception(ex, session=mock_session)
         mock_session.rollback.assert_called_once()
+
+
+def _body(response: JSONResponse) -> dict:
+    return json.loads(response.body)
+
+
+# A driver failure exactly as SQLAlchemy raises it: the statement, the bound
+# parameters and the server hint all live in ``str(ex)``.
+_LEAKY_ERROR = ProgrammingError(
+    "SELECT app_category.owner_id FROM app_category WHERE app_category.owner_id = %(id)s",
+    {"id": "ab1ae7e8-fe0d-4454-944b-26729424f0e4"},
+    Exception(
+        "operator does not exist: character = uuid\n"
+        "HINT:  No operator matches the given name and argument types."
+    ),
+)
+
+
+class TestNoStatementDisclosure:
+    """SEC-NO-SECRET-DISCLOSURE: a response never carries the failing statement.
+
+    The reported gap: a dashboard query failed and the 500 body returned the
+    whole ``SELECT``, its bound parameters and the PostgreSQL hint to the
+    caller. The statement belongs in the service log, never in the response.
+    """
+
+    def test_driver_error_body_has_no_statement(self):
+        body = _body(handle_route_exception(_LEAKY_ERROR))
+        serialized = json.dumps(body)
+        for leaked in ("SELECT", "app_category", "operator does not exist", "HINT"):
+            assert leaked not in serialized
+
+    def test_driver_error_body_is_a_generic_message(self):
+        body = _body(handle_route_exception(_LEAKY_ERROR))
+        assert body["success"] is False
+        assert body["errors"][0]["error"].startswith("An internal error occurred.")
+
+    def test_driver_error_is_logged_in_full(self, caplog):
+        with caplog.at_level(
+            logging.WARNING, logger="auth_user_service.core.exceptions"
+        ):
+            handle_route_exception(_LEAKY_ERROR)
+        record = caplog.records[0]
+        assert record.levelno == logging.WARNING
+        assert record.exc_info is not None
+        assert "app_category" in str(record.exc_info[1])
+
+    def test_response_reference_matches_the_log_reference(self):
+        """The caller can quote a reference that points at the logged exception."""
+        body = _body(handle_route_exception(_LEAKY_ERROR))
+        reference = body["errors"][0]["error"].rsplit("Reference: ", 1)[1].rstrip(".")
+        assert len(reference) == 12
+
+    def test_arbitrary_exception_text_is_not_echoed(self):
+        body = _body(handle_route_exception(RuntimeError("internal detail leaked")))
+        assert "internal detail leaked" not in json.dumps(body)
+
+
+class TestIntegrityErrorStillReportsItsFields:
+    """Parsed integrity detail is caller-safe and stays, so a 400 remains usable."""
+
+    def test_not_null_violation_names_the_column(self):
+        ex = IntegrityError(
+            "INSERT INTO auth_api_key_audiences (api_key_id) VALUES (%(id)s)",
+            {"id": None},
+            Exception(
+                'null value in column "api_key_id" of relation '
+                '"auth_api_key_audiences" violates not-null constraint'
+            ),
+        )
+        body = _body(handle_route_exception(ex))
+        assert body["from_error"] == "IntegrityError"
+        assert body["errors"][0]["field_name"] == "api_key_id"
+
+    def test_integrity_error_body_has_no_statement(self):
+        ex = IntegrityError(
+            "INSERT INTO auth_api_key_audiences (api_key_id) VALUES (%(id)s)",
+            {"id": None},
+            Exception('null value in column "api_key_id" of relation "x"'),
+        )
+        assert "INSERT INTO" not in json.dumps(_body(handle_route_exception(ex)))

@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi_m8 import BaseController, ResponseModelBase
 from fastapi_full.app.deps import SessionDep
 from fastapi_full.app.ownership import OwnershipError, resolve_create_owner_id
+from fastapi_full.core.exceptions import handle_route_exception
 from fastapi_full.db_models.categories import CategoryCreate, build_category
 
 # pylint: disable=broad-exception-caught
@@ -66,6 +67,6 @@ def build_router(get_current_api_key_writer: Callable) -> APIRouter:
         except OwnershipError as ex:
             raise HTTPException(status_code=ex.status_code, detail=ex.detail) from ex
         except Exception as ex:
-            return BaseController.handle_exception(ex=ex, session=session)
+            return handle_route_exception(ex=ex, session=session)
 
     return router

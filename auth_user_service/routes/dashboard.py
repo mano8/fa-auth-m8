@@ -2,7 +2,10 @@
 DashBoard routes
 """
 
+from typing import Union
+
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from auth_sdk_m8.controllers.base import BaseController
 from auth_user_service.core.deps import CurrentUser, SessionDep
 from auth_user_service.services.dashboard import DashboardController
@@ -19,7 +22,7 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 )
 def get_dash_users_stats(
     session: SessionDep, current_user: CurrentUser
-) -> UsersActivity:
+) -> Union[UsersActivity, JSONResponse]:
     """Get phpfina files list from source."""
     # Pre-existing route, exercised only by tests/live (no unit-level HTTP
     # client in this suite) — not part of the new authorization-bearing
@@ -36,7 +39,7 @@ def get_dash_users_stats(
 )
 def get_dash_current_user_stats(
     session: SessionDep, current_user: CurrentUser
-) -> UsersActivity:
+) -> Union[UsersActivity, JSONResponse]:
     """Get phpfina files list from source."""
     # Pre-existing route, exercised only by tests/live — see justification
     # on get_dash_users_stats above (3A-2).

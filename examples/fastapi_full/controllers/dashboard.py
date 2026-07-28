@@ -3,10 +3,13 @@ Dashboard Controller
 """
 
 from datetime import datetime, timedelta
+from typing import Union
+from fastapi.responses import JSONResponse
 from sqlalchemy import case, and_
 from sqlmodel import Session, select, func
-from fastapi_m8 import BaseController, has_superuser_privileges
+from fastapi_m8 import has_superuser_privileges
 from fastapi_full.core.deps import CurrentUser
+from fastapi_full.core.exceptions import handle_route_exception
 from fastapi_full.schemas.dashboard import (
     ActivityStats,
     RangeActivityType,
@@ -141,7 +144,7 @@ class DashboardController:
         current_user: CurrentUser,
         time_range: RangeActivityType,
         is_current: bool = False,
-    ) -> UsersActivity:
+    ) -> Union[UsersActivity, JSONResponse]:
         """
         Retrieves dashboard user statistics.
 
@@ -181,4 +184,4 @@ class DashboardController:
                 activity=activity,
             )
         except Exception as ex:
-            return BaseController.handle_exception(ex=ex, session=session)
+            return handle_route_exception(ex=ex, session=session)

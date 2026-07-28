@@ -1,17 +1,21 @@
-"""Shared route-level exception-to-HTTP-response helpers."""
+"""Route-level exception-to-HTTP-response helper for this consumer.
+
+Every route body funnels its ``except`` branch through
+:func:`handle_route_exception` rather than calling ``BaseController`` directly,
+so one place decides what a failure is allowed to tell a caller.
+"""
 
 import logging
 import uuid
 from typing import Optional
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from redis.exceptions import ConnectionError as RedisConnectionError
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
-from auth_sdk_m8.controllers.base import BaseController
+from fastapi_m8 import BaseController
 
 _logger = logging.getLogger(__name__)
 
@@ -24,8 +28,8 @@ _STRUCTURED_ERRORS = (IntegrityError, ValidationError)
 # The only detail any other failure may put in a response body. A driver
 # exception stringifies to the statement it failed on, its bound parameters
 # and the server's hint, so no response is ever rendered from an unrecognised
-# exception (SEC-NO-SECRET-DISCLOSURE) — the full exception goes to the
-# service log under a reference the caller can quote to support.
+# exception — the full exception goes to the application log under a reference
+# the caller can quote to support.
 _OPAQUE_DETAIL = "An internal error occurred."
 
 
@@ -53,32 +57,22 @@ def handle_route_exception(
     ex: Exception,
     session: Optional[Session] = None,
 ) -> JSONResponse:
-    """Map a caught exception to the appropriate HTTP response.
+    """Map a caught exception to its response, redacting anything unrecognised.
 
-    Raises HTTPException (not returns) for infrastructure failures so the
-    correct status code reaches the client even when the caller uses ``return``.
+    Args:
+        ex: The caught exception.
+        session: Optional session to roll back.
 
-    - HTTPException          → re-raised (preserves original status code)
-    - OperationalError       → 503 (database unreachable)
-    - RedisConnectionError   → 503 (cache unreachable)
-    - IntegrityError /
-      ValidationError        → rendered from the parsed error fields (400)
-    - everything else        → logged in full, rendered as an opaque 500
+    Returns:
+        The standard error envelope — rendered from the parsed fields of an
+        integrity or validation error, and from an opaque stand-in for every
+        other failure.
+
+    Raises:
+        HTTPException: Re-raised unchanged so its status code is preserved.
     """
     if isinstance(ex, HTTPException):
         raise ex
-    if isinstance(ex, OperationalError):
-        if session:
-            session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Database temporarily unavailable. Please try again.",
-        )
-    if isinstance(ex, RedisConnectionError):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Cache service temporarily unavailable. Please try again.",
-        )
     if not isinstance(ex, _STRUCTURED_ERRORS):
         ex = _redact(ex)
     return BaseController.handle_exception(ex=ex, session=session)
