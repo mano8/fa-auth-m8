@@ -171,9 +171,19 @@ class ApiKeyService:
         committing**, so the caller commits atomically with the key row. The
         *audiences* must already be validated (:meth:`validate_audiences`).
         Returns the created rows.
+
+        A newly issued key has no ``id`` yet — the primary key comes from the
+        column default, which SQLAlchemy only applies at INSERT time — so the
+        parent is flushed first when needed. Without it every binding would
+        carry a null ``api_key_id`` and the insert would fail on the NOT NULL
+        column. Flushing is transaction-neutral: the caller still owns the
+        commit boundary.
         """
         for existing in list(api_key.audiences or []):
             session.delete(existing)
+        if api_key.id is None:
+            session.add(api_key)
+            session.flush()
         now = datetime.now(timezone.utc)
         rows = [
             ApiKeyAudience(api_key_id=api_key.id, audience_id=audience, created_at=now)

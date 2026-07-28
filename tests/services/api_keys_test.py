@@ -527,6 +527,25 @@ class TestSetKeyAudiencesInTx:
         db_session.refresh(api_key)
         assert [a.audience_id for a in api_key.audiences] == ["prompt-engine-m8"]
 
+    def test_binds_a_key_that_is_not_yet_persisted(self, db_session, sample_user):
+        """The issuance path: the key row has no id until it is flushed.
+
+        Every other caller passes a key that is already in the database. The
+        creation route does not, so the bindings would otherwise be written with
+        a null ``api_key_id`` and the insert would fail on the NOT NULL column.
+        """
+        api_key = ApiKey(
+            key_hash=(uuid.uuid4().hex + uuid.uuid4().hex),
+            user_id=sample_user.id,
+            name="new-key",
+        )
+        db_session.add(api_key)
+        ApiKeyService.set_key_audiences_in_tx(db_session, api_key, ["prompt-engine-m8"])
+        db_session.commit()
+        db_session.refresh(api_key)
+        assert api_key.id is not None
+        assert [a.audience_id for a in api_key.audiences] == ["prompt-engine-m8"]
+
 
 class TestBindExistingKeyAudiences:
     def _patch_registry(self):
