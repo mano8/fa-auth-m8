@@ -1141,6 +1141,22 @@ alembic -c auth_user_service/alembic.ini revision --autogenerate -m "description
 alembic -c auth_user_service/alembic.ini upgrade head
 ```
 
+**MySQL prerequisite — trigger creation under binary logging.** The
+privileged-action audit table's write-once guard is a trigger. MySQL 8 enables
+binary logging by default, and a user without `SUPER` cannot then create a
+trigger unless `log_bin_trust_function_creators` is on (error **1419**), so
+`alembic upgrade head` fails for an ordinary application user on a stock MySQL 8
+server. Before migrating a MySQL deployment, either set
+
+```sql
+SET GLOBAL log_bin_trust_function_creators = 1;   -- or set it in my.cnf
+```
+
+or run the migration as a user holding `SUPER`. PostgreSQL and MariaDB are
+unaffected — MariaDB ships with binary logging off. The Layer B matrix applies
+the same prerequisite to its ephemeral MySQL target, so the certified migration
+path is the one a correctly provisioned deployment runs.
+
 ### Linting & formatting
 
 ```bash
@@ -1163,6 +1179,28 @@ bandit -r auth_user_service examples/fastapi_full --severity-level medium
 ```
 
 ### Tests
+
+The suite has three layers with distinct ownership; none substitutes for another.
+
+| Layer | Suite | Needs | Owns |
+| ----- | ----- | ----- | ---- |
+| A — unit | `tests/` (default run) | nothing (no Docker, no database) | the 100% coverage gate; portable ORM/service/route behaviour, using in-memory SQLite strictly as a surrogate |
+| B — database integration | `tests/integration/database/` | one ephemeral PostgreSQL, MySQL, or MariaDB container | migrations, engine-enforced constraints and enums, `FOR UPDATE` / `SKIP LOCKED`, cascades, and real-connection concurrency |
+| C — live security | `tests/live/` (and `security-tests-m8`) | a running Compose stack | black-box adversarial behaviour |
+
+100% Python coverage, database-dialect correctness, and end-to-end security
+correctness are three different guarantees. Layer A can never certify a
+migration, a lock, or a trigger — SQLite has no such semantics — so Layer B is
+the authoritative portability evidence, and it runs on every database-sensitive
+pull request plus main/nightly/release. See
+[`tests/integration/database/README.md`](tests/integration/database/README.md).
+
+```bash
+# Layer B — one certified dialect at a time (starts a disposable container)
+pytest -m database_integration tests/integration/database --database=postgresql --no-cov
+pytest -m database_integration tests/integration/database --database=mysql --no-cov
+pytest -m database_integration tests/integration/database --database=mariadb --no-cov
+```
 
 ```bash
 # Unit + integration tests (default — no live stack required)

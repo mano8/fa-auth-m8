@@ -13,6 +13,59 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — Layer B database integration matrix and CI policy (`TEST-DB-01`, `TEST-LAYER-01`, §4.6)
+
+- New `tests/integration/database/` suite: white-box validation of ORM
+  mappings, transactions, Alembic migrations, constraints, locking, and
+  concurrency against **ephemeral real database containers** on all three
+  certified dialects at their pinned versions — PostgreSQL
+  `postgres:18.4-alpine`, MySQL `mysql:8.4.10`, MariaDB `mariadb:12.3.2-ubi`.
+  MySQL and MariaDB are separate certified dialects; one never certifies the
+  other. Select with `pytest -m database_integration tests/integration/database
+  --database=postgresql|mysql|mariadb`; the fixtures start a disposable
+  container, or consume a service container with `FA_AUTH_IT_MODE=external`.
+- Coverage: `upgrade head` from empty and from **every** supported prior
+  revision; ORM-metadata versus migrated-schema consistency; Enforce failing
+  and rolling back over un-repaired rows; the Expand → global
+  legacy-session-revocation → Enforce cutover proving legacy sessions are
+  revoked and never backfilled (previously proven only at service level); the
+  role/flag equivalence `CHECK` in both directions separated from `NOT NULL`;
+  native enum representation; `BIGINT auth_generation`; tombstone persistence
+  without a foreign key; `api_key_audiences`/`RateLimit` `ON DELETE CASCADE`;
+  `ApiKey.access_mode` default backfill; outbox uniqueness and indexes;
+  `security_policy` `SELECT ... FOR UPDATE` contention; outbox
+  `FOR UPDATE SKIP LOCKED` claiming; both horizon-bounded purges batching under
+  real contention; the **two-connection last-superuser race** and the
+  **concurrent-login-during-downgrade generation race** (neither expressible on
+  the SQLite surrogate); rollback after partial failure; and every 3.5.4
+  revocation path re-proven with Redis unavailable through the real v2
+  JTI-status route.
+- New `.github/workflows/database-integration.yaml`. The matrix runs on every
+  database-sensitive pull request (path-filtered) and in full on main, nightly,
+  and release. **`Database integration matrix` is the single stable required
+  check** — it also reports success when path filtering determined no
+  database-sensitive file changed. `tests/test_ci_policy.py` locks the pinned
+  images, the dialect coverage, the aggregate check's name and pass-on-skip
+  behaviour, and the Docker-free unit gate against silent drift.
+- The default `pytest` run is unchanged and still Docker-free: `pytest.ini`
+  deselects the new `database_integration` marker, so the 100% unit-coverage
+  gate measures exactly what it measured before.
+
+### Fixed — PostgreSQL privileged-action audit guard suppressed the retention purge
+
+- The PostgreSQL guard trigger installed by the audit-table Expand migration
+  returned `NULL`. In a `BEFORE ... FOR EACH ROW` trigger that **silently
+  suppresses** the row operation, so the authorized retention purge deleted
+  nothing and `purge_expired_audit_rows` looped forever against PostgreSQL. The
+  function now returns `OLD` on the authorized delete path (the `UPDATE` branch
+  raises unconditionally and never reaches it). MySQL/MariaDB were unaffected —
+  their triggers only `SIGNAL` and have no return-value semantics. Fixed in the
+  issuer chain (`postgres_m8`) and in the bundled example's `m8_app` chains
+  (`postgres_m8`, `metrics_m8`); no deployment has applied these unreleased
+  revisions, so they are corrected in place rather than chained. Found by the
+  new Layer B suite: the pre-existing live test asserted only that the
+  authorized delete raised no exception, which it did not.
+
 ### Added — Dead-key retention purge + live-key cap correction (Phase 7, `APIKEY-LIFECYCLE-01`)
 
 - New `purge_dead_api_keys()` (`services/api_keys.py`), modelled directly on
