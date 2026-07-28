@@ -14,6 +14,7 @@ from fastapi_full.app.deps import (
 )
 from fastapi_full.app.ownership import (
     OwnershipError,
+    as_stored_owner_id,
     category_update_values,
     is_canonical_superuser,
     is_owned_by,
@@ -54,15 +55,16 @@ async def read_root(
             statement = select(Category).offset(skip).limit(limit)
             items = session.exec(statement).all()
         else:
+            owner_id = as_stored_owner_id(current_user.id)
             count_statement = (
                 select(func.count())
                 .select_from(Category)
-                .where(Category.owner_id == current_user.id)
+                .where(Category.owner_id == owner_id)
             )
             count = session.exec(count_statement).one()
             statement = (
                 select(Category)
-                .where(Category.owner_id == current_user.id)
+                .where(Category.owner_id == owner_id)
                 .offset(skip)
                 .limit(limit)
             )

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import case, and_
 from sqlmodel import Session, select, func
 from fastapi_m8 import has_superuser_privileges
+from fastapi_full.app.ownership import as_stored_owner_id
 from fastapi_full.core.deps import CurrentUser
 from fastapi_full.core.exceptions import handle_route_exception
 from fastapi_full.schemas.dashboard import (
@@ -123,7 +124,9 @@ class DashboardController:
                 if model_name == "User":
                     stmt = stmt.where(model.id == current_user.id)
                 else:
-                    stmt = stmt.where(model.owner_id == current_user.id)
+                    stmt = stmt.where(
+                        model.owner_id == as_stored_owner_id(current_user.id)
+                    )
             row = session.exec(stmt).first()
             updated_count: int = (
                 int(row.updated) if row and row.updated is not None else 0  # type: ignore[attr-defined]

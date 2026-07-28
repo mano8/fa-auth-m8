@@ -89,6 +89,27 @@ def as_owner_id(value: Union[uuid.UUID, str]) -> uuid.UUID:
     return uuid.UUID(str(value))
 
 
+def as_stored_owner_id(value: Union[uuid.UUID, str]) -> str:
+    """Render an owner id in the exact text form the ``CHAR(36)`` column holds.
+
+    Use this on every ``owner_id`` **SQL predicate**. A raw :class:`uuid.UUID`
+    handed to a driver is adapted to that driver's own UUID form — psycopg2
+    binds it as ``uuid``, which PostgreSQL then refuses to compare against a
+    ``character`` column (``operator does not exist: character = uuid``). The
+    text form compares correctly on every supported engine.
+
+    :func:`as_owner_id` is its counterpart for in-Python comparisons of values
+    already loaded from a row.
+
+    Args:
+        value: An owner id as stored or as carried on a principal.
+
+    Returns:
+        The canonical 36-character text form of the id.
+    """
+    return str(as_owner_id(value))
+
+
 def is_owned_by(row_owner_id: Union[uuid.UUID, str], actor_id: uuid.UUID) -> bool:
     """Return whether *actor_id* is the owner recorded on the row.
 
