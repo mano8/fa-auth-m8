@@ -20,6 +20,7 @@ from auth_sdk_m8.authorization import has_superuser_privileges
 from auth_sdk_m8.models.shared import Message
 from auth_user_service.db_models.users import (
     User,
+    UserAdminCreate,
     UserAuthorizationUpdate,
     UserCreate,
     UserPublic,
@@ -68,7 +69,7 @@ def read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:
     responses=BaseController.get_error_responses(),
 )
 def create_new_user_with_password(
-    *, session: SessionDep, current_user: CurrentUser, user_in: UserCreate
+    *, session: SessionDep, current_user: CurrentUser, user_in: UserAdminCreate
 ) -> Any:
     """
     Create new user.

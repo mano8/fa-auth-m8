@@ -3,9 +3,11 @@
 import uuid
 
 import pytest
+from pydantic import ValidationError
 
 from auth_user_service.db_models.users import (
     UpdatePassword,
+    UserAdminCreate,
     UserCreate,
     UserPublic,
     UserRegister,
@@ -85,6 +87,69 @@ class TestUserCreate:
         )
         assert user.is_active is True
 
+    def test_unguarded_for_trusted_internal_callers(self):
+        """``UserCreate`` itself stays unguarded (G8-9): bootstrap seeding
+        (``core/init_db.py``) constructs it with ``is_superuser=True`` directly
+        in Python, not from an HTTP body. Only the stricter
+        :class:`UserAdminCreate` request-body schema rejects the client."""
+        user = UserCreate(
+            email="root@example.com",
+            password="securepass123",
+            provider=AuthProviderType.PASSWORD,
+            is_superuser=True,
+            role=RoleType.SUPERADMIN,
+        )
+        assert user.is_superuser is True
+
+
+class TestUserAdminCreate:
+    """The ``POST /users/new_user/`` request-body schema (G8-9)."""
+
+    def test_valid_payload_without_is_superuser(self):
+        user = UserAdminCreate(
+            email="user@example.com",
+            password="securepass123",
+            provider=AuthProviderType.PASSWORD,
+        )
+        assert user.is_superuser is False
+
+    def test_rejects_submitted_is_superuser_true(self):
+        with pytest.raises(ValidationError):
+            UserAdminCreate.model_validate(
+                {
+                    "email": "user@example.com",
+                    "password": "securepass123",
+                    "provider": AuthProviderType.PASSWORD,
+                    "is_superuser": True,
+                }
+            )
+
+    def test_rejects_submitted_is_superuser_false(self):
+        """Rejected regardless of value — the field must not be a caller
+        input at all, matching/false is still a submission attempt (G8-9)."""
+        with pytest.raises(ValidationError):
+            UserAdminCreate.model_validate(
+                {
+                    "email": "user@example.com",
+                    "password": "securepass123",
+                    "provider": AuthProviderType.PASSWORD,
+                    "is_superuser": False,
+                }
+            )
+
+    def test_wired_to_the_admin_create_route(self):
+        """The route accepts this stricter schema, not the bare ``UserCreate``
+        (an OpenAPI-shape assertion that the fix is actually wired, not just
+        defined)."""
+        from auth_user_service.main import app
+
+        spec = app.openapi()
+        op = spec["paths"]["/user/users/new_user/"]["post"]
+        body_schema_ref = op["requestBody"]["content"]["application/json"]["schema"][
+            "$ref"
+        ]
+        assert body_schema_ref.rsplit("/", 1)[-1] == "UserAdminCreate"
+
 
 class TestUserUpdate:
     def test_valid_password_provider_update(self):
@@ -132,6 +197,20 @@ class TestUserRegister:
         )
         assert reg.email == "reg@example.com"
         assert reg.full_name == "Register User"
+
+    def test_rejects_submitted_is_superuser(self):
+        """``UserRegister`` never declares ``is_superuser`` as a field, so the
+        key would otherwise be silently dropped as unrecognised (G8-9) rather
+        than rejected — the ``mode="before"`` guard catches it in the raw
+        payload before pydantic drops it."""
+        with pytest.raises(ValidationError):
+            UserRegister.model_validate(
+                {
+                    "email": "reg@example.com",
+                    "password": "registerpass",
+                    "is_superuser": True,
+                }
+            )
 
     def test_full_name_optional(self):
         reg = UserRegister(

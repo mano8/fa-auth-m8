@@ -581,6 +581,73 @@ class TestGetCurrentApiKey:
 
             assert raw_key not in caplog.text
 
+    def test_degraded_fail_closed_logs_a_formatted_line_not_a_tuple(
+        self, db_session, caplog
+    ):
+        """G8-11: ``_logger.warning`` previously received a 2-tuple as its sole
+        argument, so the record rendered as a raw Python tuple repr instead of
+        the intended logfmt line. Assert the actual formatted event text (with
+        the key id interpolated) is what lands in the record, not a tuple."""
+        api_key = self._make_api_key()
+
+        with (
+            patch(
+                "auth_user_service.core.deps.ApiKeyService.get_active_key",
+                return_value=api_key,
+            ),
+            patch("auth_user_service.core.deps.settings") as mock_cfg,
+            caplog.at_level("WARNING"),
+        ):
+            mock_cfg.effective_api_key_strict_rate_limit = True
+            with pytest.raises(HTTPException):
+                get_current_api_key(
+                    session=db_session,
+                    redis=None,
+                    response=self._make_response(),
+                    x_api_key="ak_valid",
+                )
+
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert not isinstance(record.msg, tuple)
+        expected = (
+            "api_key.rate_limit_unavailable decision=deny mode=fail_closed "
+            f"ref={api_key.id}"
+        )
+        assert record.getMessage() == expected
+
+    def test_degraded_fail_open_logs_a_formatted_line_not_a_tuple(
+        self, db_session, caplog
+    ):
+        """G8-11, fail-open branch: same tuple-vs-formatted-line proof as the
+        fail-closed branch above."""
+        api_key = self._make_api_key()
+
+        with (
+            patch(
+                "auth_user_service.core.deps.ApiKeyService.get_active_key",
+                return_value=api_key,
+            ),
+            patch("auth_user_service.core.deps.settings") as mock_cfg,
+            caplog.at_level("WARNING"),
+        ):
+            mock_cfg.effective_api_key_strict_rate_limit = False
+            get_current_api_key(
+                session=db_session,
+                redis=None,
+                response=self._make_response(),
+                x_api_key="ak_valid",
+            )
+
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert not isinstance(record.msg, tuple)
+        expected = (
+            "api_key.rate_limit_unavailable decision=allow mode=fail_open "
+            f"unsafe=true ref={api_key.id}"
+        )
+        assert record.getMessage() == expected
+
     def test_redis_rate_limited_with_reset_at_raises_429(self, db_session):
         api_key = self._make_api_key()
         reset = datetime.now(timezone.utc) + timedelta(minutes=1)

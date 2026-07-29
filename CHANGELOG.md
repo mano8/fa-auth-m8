@@ -337,6 +337,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   a read of the existing `revocation_outbox` table, and the widened horizon only
   retains tombstones longer.
 
+### Security — Three hardening fixes (G8-9, G8-10, G8-11)
+
+- **The admin user-create request now rejects a client-submitted
+  `is_superuser` instead of silently overriding it (§3.1, G8-9).** New
+  `UserAdminCreate` schema (the `POST /users/new_user/` request body) fails
+  with `422` on any submitted `is_superuser`, `true` or `false`. Trusted
+  internal callers (bootstrap seeding, OAuth provisioning) still construct the
+  unguarded `UserCreate` directly and may set the server-derived flag
+  explicitly. `UserRegister` (`POST /users/signup/`) gained the same guard,
+  catching the key even though it declares no `is_superuser` field at all.
+- **The audit and API-key retention purges can no longer loop forever
+  (G8-10).** `purge_expired_audit_rows` and `purge_dead_api_keys` now raise
+  `AuditPurgeStalledError`/`ApiKeyPurgeStalledError` if a claimed batch is
+  re-selected unchanged after a commit — the symptom of a delete being
+  silently suppressed (the exact PostgreSQL `BEFORE DELETE ... RETURN NULL`
+  defect this plan already found and fixed once in the Layer B matrix).
+  Previously the loop's only exit conditions were an empty or short batch,
+  which a suppressed delete never produces.
+- **The degraded API-key admission log line is now correctly formatted
+  (G8-11).** `core/deps.py::_handle_api_key_redis_degraded` passed a 2-tuple
+  as `_logger.warning`'s sole argument, so the fail-closed/fail-open admission
+  decision rendered as a raw tuple repr instead of the intended logfmt line.
+  Fixed to pass the format string and the key-id reference as separate
+  arguments on both branches.
+
 ### Added — 4.6 dialect-declaration contract (testing and deployment updates)
 
 - **Maintained-example dialect reassignment (one example per certified engine, §4.6):** 

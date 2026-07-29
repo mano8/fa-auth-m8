@@ -16,6 +16,7 @@ from auth_user_service.db_models.privileged_action_audit import (
 )
 from auth_user_service.services import audit as audit_service
 from auth_user_service.services.audit import (
+    AuditPurgeStalledError,
     AuditRetentionFloorError,
     RetentionWindow,
     purge_expired_audit_rows,
@@ -250,6 +251,35 @@ class TestPurgeExpiredAuditRows:
         )
 
         assert result.removed == 5
+
+    def test_raises_when_a_delete_is_silently_suppressed(self, db_session) -> None:
+        """G8-10: if a delete never actually removes the row (the exact
+        PostgreSQL ``BEFORE DELETE ... RETURN NULL`` defect this plan already
+        found and fixed once), the loop must terminate instead of re-selecting
+        the same row forever. ``batch_size=1`` with exactly one eligible row
+        means the fetched batch never falls short of the batch size, so
+        the only way the loop would stop is via the progress guard."""
+        actor = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+        old_row = _old_row(actor, created_at=now - timedelta(days=400))
+        db_session.add(old_row)
+        db_session.commit()
+
+        with patch.object(db_session, "delete", lambda obj: None):
+            with pytest.raises(AuditPurgeStalledError):
+                purge_expired_audit_rows(
+                    db_session,
+                    window=RetentionWindow.ONE_YEAR,
+                    actor_user_id=actor,
+                    actor_role=RoleType.SUPERADMIN,
+                    now=now,
+                    batch_size=1,
+                )
+
+        # Clean up for real so this ~400-day-old row cannot become collateral
+        # damage of a later test's table-wide purge in this session-scoped engine.
+        db_session.delete(old_row)
+        db_session.commit()
 
     def test_writes_its_own_maintenance_row_that_survives_the_purge(
         self, db_session

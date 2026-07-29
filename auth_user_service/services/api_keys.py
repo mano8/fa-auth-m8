@@ -74,6 +74,15 @@ class ApiKeyPurgeRetentionFloorError(ValueError):
     """
 
 
+class ApiKeyPurgeStalledError(RuntimeError):
+    """Raised when the purge loop selects the same rows twice in a row (G8-10).
+
+    Modelled on :class:`auth_user_service.services.audit.AuditPurgeStalledError`:
+    if a delete is silently suppressed, the same eligible rows would otherwise
+    be re-selected forever, holding a database session open indefinitely.
+    """
+
+
 @dataclass(frozen=True)
 class ApiKeyPurgeResult:
     """Outcome of one dead-key retention-purge run."""
@@ -483,6 +492,7 @@ def purge_dead_api_keys(
     )
 
     removed = 0
+    previous_ids: Optional[frozenset] = None
     while True:
         rows = session.exec(
             select(ApiKey)
@@ -493,12 +503,20 @@ def purge_dead_api_keys(
         ).all()
         if not rows:
             break
+        ids = frozenset(row.id for row in rows)
+        if previous_ids is not None and ids == previous_ids:
+            raise ApiKeyPurgeStalledError(
+                "api-key purge made no progress: the same "
+                f"{len(ids)} row(s) were re-selected after a commit — deletes "
+                "are being silently suppressed"
+            )
         for row in rows:
             session.delete(row)
         session.commit()
         removed += len(rows)
         if len(rows) < batch:
             break
+        previous_ids = ids
 
     record_privileged_action(
         session,

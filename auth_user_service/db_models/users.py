@@ -4,7 +4,7 @@ These models define the structure of user data in the database and
 the validation rules for user-related operations.
 """
 
-from typing import List, Optional, TYPE_CHECKING
+from typing import Any, List, Optional, TYPE_CHECKING
 import uuid
 
 import sqlalchemy as sa
@@ -37,6 +37,23 @@ GENERATION_START = 1
 if TYPE_CHECKING:
     from auth_user_service.db_models.api_keys import ApiKey, RateLimit
     from auth_user_service.db_models.sessions import ClientSession
+
+
+def _reject_client_is_superuser(data: Any) -> Any:
+    """Reject a client-submitted ``is_superuser`` on a public/admin request body.
+
+    ``is_superuser`` is server-derived from the role (``_derive_is_superuser``)
+    and never an accepted client input (§3.1: "no caller can submit both
+    privilege fields"). Checked in ``mode="before"`` against the raw payload so
+    an undeclared key (e.g. on :class:`UserRegister`, which has no
+    ``is_superuser`` field at all) is caught before pydantic silently drops it,
+    not just a declared-but-overridden one. Only dict payloads (an HTTP JSON
+    body) are checked — trusted internal callers that construct the model from
+    keyword arguments go through the unguarded :class:`UserCreate` instead.
+    """
+    if isinstance(data, dict) and "is_superuser" in data:
+        raise ValueError("is_superuser cannot be submitted by the client")
+    return data
 
 
 def _check_avatar_url(v: object) -> object:
@@ -196,12 +213,36 @@ class UserCreate(UserBase):
         return self
 
 
+class UserAdminCreate(UserCreate):
+    """The admin-facing ``POST /users/new_user/`` request body (G8-9).
+
+    Identical to :class:`UserCreate` except that it rejects a client-submitted
+    ``is_superuser`` instead of silently overriding it. Internal callers that
+    construct a user programmatically (bootstrap seeding, OAuth provisioning)
+    keep using the unguarded :class:`UserCreate` directly and may still set the
+    server-derived flag explicitly; only this stricter subclass is exposed as a
+    route's request-body type.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_is_superuser(cls, data: Any) -> Any:
+        """Reject a submitted ``is_superuser`` (G8-9); see the shared helper."""
+        return _reject_client_is_superuser(data)
+
+
 class UserRegister(SQLModel):
     """
     Payload for new user self-registration.
     """
 
     email: EmailStr = Field(..., max_length=255, description="User email address")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_is_superuser(cls, data: Any) -> Any:
+        """Reject a submitted ``is_superuser`` (G8-9); see the shared helper."""
+        return _reject_client_is_superuser(data)
 
     @field_validator("email", mode="before")
     @classmethod

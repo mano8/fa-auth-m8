@@ -18,6 +18,7 @@ from auth_user_service.db_models.privileged_action_audit import (
 from auth_user_service.services.api_keys import (
     ApiKeyAudienceError,
     ApiKeyPurgeRetentionFloorError,
+    ApiKeyPurgeStalledError,
     ApiKeyService,
     RateLimitEnforcer,
     purge_dead_api_keys,
@@ -815,6 +816,32 @@ class TestPurgeDeadApiKeys:
         )
 
         assert result.removed == 5
+
+    def test_raises_when_a_delete_is_silently_suppressed(
+        self, db_session, sample_user
+    ) -> None:
+        """G8-10, modelled on the audit-purge sibling test: with exactly one
+        eligible row and ``batch_size=1`` the fetched batch never falls short
+        of the batch size, so the loop only stops via the progress guard if
+        the delete never actually removes the row."""
+        now = datetime.now(timezone.utc)
+        dead = _revoked_key(sample_user, updated_at=now - timedelta(days=400))
+        db_session.add(dead)
+        db_session.commit()
+
+        with patch.object(db_session, "delete", lambda obj: None):
+            with pytest.raises(ApiKeyPurgeStalledError):
+                purge_dead_api_keys(
+                    db_session,
+                    window=RetentionWindow.ONE_YEAR,
+                    actor_user_id=sample_user.id,
+                    actor_role=RoleType.SUPERADMIN,
+                    now=now,
+                    batch_size=1,
+                )
+
+        db_session.delete(dead)
+        db_session.commit()
 
     def test_writes_its_own_audit_row_that_survives_the_purge(
         self, db_session, sample_user

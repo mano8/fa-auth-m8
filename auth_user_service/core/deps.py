@@ -432,21 +432,19 @@ def _handle_api_key_redis_degraded(api_key: ApiKey) -> None:
     ref = str(api_key.id)
     if strict:
         # nosec B106 — logfmt event line; ref is the opaque key id, not a secret
-        RATE_LIMIT_UNAVAILABLE_LOG = (
+        _logger.warning(
             "api_key.rate_limit_unavailable decision=deny mode=fail_closed ref=%s",
             ref,
         )  # nosec B106
-        _logger.warning(RATE_LIMIT_UNAVAILABLE_LOG)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Rate limiting service unavailable",
         )
-    RATE_LIMIT_UNAVAILABLE_LOG = (
+    # ref is the opaque key id, not a secret
+    _logger.warning(
         "api_key.rate_limit_unavailable decision=allow mode=fail_open unsafe=true ref=%s",
         ref,
     )  # nosec B106
-    # ref is the opaque key id, not a secret
-    _logger.warning(RATE_LIMIT_UNAVAILABLE_LOG)
 
 
 def get_current_api_key(

@@ -25,6 +25,7 @@ retention window (schema-level enforcement of the write-once/no-targeted-delete
 contract is the separate Expand migration).
 """
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -41,6 +42,8 @@ from auth_user_service.db_models.privileged_action_audit import (
     AuditAction,
     PrivilegedActionAudit,
 )
+
+_logger = logging.getLogger(__name__)
 
 # Dialect names (per ``Session.get_bind().dialect.name``) whose Expand
 # migration installs the ``BEFORE DELETE`` guard trigger (4.6: the real-dialect
@@ -130,6 +133,18 @@ class AuditRetentionFloorError(ValueError):
     deployment-level setting, not a per-call parameter: shortening it below the
     default is an explicit operator config opt-in, never something a caller of
     the purge action can request directly.
+    """
+
+
+class AuditPurgeStalledError(RuntimeError):
+    """Raised when the purge loop selects the same rows twice in a row (G8-10).
+
+    The loop's only progress evidence is the claimed batch actually shrinking
+    or emptying between iterations; if a delete is silently suppressed (e.g. a
+    ``BEFORE DELETE`` trigger returning ``NULL``, the exact PostgreSQL defect
+    this plan already found and fixed once), the same eligible rows would
+    otherwise be re-selected forever, holding a database session open
+    indefinitely. This guard is independent of that specific defect's fix.
     """
 
 
@@ -239,6 +254,7 @@ def purge_expired_audit_rows(
     guarded = dialect in _PURGE_GUARDED_DIALECTS
 
     removed = 0
+    previous_ids: Optional[frozenset] = None
     while True:
         rows = session.exec(
             select(PrivilegedActionAudit)
@@ -249,6 +265,13 @@ def purge_expired_audit_rows(
         ).all()
         if not rows:
             break
+        ids = frozenset(row.id for row in rows)
+        if previous_ids is not None and ids == previous_ids:
+            raise AuditPurgeStalledError(
+                "audit purge made no progress: the same "
+                f"{len(ids)} row(s) were re-selected after a commit — deletes "
+                "are being silently suppressed"
+            )
         if guarded:
             _set_purge_delete_authorized(session, dialect, active=True)
         for row in rows:
@@ -259,6 +282,7 @@ def purge_expired_audit_rows(
         removed += len(rows)
         if len(rows) < batch:
             break
+        previous_ids = ids
 
     record_privileged_action(
         session,
