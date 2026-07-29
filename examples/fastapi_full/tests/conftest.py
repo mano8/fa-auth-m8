@@ -50,6 +50,17 @@ for _key, _value in _TEST_ENV.items():
 
 # The environment must be complete before ``fastapi_full`` is imported, so
 # every package import below this line, not above it.
+import auth_sdk_m8.utils.paths as _paths_mod  # noqa: E402
+
+# ``fastapi_full.core.config`` resolves ``Settings.model_config["env_file"]`` via
+# ``find_dotenv()`` at class-body evaluation time, and ``find_dotenv`` *raises*
+# when no ``.env`` exists anywhere up the tree — which is always true on a CI
+# runner. The env vars above are already a complete throwaway environment, so
+# stub the lookup rather than manufacture a throwaway ``.env`` on disk. Mirrors
+# the issuer's tests/conftest.py bootstrap.
+_real_find_dotenv = _paths_mod.find_dotenv
+_paths_mod.find_dotenv = lambda *_a, **_kw: ""
+
 import sqlite3  # noqa: E402
 import uuid  # noqa: E402
 
@@ -58,6 +69,9 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 
 import fastapi_full.db_models  # noqa: E402,F401  (registers the tables)
+
+# Restore find_dotenv after all imports are done (good hygiene).
+_paths_mod.find_dotenv = _real_find_dotenv
 
 # ``Category.owner_id`` is a raw ``CHAR(36)``: the real drivers adapt a
 # ``uuid.UUID`` to its text form, the SQLite surrogate does not. Teaching the
