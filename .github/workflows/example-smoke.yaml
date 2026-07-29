@@ -69,6 +69,12 @@ jobs:
         # auth_sdk_m8.core.config.CommonSettings unconditionally rejects
         # (fail-closed, regardless of ENVIRONMENT). Without this, every
         # container in the stack crashes on boot and never turns healthy.
+        # The script seeds one value per *logical* secret, not per placeholder:
+        # several 'changethis' occurrences are the two ends of one credential
+        # (.env AUTH_DB_PASSWORD provisions the role auth.env DB_PASSWORD logs
+        # in as; PRIVATE_API_CONSUMERS holds the consumer's PRIVATE_API_SECRET),
+        # and seeding those independently yields a stack that boots but cannot
+        # authenticate — auth_user_service then never turns healthy either.
         # Real deployments replace 'changethis' by hand; this script exists
         # only so this unattended smoke test can prove the stack boots.
         working-directory: examples/docker_compose/${{ matrix.example }}
@@ -109,17 +115,23 @@ jobs:
 
       - name: Minimal authentication/database smoke test
         # A bogus login must reach the DB-backed credential lookup and come
-        # back as a structured 401 — not a 500/502/503 — proving the
+        # back as a structured 400 — not a 500/502/503 — proving the
         # migrated schema, the seeded application user/grants, and the
         # auth service's DB round trip all actually work end to end.
+        #
+        # 400 (not 401/404) is the deliberate contract: the issuer returns the
+        # same "Invalid credentials or inactive user" for an unknown account
+        # and for a wrong password, so the response cannot be used to probe
+        # which emails exist. Asserted as FINDING-A03 in
+        # tests/live/test_security_universal.py::test_a03_unknown_user_returns_400_not_404.
         run: |
           status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
             -X POST http://localhost:9000/user/login/access-token \
             -d 'username=smoke-test-nonexistent@example.invalid' \
             -d 'password=wrong-password-not-a-real-account')"
           echo "login status: $status"
-          if [[ "$status" != "401" ]]; then
-            echo "::error::expected 401 (invalid credentials against a live DB lookup), got $status"
+          if [[ "$status" != "400" ]]; then
+            echo "::error::expected 400 (invalid credentials against a live DB lookup), got $status"
             exit 1
           fi
 
