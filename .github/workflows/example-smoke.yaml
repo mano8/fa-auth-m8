@@ -74,6 +74,29 @@ jobs:
         working-directory: examples/docker_compose/${{ matrix.example }}
         run: bash ../shared/scripts/seed-ci-secrets.sh
 
+      - name: Pre-build the published-image reference (pre-release smoke)
+        # hardened_m8 and vault_dev_m8 deliberately consume the published
+        # tepochtli/fa-auth-m8 image (image:, no build:) to demonstrate the
+        # real deployment artifact. Before that tag's first release, `docker
+        # compose up` would otherwise have to pull a tag that does not exist
+        # yet. Try the real registry first so a released tag is genuinely
+        # smoke-tested; only if that tag isn't published yet, build the exact
+        # same Dockerfile/context locally under the same tag so compose finds
+        # it without touching the registry. A no-op for examples that build
+        # auth_user_service locally (no matching `image:` line).
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: |
+          set -euo pipefail
+          tag="$(grep -oP '(?<=image: )tepochtli/fa-auth-m8:\S+' docker-compose.yml | head -1 || true)"
+          if [ -n "$tag" ]; then
+            if docker pull "$tag"; then
+              echo "Using published $tag"
+            else
+              echo "$tag is not published yet — building it locally from auth_user_service/Dockerfile for this smoke run"
+              docker build -f ../../../auth_user_service/Dockerfile -t "$tag" ../../../
+            fi
+          fi
+
       - name: Start the stack
         working-directory: examples/docker_compose/${{ matrix.example }}
         run: docker compose up -d --build --wait --wait-timeout 600
