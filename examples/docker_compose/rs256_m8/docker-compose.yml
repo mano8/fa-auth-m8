@@ -47,6 +47,20 @@ services:
 
   m8_db:
     image: mysql:8.4.10
+    # Documented MySQL deployment prerequisite, not a test hack (see the
+    # "MySQL prerequisite — trigger creation under binary logging" section of
+    # the root README). MySQL 8 enables binary logging by default, and a user
+    # without SUPER cannot then create a trigger — error 1419. The
+    # privileged-action audit table's write-once guard *is* a trigger, so
+    # `alembic upgrade head` fails for the ordinary per-service application
+    # user this stack provisions. The README offers this setting or SUPER;
+    # this is the my.cnf-equivalent form, and it is the narrower of the two —
+    # granting the app user global SUPER would break the least-privilege model
+    # the rest of this example enforces. tests/integration/database applies the
+    # identical prerequisite to the Layer B MySQL target.
+    # PostgreSQL and MariaDB (quickstart_m8) need nothing here — MariaDB ships
+    # with binary logging off.
+    command: ["mysqld", "--log-bin-trust-function-creators=1"]
     volumes:
       - ./db_data:/var/lib/mysql
       - ../shared/db_init:/docker-entrypoint-initdb.d:ro
