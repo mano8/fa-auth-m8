@@ -63,7 +63,7 @@ jobs:
             exit 0
           fi
 
-          git fetch --no-tags --depth=0 origin "$BASE_REF"
+          git fetch --no-tags origin "$BASE_REF"
           changed="$(git diff --name-only "origin/$BASE_REF...HEAD")"
           echo "Changed files:"
           echo "$changed"
