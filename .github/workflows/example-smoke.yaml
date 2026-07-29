@@ -63,6 +63,17 @@ jobs:
         working-directory: examples/docker_compose/${{ matrix.example }}
         run: bash init.sh
 
+      - name: Seed CI-only strong secrets (replace 'changethis' placeholders)
+        # init.sh only copies the *.env.example templates verbatim — every
+        # secret is the literal placeholder 'changethis', which
+        # auth_sdk_m8.core.config.CommonSettings unconditionally rejects
+        # (fail-closed, regardless of ENVIRONMENT). Without this, every
+        # container in the stack crashes on boot and never turns healthy.
+        # Real deployments replace 'changethis' by hand; this script exists
+        # only so this unattended smoke test can prove the stack boots.
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: bash ../shared/scripts/seed-ci-secrets.sh
+
       - name: Start the stack
         working-directory: examples/docker_compose/${{ matrix.example }}
         run: docker compose up -d --build --wait --wait-timeout 600
