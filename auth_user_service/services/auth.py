@@ -241,6 +241,11 @@ class AuthController:
         try:
             validate_privilege_claims(role=user.role, is_superuser=user.is_superuser)
         except InconsistentPrivilegeClaimsError as ex:
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+            # The scanner reads the logfmt template itself as a hardcoded secret
+            # because it contains the word "token". It is a format string: the
+            # only interpolated values are the bounded reason code, the user id,
+            # and a timestamp. No claim value or signing material is logged.
             _logger.critical(
                 "event=token.sign.blocked reason=%s user_id=%s ts=%s",
                 str(ex),

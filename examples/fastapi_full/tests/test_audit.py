@@ -444,15 +444,24 @@ class TestPurgeDeleteAuthorizationDialectHelper:
         audit_module._set_purge_delete_authorized(db_session, dialect, active=False)
 
     @pytest.mark.parametrize("dialect", ["postgresql", "mysql"])
-    def test_guarded_dialects_emit_the_expected_statement(self, dialect: str) -> None:
+    @pytest.mark.parametrize("active", [True, False])
+    def test_guarded_dialects_emit_the_expected_statement(
+        self, dialect: str, active: bool
+    ) -> None:
         session = MagicMock()
-        audit_module._set_purge_delete_authorized(session, dialect, active=True)
+        audit_module._set_purge_delete_authorized(session, dialect, active=active)
         session.execute.assert_called_once()
         statement_text = str(session.execute.call_args[0][0])
+        # The flag value is bound, never interpolated into the SQL, so assert the
+        # parameter: the MySQL guard trigger rejects the delete unless
+        # @audit_purge_active is exactly 1, and NULL is what clears it.
+        params = session.execute.call_args[0][1]
         if dialect == "postgresql":
             assert "set_config" in statement_text
+            assert params == {"value": "true" if active else "false"}
         else:
             assert "@audit_purge_active" in statement_text
+            assert params == {"value": 1 if active else None}
 
     def test_purge_toggles_authorization_around_each_batch_on_a_guarded_dialect(
         self, db_session

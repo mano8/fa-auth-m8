@@ -431,7 +431,10 @@ def _handle_api_key_redis_degraded(api_key: ApiKey) -> None:
         ).inc()
     ref = str(api_key.id)
     if strict:
-        # nosec B106 — logfmt event line; ref is the opaque key id, not a secret
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+        # nosec B106 — logfmt event line; ref is the opaque key id, not a secret.
+        # The scanner reads the template itself as a hardcoded secret because it
+        # contains "api_key"; it is a format string and `ref` is the key's id.
         _logger.warning(
             "api_key.rate_limit_unavailable decision=deny mode=fail_closed ref=%s",
             ref,
@@ -440,7 +443,8 @@ def _handle_api_key_redis_degraded(api_key: ApiKey) -> None:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Rate limiting service unavailable",
         )
-    # ref is the opaque key id, not a secret
+    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+    # ref is the opaque key id, not a secret (same false positive as above)
     _logger.warning(
         "api_key.rate_limit_unavailable decision=allow mode=fail_open unsafe=true ref=%s",
         ref,

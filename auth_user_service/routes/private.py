@@ -11,7 +11,7 @@ single shared ``PRIVATE_API_SECRET`` gate has been retired.
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional, Union
+from typing import Any, Final, Optional, Union
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
@@ -178,6 +178,12 @@ def create_user(user_in: PrivateUserCreate, session: SessionDep) -> Any:
 #: Bounded, secret-free detail for the fail-closed introspection 503.
 _INTROSPECTION_UNAVAILABLE = "Introspection temporarily unavailable"
 
+#: Bucket stamp for the fixed per-minute anti-abuse window, mirroring
+#: ``RedisRateLimiter._BUCKET_FORMAT[Period.MINUTE]``. This is a Redis key
+#: component, not a rendered date: it is deliberately fixed and locale-independent
+#: so the same minute always maps to the same key on every host.
+_ANTIABUSE_BUCKET_FORMAT: Final[str] = "%Y%m%d%H%M"
+
 
 def _blacklist_hit(redis: Any, jti: str) -> bool:
     """Whether the Redis access-token blacklist contains *jti* (accelerator)."""
@@ -322,7 +328,7 @@ def _consume_introspection_antiabuse(redis: Any, consumer_id: str) -> None:
         return
 
     limit = settings.API_KEY_INTROSPECTION_ANTIABUSE_PER_MINUTE
-    bucket = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    bucket = datetime.now(timezone.utc).strftime(_ANTIABUSE_BUCKET_FORMAT)
     key = f"introspect:antiabuse:{consumer_id}:{bucket}"
     with redis.pipeline() as pipe:
         pipe.incr(key)

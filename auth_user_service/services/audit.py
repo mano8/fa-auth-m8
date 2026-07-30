@@ -188,7 +188,10 @@ def _set_purge_delete_authorized(
             {"value": "true" if active else "false"},
         )
     elif dialect == "mysql":
-        session.execute(sa.text(f"SET @audit_purge_active = {1 if active else 'NULL'}"))
+        session.execute(
+            sa.text("SET @audit_purge_active = :value"),
+            {"value": 1 if active else None},
+        )
 
 
 def purge_expired_audit_rows(
