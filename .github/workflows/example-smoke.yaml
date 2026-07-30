@@ -80,6 +80,39 @@ jobs:
         working-directory: examples/docker_compose/${{ matrix.example }}
         run: bash ../shared/scripts/seed-ci-secrets.sh
 
+      - name: Make the bootstrapped secrets readable by the container uid
+        # init-common.sh enforces 0600 on every env file and init-keys.sh 0600 on
+        # private.pem. That is right on an operator's own machine, where those
+        # files are owned by the human running the stack — but auth.env, api.env
+        # and ./keys are bind-mounted into containers that run as a *different*,
+        # non-root uid (appuser = 1000, see auth_user_service/Dockerfile), and a
+        # Linux bind mount passes the host's uid and mode straight through. At
+        # 0600 the service cannot read its own dotenv and dies at import with
+        # `PermissionError: '/opt/auth_user_service/.env'`, so it never turns
+        # healthy and every dependent fails with "dependency failed to start".
+        #
+        # Docker Desktop on macOS/Windows masks this completely — its filesystem
+        # layer ignores the guest uid and grants access regardless — so it
+        # reproduces only on a Linux engine such as this runner.
+        #
+        # These are throwaway secrets on an ephemeral runner. A real deployment
+        # keeps 0600 and instead runs the container as a uid that owns the files
+        # (or hands them over via a secret manager, as vault_dev_m8 shows).
+        # `.env` is deliberately left at 0600: nothing mounts it: it is read by
+        # Compose itself, on the host, as the user running the stack.
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          chmod a+r *.env
+          # HS256 examples have no keys/ at all; RS256 ones (rs256_m8,
+          # hardened_m8, vault_dev_m8) get private.pem at 0600 from init-keys.sh.
+          if [ -d keys ]; then
+            chmod a+rX keys
+            for pem in keys/*.pem; do chmod a+r "$pem"; done
+          fi
+          ls -l *.env keys/*.pem 2>/dev/null || true
+
       - name: Pre-build the published-image reference (pre-release smoke)
         # hardened_m8 and vault_dev_m8 deliberately consume the published
         # tepochtli/fa-auth-m8 image (image:, no build:) to demonstrate the

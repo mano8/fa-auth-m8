@@ -45,11 +45,52 @@ services:
     networks:
       - m8_app_network
 
+  # One-shot data-directory owner fix, same pattern as cert-init above.
+  # Unlike the Debian-based mysql/postgres images, mariadb:*-ubi declares
+  # USER mysql (uid 999), so its entrypoint never runs as root and cannot
+  # chown the data directory for itself. Docker creates a missing bind-mount
+  # source as root:root, and an operator who pre-creates ./db_data owns it
+  # themselves — either way uid 999 cannot write it and mariadb-install-db
+  # aborts with "Can't create/write to file './ddl_recovery.log' (Errcode: 13)"
+  # -> "Installation of system tables failed!", leaving m8_db unhealthy.
+  # This runs as root purely to hand ./db_data to uid 999, then exits; the
+  # engine itself still runs unprivileged as mysql. Docker Desktop on
+  # macOS/Windows ignores bind-mount ownership, so this only bites on Linux.
+  db-init:
+    image: alpine:3.22
+    volumes:
+      - ./db_data:/db_data
+    command:
+      - sh
+      - -c
+      - |
+        if [ "$$(stat -c %u /db_data)" = "999" ]; then
+          echo "==> db-init: /db_data already owned by mysql (999), skipping"; exit 0
+        fi
+        chown 999:999 /db_data
+        echo "==> db-init: /db_data handed to mysql (999:999)"
+    # Handing a directory to another uid inherently requires CAP_CHOWN, so this
+    # one-shot runs as root — but CAP_CHOWN (plus what it needs to read and
+    # re-run over an already-converted directory) is the *only* privilege it
+    # keeps. It has no network, its own root filesystem is read-only, it can
+    # gain no further privileges, it sees exactly one bind-mounted directory,
+    # and it exits before the engine starts. The engine itself still runs
+    # unprivileged as mysql.
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+    security_opt: ["no-new-privileges:true"]
+    network_mode: "none"
+    read_only: true
+    restart: "no"
+
   m8_db:
     image: mariadb:12.3.2-ubi
     volumes:
       - ./db_data:/var/lib/mysql
       - ../shared/db_init:/docker-entrypoint-initdb.d:ro
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
     env_file:
       - ./.env                              # exposes all .env vars so init-db.sh can discover DB triplets
     environment:

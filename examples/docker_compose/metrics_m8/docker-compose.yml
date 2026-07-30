@@ -44,6 +44,16 @@ services:
         chown -R 1000:1000 /opt/shared_migrations
         chmod -R u+rwX,g+rwX /opt/shared_migrations
         echo "==> migrations-init: shared_migrations owned by uid 1000, writable by all m8 services"
+    # Handing a directory to another uid inherently requires CAP_CHOWN, so this
+    # one-shot runs as root — but CAP_CHOWN (plus what it needs to read and
+    # re-run over an already-converted directory) is the *only* privilege it
+    # keeps: no network, read-only root filesystem, no privilege escalation,
+    # exactly one bind-mounted directory, and it exits before any service starts.
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+    security_opt: ["no-new-privileges:true"]
+    network_mode: "none"
+    read_only: true
     restart: "no"
 
   traefik:
@@ -143,10 +153,47 @@ services:
       - m8_app_network
     restart: unless-stopped
 
+  # One-shot Grafana data-directory owner fix, same pattern as migrations-init.
+  # grafana/grafana declares USER 472:0, so its entrypoint never runs as root and
+  # cannot take ownership of a bind-mounted ./grafana/data for itself. Docker
+  # creates a missing bind-mount source as root:root, so Grafana aborts with
+  # "GF_PATHS_DATA='/var/lib/grafana' is not writable" ->
+  # "mkdir: can't create directory '/var/lib/grafana/plugins': Permission denied"
+  # and crash-loops, which keeps `docker compose up --wait` from ever settling.
+  # Prometheus needs no equivalent: its image runs as root and self-manages.
+  # Docker Desktop on macOS/Windows ignores bind-mount ownership, so this only
+  # bites on a Linux engine (including CI).
+  grafana-init:
+    image: alpine:3.22
+    volumes:
+      - ./grafana/data:/grafana_data
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        chown -R 472:0 /grafana_data
+        chmod -R u+rwX,g+rwX /grafana_data
+        echo "==> grafana-init: /grafana_data owned by grafana (472:0)"
+    # Handing a directory to another uid inherently requires CAP_CHOWN, so this
+    # one-shot runs as root — but CAP_CHOWN (plus what it needs to read and
+    # re-run over an already-converted directory) is the *only* privilege it
+    # keeps: no network, read-only root filesystem, no privilege escalation,
+    # exactly one bind-mounted directory, and it exits before Grafana starts.
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+    security_opt: ["no-new-privileges:true"]
+    network_mode: "none"
+    read_only: true
+    restart: "no"
+
   grafana:
     image: grafana/grafana:13.1.0-25530058790
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_started
+      grafana-init:
+        condition: service_completed_successfully
     env_file:
       - ./grafana.env
     volumes:
