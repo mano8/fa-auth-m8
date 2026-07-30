@@ -505,7 +505,7 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 | `OAUTH_ALLOWED_REDIRECT_PREFIXES` | no | Optional full-URI prefix allowlist. Required for `http://` and `https://` redirects to pin trusted callback origins; optional for native public-client schemes. Plain HTTP is limited to localhost and rejected in production/staging. |
 | `CORS_ALLOWED_ORIGIN_SCHEMES` | no | Scheme-level CORS origins for native-app `fetch()` calls (e.g. `chrome-extension://`). |
 | `PRIVATE_API_SECRET` | yes | Signs the short-TTL service tokens and gates the `/health` detail body + `/metrics`. **No longer a private-route gate** (the legacy shared `X-Internal-Token` path was retired in v1.0.0 — `PRIVATE_API_CONSUMERS` replaces it). |
-| `PRIVATE_API_CONSUMERS` | yes¹ | Per-consumer private-API credentials: JSON map of consumer id → `{secret, scopes}` (scopes: `introspection` / `event-stream` / `user-create`, deny-by-default; `secret` plaintext or hashed `sha256$<salt>$<digest>`). The **only** private-API auth model — each consumer presents `X-Internal-Client` + `X-Internal-Token` (or exchanges it for a service token). ¹Empty is allowed but then every `/private/*` call fails closed (`401`) and the service-token exchange is disabled (`404`). |
+| `PRIVATE_API_CONSUMERS` | yes¹ | Per-consumer private-API credentials: JSON map of consumer id → `{secret, scopes}` (scopes: `introspection` / `api-key-introspection` / `event-stream` / `user-create`, deny-by-default; `secret` plaintext or hashed `sha256$<salt>$<digest>`). The **only** private-API auth model — each consumer presents `X-Internal-Client` + `X-Internal-Token` (or exchanges it for a service token). `api-key-introspection` is the dedicated §3.12 grant — it is never implied by `introspection`, and the consumer id it is granted to **is** the API-key audience, so see [Provisioning the `API_KEY_INTROSPECTION` scope](#provisioning-the-api_key_introspection-scope) before granting it. ¹Empty is allowed but then every `/private/*` call fails closed (`401`) and the service-token exchange is disabled (`404`). |
 
 ### Event Signing
 
@@ -984,7 +984,8 @@ PRIVATE_API_SECRET=<the secret for media-service in PRIVATE_API_CONSUMERS>
 
 #### Rotating a consumer secret
 
-Rolling rotation (no downtime):
+Rolling rotation (no downtime) — **only for a consumer that does *not* hold
+`api-key-introspection`**; see the warning below:
 
 1. Add a `<consumer-id>-new` entry to the issuer's `PRIVATE_API_CONSUMERS`
    with the new secret and the same scopes.
@@ -994,6 +995,27 @@ Rolling rotation (no downtime):
    the consumer.
 4. Remove the old `<consumer-id>` entry from `PRIVATE_API_CONSUMERS` and
    reload the issuer again.
+
+> **Never use the parallel-id recipe for an API-key introspection consumer.**
+> The consumer id **is** the evaluated audience (§3.12 step 8) and a key's
+> audience set is immutable after issuance, so a consumer that starts
+> presenting `<consumer-id>-new` is a *different* audience: every key bound to
+> `<consumer-id>` is answered `active: false`, which the consumer maps to a
+> generic `401 Invalid or expired API key`. Nothing fails loudly — the
+> credential is valid, the service is healthy, its JTI-status path keeps
+> working, and only API-key-authenticated callers are locked out, looking
+> exactly like a revoked key. Rotate such a consumer **in place** instead
+> (same client id, new secret), accepting a short window:
+>
+> 1. Write the new hashed secret onto the **existing** `<consumer-id>` entry
+>    and reload the issuer.
+> 2. Update the consumer's `PRIVATE_API_SECRET` and restart it.
+>
+> Between the two steps the consumer's API-key routes fail closed with `503`
+> (never bare-key acceptance), and its audience bindings are untouched.
+> If a genuinely zero-downtime rotation is required, it is a **key** rotation,
+> not a credential rotation: issue replacement keys bound to the new audience
+> id first, then migrate integrations, then retire the old id.
 
 If the consumer uses the service-token exchange (`/private/v1/service-token`),
 its short-TTL tokens expire within `SERVICE_TOKEN_TTL_SECONDS` (default 300 s)
@@ -1036,6 +1058,154 @@ The suite covers:
 - Service-token exchange and scoped endpoint access.
 - Legacy `X-Internal-Token`-only shape rejected (no `X-Internal-Client`).
 - Revocation check via `POST /private/v1/jti-status`.
+
+### Provisioning the `API_KEY_INTROSPECTION` scope
+
+Run this **before** any consumer sets `API_KEY_INTROSPECTION_ENABLED=true`, and
+after the issuer is on `2.0.0` (the introspection endpoint must exist). Until it
+is done, the private endpoint is unconsumed and inert; after it is done, a
+consumer can resolve *user API keys* to their owners' live authority, so the
+grant is the security boundary of the whole §3.12 remote path.
+
+**What the grant means**
+
+- It is **deny-by-default and dedicated**: `api-key-introspection` is never
+  implied by `introspection`. A JTI-status consumer that is not explicitly
+  granted it is answered `403 Forbidden` by
+  `POST /private/v1/api-keys/introspect` while keeping full access to
+  `POST /private/v1/jti-status`.
+- The granted **consumer id is the audience**. The issuer derives the evaluated
+  audience from the authenticated consumer's registry identity — never from the
+  request body — and answers `active: false` for any key not bound to it.
+- Only a consumer holding this scope may be **named as a key audience**. Key
+  issuance (`POST /profile/api-keys/`) and the audited
+  `bind_api_key_audiences` command both reject an unknown or unscoped consumer
+  id with `409 Unknown or ineligible audience(s): …`, so a key can never be
+  bound to a service that was never approved to introspect it.
+
+**1 — Generate the per-consumer secret and hash it at rest**
+
+```bash
+# One strong secret per consumer (never reused across consumers).
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# Convert it to the portable hashed-at-rest form the issuer stores.
+python3 -c "
+from auth_sdk_m8.security.consumer_auth import ConsumerCredential
+print(ConsumerCredential.create('prompt-engine-m8', '<generated-secret>').encoded_secret)
+"
+# -> sha256$<salt_hex>$<digest_hex>
+```
+
+**2 — Grant the scope to the approved consumers only**
+
+Add or update the entry in `PRIVATE_API_CONSUMERS` (or the file referenced by
+`PRIVATE_API_CONSUMERS_FILE`). Grant nothing a consumer does not use:
+
+```json
+{
+  "prompt-engine-m8": {
+    "secret": "sha256$<salt_hex>$<digest_hex>",
+    "scopes": ["introspection", "event-stream", "api-key-introspection"]
+  },
+  "reporting-service": {
+    "secret": "sha256$<salt_hex>$<digest_hex>",
+    "scopes": ["introspection"]
+  }
+}
+```
+
+Reload the issuer (restart or `SIGHUP`) — the registry is read from
+configuration, so nothing is provisioned in the database.
+
+**3 — Configure the consumer**
+
+```ini
+# consumer env
+INTERNAL_CLIENT_ID=prompt-engine-m8       # must equal the registry key = the audience
+PRIVATE_API_SECRET=<the plaintext secret hashed in step 1>
+INTROSPECTION_URL=http://auth_user_service:8000/user/private/v1/jti-status
+API_KEY_INTROSPECTION_ENABLED=true        # URL is derived from INTROSPECTION_URL
+```
+
+**4 — Bind audiences on the keys that need remote use**
+
+No existing key is silently promoted into a cross-service credential: a key
+with **no** audience rows is issuer-local only and is answered `active: false`
+remotely. Bind at issuance (`"audiences": ["prompt-engine-m8"]` in the create
+body, immutable afterwards) or, for a pre-existing key that carries none, run
+the audited operator command:
+
+```bash
+python -m auth_user_service.scripts.bind_api_key_audiences \
+    --key-id <uuid> --actor <who> --reason <why> \
+    --audience prompt-engine-m8
+```
+
+**5 — Verify the grant (canary)**
+
+A missing *scope* is the one dimension a consumer cannot detect at startup (see
+the matrix below), so verify it explicitly from inside the network:
+
+```bash
+# Approved consumer: admitted -> 200 {"active": false} for an unknown key.
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "X-Internal-Client: prompt-engine-m8" -H "X-Internal-Token: $SECRET" \
+  -H 'Content-Type: application/json' \
+  -d '{"api_key":"ak_0000000000000000000000000000000","schema_version":"1"}' \
+  http://auth_user_service:8000/user/private/v1/api-keys/introspect
+
+# A consumer holding only `introspection` must get 403 on the same call,
+# while POST /private/v1/jti-status still answers 200 for it.
+```
+
+Expected results — every one of these is a required outcome, not a nicety:
+
+| Check | Expected |
+| ----- | -------- |
+| Approved consumer, unknown key | `200 {"active": false, "schema_version": "1"}` |
+| Approved consumer, key bound to it | `200 {"active": true, …, "audience_id": "<consumer-id>"}` |
+| Approved consumer, key bound to a *different* approved consumer | `200 {"active": false}` |
+| Approved consumer, key with no audience | `200 {"active": false}` |
+| `introspection`-only consumer | `403 Forbidden` (and `200` on `jti-status`) |
+| Unknown consumer id, or wrong secret | `401 Unauthorized` (identical for both — no enumeration oracle) |
+| Service token minted without the scope | `403 Forbidden` |
+| Unsupported `schema_version` | `503` (never a guess at an unknown contract) |
+| Consumer route with the bound key | succeeds; the owner's live role is re-resolved on every call |
+| Consumer route with an unbound/unknown key | generic `401 Invalid or expired API key` |
+
+**6 — Where each failure is caught (fail-closed matrix)**
+
+| Missing piece | Caught at | Result |
+| ------------- | --------- | ------ |
+| `INTERNAL_CLIENT_ID` | consumer **startup** | `CONFIG: API_KEY_INTROSPECTION_ENABLED=true requires INTERNAL_CLIENT_ID` |
+| `PRIVATE_API_SECRET` | consumer **startup** | `… requires PRIVATE_API_SECRET` |
+| both introspection URLs | consumer **startup** | `… requires API_KEY_INTROSPECTION_URL` |
+| unknown `API_KEY_INTROSPECTION_SCHEMA_VERSION` | consumer **startup** | `… is not a version this auth-sdk-m8 release implements` |
+| the **scope grant** itself | first request (**runtime**) | issuer `403` → consumer `503 API key verification unavailable.` |
+| the consumer's secret is stale (mid-rotation) | first request (**runtime**) | issuer `401` → consumer `503` |
+
+Startup validation covers this consumer's own configuration; it cannot cover a
+grant that lives in the *issuer's* registry, and the §3.12 client deliberately
+performs no startup probe (introspection consumes quota and is never cached).
+A missing or withdrawn grant therefore surfaces as `503` on the first
+capability-bearing request — fail closed, never a fallback to bare key
+validity — which is why step 5 is a required deployment step and not optional.
+
+**7 — Rotation and revocation**
+
+- **Rotation:** rotate an introspection consumer **in place** (same client id,
+  new secret). The parallel `<consumer-id>-new` recipe silently breaks every
+  audience binding — see the warning under
+  [Rotating a consumer secret](#rotating-a-consumer-secret).
+- **Revocation:** remove the consumer's entry and reload. Its bootstrap
+  credential is refused (`401`) immediately, and its id stops being an eligible
+  audience, so no new key can be bound to it. **Any short-TTL service token it
+  already minted keeps working until it expires** (`SERVICE_TOKEN_TTL_SECONDS`,
+  default 300 s) — the token is signature-verified and scope-checked, not
+  re-checked against the registry. Treat that window as the revocation latency
+  for a compromised consumer; to close it immediately, rotate
+  `PRIVATE_API_SECRET` (which signs those tokens) as well.
 
 ---
 

@@ -15,6 +15,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **The documented rolling secret rotation silently breaks API-key
+  introspection (§3.12).** The `Bootstrap and rotation runbook` told operators
+  to rotate a consumer secret by adding a parallel `<consumer-id>-new` registry
+  entry. For a consumer holding `api-key-introspection` that recipe is unsafe:
+  the consumer id **is** the evaluated audience and a key's audience set is
+  immutable after issuance, so the moment the consumer starts presenting the
+  new id, every key bound to the old one is answered `active: false` and the
+  consumer returns a generic `401 Invalid or expired API key`. Nothing fails
+  loudly — the credential is valid, the service is healthy, and its JTI-status
+  path keeps working — so it presents as a fleet of revoked keys.
+  The rolling recipe is now explicitly scoped to consumers **without** that
+  grant, and introspection consumers are documented to rotate in place (same
+  client id, new secret) with the short `503` fail-closed window that implies.
+  Proven end-to-end against a live Compose stack by the 4.4 step 7
+  scope-provisioning run.
+
 - **API-key introspection was inoperable on every maintained deployment
   (§3.12).** The private `POST /private/v1/api-keys/introspect` endpoint writes
   a per-consumer anti-abuse counter under the `introspect:antiabuse:` Redis key
@@ -113,6 +129,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`API_KEY_INTROSPECTION` scope-provisioning runbook (§3.12, 4.4 step 7).**
+  New README section *Provisioning the `API_KEY_INTROSPECTION` scope*: the
+  operator sequence an approved consumer goes through before it may enable
+  remote API-key authorization — generate and hash the per-consumer secret,
+  grant the dedicated scope to approved consumers only, configure the consumer,
+  bind key audiences, and run the canary that proves the grant took effect —
+  plus the expected-result matrix (`403` for an `introspection`-only consumer,
+  indistinguishable `401` for an unknown id or a wrong secret, generic
+  `active: false` for an unbound or foreign-audience key, `503` for an unknown
+  schema version) and a fail-closed matrix naming exactly which
+  misconfigurations are caught at consumer **startup** versus at the first
+  request. The scope grant itself lives in the issuer's registry, so it cannot
+  be validated at consumer startup and surfaces as a `503` — never a fallback
+  to bare key validity — which is why the canary is a required deployment step.
+  Also documents the revocation latency: removing a consumer entry refuses its
+  bootstrap credential immediately, but any short-TTL service token it already
+  minted stays valid until `SERVICE_TOKEN_TTL_SECONDS` elapses. The
+  `PRIVATE_API_CONSUMERS` reference row and `ConsumerCredentialConfig`'s
+  docstring, which both omitted `api-key-introspection` from the scope list,
+  now list it.
 - **Bundled examples raised to `fastapi-m8 >=4.0.0,<5.0.0`.** `examples/fastapi_minimal/requirements.txt`
   now floors on the 4.x line (`fastapi_full` already did); `fastapi_minimal/routes.py` demonstrates
   all four JWT dependency levels (`get_current_user`/`get_current_active_writer`/

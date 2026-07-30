@@ -32,8 +32,12 @@ class ConsumerCredentialConfig(BaseModel):
     encoded form (production — hashed at rest, never plaintext on disk); the
     loader auto-detects which by the ``sha256$`` prefix. ``scopes`` are
     deny-by-default — a consumer is refused every private operation until granted
-    one (``introspection`` / ``event-stream`` / ``user-create``, or a custom
-    string). See :mod:`auth_user_service.core.consumer_registry`.
+    one (``introspection`` / ``api-key-introspection`` / ``event-stream`` /
+    ``user-create``, or a custom string). ``api-key-introspection`` is the
+    dedicated §3.12 grant, never implied by ``introspection``, and the consumer
+    id holding it **is** the API-key audience — see the README's *Provisioning
+    the ``API_KEY_INTROSPECTION`` scope* runbook before granting or rotating it.
+    See :mod:`auth_user_service.core.consumer_registry`.
     """
 
     model_config = ConfigDict(extra="forbid")
