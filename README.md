@@ -1196,6 +1196,88 @@ unaffected — MariaDB ships with binary logging off. The Layer B matrix applies
 the same prerequisite to its ephemeral MySQL target, so the certified migration
 path is the one a correctly provisioned deployment runs.
 
+### Upgrading 1.x → 2.0: the write-quiescent maintenance sequence
+
+Upgrading an existing 1.x database to 2.0 is **not** a rolling upgrade. The
+role/flag equivalence `CHECK` and the final `NOT NULL` on
+`auth_client_session.auth_generation` cannot be applied while an old issuer can
+still create sessions or write roles, so the whole cutover runs inside one
+maintenance window with **no old login, refresh, role-update, deactivation, or
+deletion process running between the repair and the new startup**.
+
+Each command below runs from the final 2.0 image against the target database.
+Steps are ordered; none may be skipped or reordered.
+
+**Before the window**
+
+1. **Confirm the declared dialect matches the real engine.** 2.0 verifies
+   `SELECTED_DB` against the connected server at startup and refuses to boot on
+   a mismatch, so an unnoticed mismatch fails *after* Enforce — the worst point
+   in the window. Every MariaDB deployment still declaring `SELECTED_DB=Mysql`
+   must be changed to `SELECTED_DB=Mariadb` first; the value is never rewritten
+   automatically (see [Choosing a Database](#choosing-a-database)).
+2. **MySQL only — grant trigger creation.** Enable
+   `log_bin_trust_function_creators` (or migrate as a `SUPER` user), or the
+   audit-table Expand fails with error **1419** *inside* the window (above).
+3. Build/pull the final 2.0 image; it carries every migration and both operator
+   CLIs.
+
+**Inside the window**
+
+```bash
+# 1. Pre-migration backup — the only supported rollback once Enforce applies.
+pg_dump -Fc -d "$AUTH_DB" -f auth_db.pre_cutover.dump
+
+# 2. Stop every old issuer writer (scale to zero / maintenance mode).
+#    Write quiescence begins here.
+docker compose stop auth_user_service fastapi_full
+
+# 3. Expand — additive only, no CHECK, no final NOT NULL.
+alembic -c /opt/auth_user_service/alembic.ini upgrade 50c9101b580d
+#    Consumer stacks running examples/fastapi_full also apply the example's
+#    additive audit-table Expand against their own database:
+alembic -c /opt/fastapi_full/alembic.ini upgrade head
+
+# 4. Preflight, then repair every mismatch explicitly. Exit 1 means "stop".
+python -m auth_user_service.scripts.security_preflight
+python -m auth_user_service.scripts.security_repair \
+    --user-id <uuid> --intended-role <role> --actor <who> --reason <why>
+python -m auth_user_service.scripts.security_preflight   # must now exit 0
+
+# 5. Revoke every legacy session — a one-time global logout, never a backfill.
+python -m auth_user_service.scripts.legacy_session_revocation \
+    --confirm REVOKE-ALL-LEGACY-SESSIONS --actor <who> --reason <why>
+
+# 6. Enforce (CHECK + final NOT NULL), then the issuer audit-table Expand,
+#    which is chained after Enforce in the revision graph.
+alembic -c /opt/auth_user_service/alembic.ini upgrade head
+
+# 7. Start 2.0.0. The outbox worker is an in-process task of the issuer, not a
+#    separate container; it drains the effects the repair enqueued.
+docker compose up -d auth_user_service
+```
+
+**After startup**
+
+- Confirm at least one **active canonical superuser** remains
+  (`role = 'SUPERADMIN' AND is_superuser AND is_active`).
+- Confirm the outbox drain loop is actually running — `OUTBOX_WORKER_ENABLED`
+  (default `true`) and `OUTBOX_DRAIN_INTERVAL_SECONDS` — and that every
+  `auth_revocation_outbox` row the repair enqueued has reached `completed`.
+- Keep remote API-key consumers disabled until the `API_KEY_INTROSPECTION`
+  scope is provisioned and proven; an unconsumed private endpoint is inert.
+
+**Expected user impact.** Every pre-existing access and refresh session is
+deleted at step 5, so all users sign in again after cutover. This is deliberate:
+backfilling a generation onto a legacy session could bless an old token carrying
+a stale role.
+
+**Rollback.** Aborting *before* Enforce is safe — Expand is additive and the old
+issuer ignores it. Once Enforce has applied, rollback below 2.0 is unsupported:
+incident response is a forward fix on the 2.0 line, or a full restore of the
+step-1 backup, which restores the pre-cutover session state as one consistent
+unit. Revocation is never rolled back for availability.
+
 ### Linting & formatting
 
 ```bash
