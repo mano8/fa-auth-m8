@@ -10,6 +10,7 @@ canonical principal resolution itself is unit tested in
 helper are covered directly below.
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException, Response
+from redis.exceptions import NoPermissionError, RedisError
 from sqlalchemy.exc import SQLAlchemyError
 
 from auth_sdk_m8.schemas.api_key import (
@@ -363,3 +365,44 @@ def test_antiabuse_redis_down_non_strict_allows() -> None:
     with patch("auth_user_service.routes.private.settings") as cfg:
         cfg.effective_api_key_strict_rate_limit = False
         _consume_introspection_antiabuse(None, _CONSUMER)  # fail-open, logged
+
+
+def _redis_raising(exc: Exception) -> MagicMock:
+    """A Redis mock whose anti-abuse pipeline fails when executed."""
+    redis = MagicMock()
+    pipe = MagicMock()
+    pipe.execute.side_effect = exc
+    redis.pipeline.return_value.__enter__.return_value = pipe
+    return redis
+
+
+def test_antiabuse_command_error_strict_is_503() -> None:
+    """A command that fails mid-pipeline is the same condition as no client.
+
+    Regression for the 4.1 cutover rehearsal finding: a scoped Redis ACL that did
+    not grant the ``introspect:antiabuse:`` prefix raised ``NoPermissionError``
+    out of ``pipe.execute()``, which escaped as an unhandled ``500`` — leaking a
+    server error from the §3.12 endpoint instead of taking its documented
+    unavailable posture.
+    """
+    with patch("auth_user_service.routes.private.settings") as cfg:
+        cfg.effective_api_key_strict_rate_limit = True
+        with pytest.raises(HTTPException) as exc:
+            _consume_introspection_antiabuse(
+                _redis_raising(NoPermissionError("no perms")), _CONSUMER
+            )
+    assert exc.value.status_code == 503
+
+
+def test_antiabuse_command_error_non_strict_allows(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Non-strict deployments proceed, recording the bounded reason label."""
+    with patch("auth_user_service.routes.private.settings") as cfg:
+        cfg.effective_api_key_strict_rate_limit = False
+        with caplog.at_level(logging.WARNING):
+            _consume_introspection_antiabuse(
+                _redis_raising(RedisError("boom")), _CONSUMER
+            )
+    assert "introspect.antiabuse_unavailable" in caplog.text
+    assert "reason=RedisError" in caplog.text

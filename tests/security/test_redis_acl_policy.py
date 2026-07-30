@@ -36,9 +36,14 @@ _STACKS = [
 ]
 
 # Key prefixes the auth service + auth-sdk write to Redis (audited from
-# auth_user_service/core/client.py, core/deps.py, and the auth-sdk stores).
-# Each must be covered by an ACL ``~prefix*`` pattern. Kept in sync by
-# test_acl_covers_every_source_key_prefix below.
+# auth_user_service/core/client.py, core/deps.py, routes/private.py, and the
+# auth-sdk stores). Each must be covered by an ACL ``~prefix*`` pattern. Kept in
+# sync by test_acl_covers_every_source_key_prefix below.
+#
+# ``introspect:antiabuse:`` was missing from this audit until the 4.1 cutover
+# rehearsal: the §3.12 API-key introspection endpoint's per-consumer anti-abuse
+# counter is written from routes/private.py, which this list did not cover, so
+# every maintained stack's ACL denied it and the endpoint failed on every call.
 _RUNTIME_KEY_PREFIXES = [
     "oauth_session:",
     "auth_code:",
@@ -50,6 +55,7 @@ _RUNTIME_KEY_PREFIXES = [
     "jwt:blacklist:",
     "rate:api:",
     "api_key:luat",
+    "introspect:antiabuse:",
     "security:superuser_probe:",
     "security:audit_log:",
     "security:audit_purge:",

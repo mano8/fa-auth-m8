@@ -15,6 +15,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **API-key introspection was inoperable on every maintained deployment
+  (§3.12).** The private `POST /private/v1/api-keys/introspect` endpoint writes
+  a per-consumer anti-abuse counter under the `introspect:antiabuse:` Redis key
+  prefix, but no maintained Compose example granted that prefix in the scoped
+  ACL for the `auth` Redis user, so every authenticated call raised
+  `NoPermissionError` out of the pipeline and escaped as an unhandled **500** —
+  leaking a server error from the endpoint and, for a consumer configured
+  fail-closed, denying every remote API-key request. Two coupled fixes: the
+  `auth` ACL in all six maintained examples now grants `~introspect:*`, and a
+  Redis command failure inside the anti-abuse consumption now takes the same
+  documented unavailable posture as an absent client (strict/production →
+  `503`; non-strict → proceed, logged with a bounded reason label) instead of
+  propagating. The `_RUNTIME_KEY_PREFIXES` audit in
+  `tests/security/test_redis_acl_policy.py` — the drift lock that exists to
+  catch exactly this — gained the missing prefix, so the gap cannot reopen.
+  Found by the 4.1 write-quiescent cutover rehearsal against a real
+  PostgreSQL stack.
+
 - **Breaking configuration migration — `SELECTED_DB` dialect declaration (§4.6).**
   `SELECTED_DB` is now verified fail-closed at startup against the database
   server the issuer actually connects to: the SQLAlchemy dialect name plus the

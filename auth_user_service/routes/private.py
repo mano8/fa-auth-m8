@@ -16,6 +16,7 @@ from typing import Any, Final, Optional, Union
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr, Field, field_validator
+from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session
 
@@ -303,37 +304,55 @@ async def check_jti_status(
     )
 
 
+def _handle_antiabuse_unavailable(consumer_id: str, reason: str) -> None:
+    """Decide admission when the anti-abuse ceiling cannot be enforced (§3.12 step 3).
+
+    One branch for every way Redis can fail to answer — an unavailable client and
+    a command that errors mid-pipeline are the same condition, so they must reach
+    the same decision rather than one of them escaping as a ``500``. A
+    strict/production deployment fails closed (``503``), non-strict development
+    proceeds (logged unsafe). *reason* is a bounded, secret-free label.
+    """
+    if settings.effective_api_key_strict_rate_limit:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_INTROSPECTION_UNAVAILABLE,
+        )
+    _logger.warning(
+        "introspect.antiabuse_unavailable decision=allow mode=fail_open "
+        "consumer=%s reason=%s",
+        consumer_id,
+        reason,
+    )
+
+
 def _consume_introspection_antiabuse(redis: Any, consumer_id: str) -> None:
     """Consume the per-consumer anti-abuse allowance for introspection (§3.12 step 3).
 
     A fixed per-minute window keyed by the authenticated consumer id, consumed on
     **every** authenticated attempt (inactive keys included) and entirely separate
     from the introspected key's own functional quota (steps 11-12). Exhaustion is
-    a ``429`` with ``Retry-After``. When Redis is unavailable this ceiling cannot
-    be enforced, so it follows the same posture as key rate limiting: a
-    strict/production deployment fails closed (``503``), non-strict development
-    proceeds (logged unsafe). Labels stay bounded — only the registry-bounded
-    consumer id, never a key hash or user id.
+    a ``429`` with ``Retry-After``. When Redis cannot answer — no client, or a
+    command that fails (connection loss, or an ACL that does not grant the
+    ``introspect:antiabuse:`` prefix) — the ceiling cannot be enforced and
+    ``_handle_antiabuse_unavailable`` decides admission. Labels stay bounded —
+    only the registry-bounded consumer id, never a key hash or user id.
     """
     if redis is None:
-        if settings.effective_api_key_strict_rate_limit:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=_INTROSPECTION_UNAVAILABLE,
-            )
-        _logger.warning(
-            "introspect.antiabuse_unavailable decision=allow mode=fail_open consumer=%s",
-            consumer_id,
-        )
+        _handle_antiabuse_unavailable(consumer_id, "no_client")
         return
 
     limit = settings.API_KEY_INTROSPECTION_ANTIABUSE_PER_MINUTE
     bucket = datetime.now(timezone.utc).strftime(_ANTIABUSE_BUCKET_FORMAT)
     key = f"introspect:antiabuse:{consumer_id}:{bucket}"
-    with redis.pipeline() as pipe:
-        pipe.incr(key)
-        pipe.expire(key, 60)
-        count, _ = pipe.execute()
+    try:
+        with redis.pipeline() as pipe:
+            pipe.incr(key)
+            pipe.expire(key, 60)
+            count, _ = pipe.execute()
+    except RedisError as exc:
+        _handle_antiabuse_unavailable(consumer_id, type(exc).__name__)
+        return
     if count > limit:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
