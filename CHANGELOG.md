@@ -130,7 +130,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **`API_KEY_INTROSPECTION` scope-provisioning runbook (§3.12, 4.4 step 7).**
-  New README section *Provisioning the `API_KEY_INTROSPECTION` scope*: the
+  New README section _Provisioning the `API_KEY_INTROSPECTION` scope_: the
   operator sequence an approved consumer goes through before it may enable
   remote API-key authorization — generate and hash the per-consumer secret,
   grant the dedicated scope to approved consumers only, configure the consumer,

@@ -1067,7 +1067,7 @@ is done, the private endpoint is unconsumed and inert; after it is done, a
 consumer can resolve *user API keys* to their owners' live authority, so the
 grant is the security boundary of the whole §3.12 remote path.
 
-**What the grant means**
+#### What the grant means
 
 - It is **deny-by-default and dedicated**: `api-key-introspection` is never
   implied by `introspection`. A JTI-status consumer that is not explicitly
@@ -1083,7 +1083,7 @@ grant is the security boundary of the whole §3.12 remote path.
   id with `409 Unknown or ineligible audience(s): …`, so a key can never be
   bound to a service that was never approved to introspect it.
 
-**1 — Generate the per-consumer secret and hash it at rest**
+#### 1 — Generate the per-consumer secret and hash it at rest
 
 ```bash
 # One strong secret per consumer (never reused across consumers).
@@ -1097,7 +1097,7 @@ print(ConsumerCredential.create('prompt-engine-m8', '<generated-secret>').encode
 # -> sha256$<salt_hex>$<digest_hex>
 ```
 
-**2 — Grant the scope to the approved consumers only**
+#### 2 — Grant the scope to the approved consumers only
 
 Add or update the entry in `PRIVATE_API_CONSUMERS` (or the file referenced by
 `PRIVATE_API_CONSUMERS_FILE`). Grant nothing a consumer does not use:
@@ -1118,7 +1118,7 @@ Add or update the entry in `PRIVATE_API_CONSUMERS` (or the file referenced by
 Reload the issuer (restart or `SIGHUP`) — the registry is read from
 configuration, so nothing is provisioned in the database.
 
-**3 — Configure the consumer**
+#### 3 — Configure the consumer
 
 ```ini
 # consumer env
@@ -1128,7 +1128,7 @@ INTROSPECTION_URL=http://auth_user_service:8000/user/private/v1/jti-status
 API_KEY_INTROSPECTION_ENABLED=true        # URL is derived from INTROSPECTION_URL
 ```
 
-**4 — Bind audiences on the keys that need remote use**
+#### 4 — Bind audiences on the keys that need remote use
 
 No existing key is silently promoted into a cross-service credential: a key
 with **no** audience rows is issuer-local only and is answered `active: false`
@@ -1142,7 +1142,7 @@ python -m auth_user_service.scripts.bind_api_key_audiences \
     --audience prompt-engine-m8
 ```
 
-**5 — Verify the grant (canary)**
+#### 5 — Verify the grant (canary)
 
 A missing *scope* is the one dimension a consumer cannot detect at startup (see
 the matrix below), so verify it explicitly from inside the network:
@@ -1174,7 +1174,7 @@ Expected results — every one of these is a required outcome, not a nicety:
 | Consumer route with the bound key | succeeds; the owner's live role is re-resolved on every call |
 | Consumer route with an unbound/unknown key | generic `401 Invalid or expired API key` |
 
-**6 — Where each failure is caught (fail-closed matrix)**
+#### 6 — Where each failure is caught (fail-closed matrix)
 
 | Missing piece | Caught at | Result |
 | ------------- | --------- | ------ |
@@ -1192,7 +1192,7 @@ A missing or withdrawn grant therefore surfaces as `503` on the first
 capability-bearing request — fail closed, never a fallback to bare key
 validity — which is why step 5 is a required deployment step and not optional.
 
-**7 — Rotation and revocation**
+#### 7 — Rotation and revocation
 
 - **Rotation:** rotate an introspection consumer **in place** (same client id,
   new secret). The parallel `<consumer-id>-new` recipe silently breaks every
@@ -1378,7 +1378,7 @@ deletion process running between the repair and the new startup**.
 Each command below runs from the final 2.0 image against the target database.
 Steps are ordered; none may be skipped or reordered.
 
-**Before the window**
+#### Before the window
 
 1. **Confirm the declared dialect matches the real engine.** 2.0 verifies
    `SELECTED_DB` against the connected server at startup and refuses to boot on
@@ -1392,7 +1392,7 @@ Steps are ordered; none may be skipped or reordered.
 3. Build/pull the final 2.0 image; it carries every migration and both operator
    CLIs.
 
-**Inside the window**
+#### Inside the window
 
 ```bash
 # 1. Pre-migration backup — the only supported rollback once Enforce applies.
@@ -1427,7 +1427,7 @@ alembic -c /opt/auth_user_service/alembic.ini upgrade head
 docker compose up -d auth_user_service
 ```
 
-**After startup**
+#### After startup
 
 - Confirm at least one **active canonical superuser** remains
   (`role = 'SUPERADMIN' AND is_superuser AND is_active`).
