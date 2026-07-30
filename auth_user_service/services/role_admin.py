@@ -205,6 +205,112 @@ def _record_enqueued_metrics(rows: list[RevocationOutbox]) -> None:
     outbox_metrics.record_enqueued(EFFECT_PUBLISH, len(rows) - blacklist)
 
 
+@dataclass(frozen=True)
+class _UpdateIntent:
+    """The classified intent of one admin user update.
+
+    Separates *what the payload asked for* (which fields it actually set) from
+    *what the post-mutation state would be*, both captured before the update is
+    applied. Every guard below then reads one named predicate instead of
+    re-deriving the same booleans from ``fields`` at each decision point.
+    """
+
+    role_requested: bool
+    active_requested: bool
+    previous_role: RoleType
+    previous_active: bool
+    intended_role: RoleType
+    intended_active: bool
+
+    @property
+    def affects_set(self) -> bool:
+        """Whether this update can change active-canonical-superuser membership."""
+        return self.role_requested or self.active_requested
+
+    @property
+    def activation_changed(self) -> bool:
+        """Whether ``is_active`` actually flips (a no-op re-send does not count)."""
+        return self.active_requested and self.intended_active != self.previous_active
+
+    @property
+    def deactivated(self) -> bool:
+        """Whether this update takes an active account inactive (3.11)."""
+        return (
+            self.active_requested and self.previous_active and not self.intended_active
+        )
+
+
+def _resolve_update_intent(db_user: User, user_in: UserUpdate) -> _UpdateIntent:
+    """Classify an admin update against the target's current state.
+
+    ``exclude_unset`` distinguishes "not supplied" from "supplied as null", so an
+    omitted field leaves the corresponding ``previous_*`` value as the intent.
+    """
+    fields = user_in.model_dump(exclude_unset=True)
+    role_requested = fields.get("role") is not None
+    active_requested = "is_active" in fields and fields["is_active"] is not None
+    return _UpdateIntent(
+        role_requested=role_requested,
+        active_requested=active_requested,
+        previous_role=db_user.role,
+        previous_active=db_user.is_active,
+        intended_role=fields["role"] if role_requested else db_user.role,
+        intended_active=fields["is_active"] if active_requested else db_user.is_active,
+    )
+
+
+def _reject_self_promotion(
+    *, actor_id: object, db_user: User, intent: _UpdateIntent
+) -> None:
+    """Role-administration matrix: an actor may never raise their own role (3.10)."""
+    if (
+        intent.role_requested
+        and actor_id == db_user.id
+        and _is_promotion(intent.previous_role, intent.intended_role)
+    ):
+        raise SelfPromotionError("self_promotion_forbidden")
+
+
+def _enforce_last_superuser_invariant(
+    session: Session, db_user: User, intent: _UpdateIntent
+) -> None:
+    """Reject a mutation that would empty the active canonical-superuser set.
+
+    Only meaningful for a target that is currently in the set and would leave it;
+    must be called with the superuser-set lock already held so the count cannot
+    change between here and the mutation (3.5.3).
+    """
+    if not is_active_canonical_superuser(db_user):
+        return
+    if _would_be_active_canonical_superuser(
+        intent.intended_role, intent.intended_active
+    ):
+        return
+    if count_active_canonical_superusers(session, exclude_user_id=db_user.id) == 0:
+        raise LastSuperuserError("last_superuser_required")
+
+
+def _revoke_and_enqueue_authorization_change(
+    session: Session, db_user: User
+) -> list[RevocationOutbox]:
+    """Bump the generation, drop the user's sessions, and enqueue the side effects.
+
+    Records the Redis blacklist + user-wide v2 event as durable outbox rows
+    committed atomically with the DB revocation; a post-commit worker drains them
+    (3.5.2). This replaces the best-effort post-commit push on the role-change
+    path — the database delete is already authoritative (3.5.4).
+    """
+    new_generation = GenerationController.bump_user_generation(db_user)
+    targets: list[RevocationTarget]
+    targets, _ = SessionController.capture_and_delete_user_sessions(session, db_user.id)
+    return OutboxController.enqueue_role_change_effects(
+        session,
+        user_id=db_user.id,
+        auth_generation=new_generation,
+        targets=targets,
+    )
+
+
 def change_user_authorization(
     *,
     session: Session,
@@ -229,64 +335,25 @@ def change_user_authorization(
     from the authenticated principal, never client input — so the mutation can
     never commit without its forensic record (Phase 7).
     """
-    fields = user_in.model_dump(exclude_unset=True)
-    role_requested = fields.get("role") is not None
-    active_requested = "is_active" in fields and fields["is_active"] is not None
-    affects_set = role_requested or active_requested
-
-    previous_role = db_user.role
-    previous_active = db_user.is_active
-    intended_role = fields["role"] if role_requested else previous_role
-    intended_active = fields["is_active"] if active_requested else previous_active
-
-    # Role-administration matrix: an actor may never raise their own role (3.10).
-    if (
-        role_requested
-        and actor_id == db_user.id
-        and _is_promotion(previous_role, intended_role)
-    ):
-        raise SelfPromotionError("self_promotion_forbidden")
+    intent = _resolve_update_intent(db_user, user_in)
+    _reject_self_promotion(actor_id=actor_id, db_user=db_user, intent=intent)
 
     policy: Optional[SecurityPolicy] = None
-    if affects_set:
+    if intent.affects_set:
         policy = acquire_superuser_set_lock(session)
         _lock_user_row(session, db_user)
-        # Last-superuser invariant, evaluated under the lock (3.5.3).
-        if is_active_canonical_superuser(db_user) and not (
-            _would_be_active_canonical_superuser(intended_role, intended_active)
-        ):
-            if (
-                count_active_canonical_superusers(session, exclude_user_id=db_user.id)
-                == 0
-            ):
-                raise LastSuperuserError("last_superuser_required")
+        _enforce_last_superuser_invariant(session, db_user, intent)
 
     outcome = UserController.apply_user_update(db_user=db_user, user_in=user_in)
-    if active_requested:
-        db_user.is_active = intended_active
+    if intent.active_requested:
+        db_user.is_active = intent.intended_active
 
-    activation_changed = active_requested and intended_active != previous_active
-    deactivated = active_requested and previous_active and not intended_active
-    authorization_changed = outcome.role_changed or activation_changed
+    authorization_changed = outcome.role_changed or intent.activation_changed
 
     enqueued: list[RevocationOutbox] = []
     if authorization_changed:
-        new_generation = GenerationController.bump_user_generation(db_user)
-        targets: list[RevocationTarget]
-        targets, _ = SessionController.capture_and_delete_user_sessions(
-            session, db_user.id
-        )
-        # Record the Redis blacklist + user-wide v2 event as durable outbox rows
-        # committed atomically with the DB revocation; a post-commit worker drains
-        # them (3.5.2). This replaces the best-effort post-commit push on the
-        # role-change path — the database delete is already authoritative (3.5.4).
-        enqueued = OutboxController.enqueue_role_change_effects(
-            session,
-            user_id=db_user.id,
-            auth_generation=new_generation,
-            targets=targets,
-        )
-    if deactivated:
+        enqueued = _revoke_and_enqueue_authorization_change(session, db_user)
+    if intent.deactivated:
         ApiKeyService.revoke_all_user_keys_in_tx(session, db_user.id)
 
     session.add(db_user)

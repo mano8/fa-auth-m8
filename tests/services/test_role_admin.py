@@ -217,6 +217,31 @@ class TestChangeUserAuthorizationRole:
                 user_in=UserUpdate(role=RoleType.USER),
             )
 
+    def test_sole_superuser_may_be_updated_while_staying_a_superuser(
+        self, db_session, superuser
+    ):
+        # The invariant guards the set *emptying*, not every touch of a member.
+        # With no other superuser present, re-asserting SUPERADMIN must still be
+        # allowed: the post-mutation state is an active canonical superuser, so
+        # the set never empties. Rejecting this would 409 the only admin out of
+        # their own account.
+        db_session.exec(
+            delete(User).where(
+                User.id != superuser.id, User.role == RoleType.SUPERADMIN
+            )
+        )
+        db_session.flush()
+        result = change_user_authorization(
+            session=db_session,
+            actor_id=uuid.uuid4(),
+            actor_role=RoleType.SUPERADMIN,
+            db_user=superuser,
+            user_in=UserUpdate(role=RoleType.SUPERADMIN),  # already SUPERADMIN
+        )
+        assert result.user.role == RoleType.SUPERADMIN
+        assert result.user.is_superuser is True
+        assert result.user.is_active is True
+
     def test_demoting_superuser_with_another_present_succeeds(
         self, db_session, superuser
     ):
