@@ -194,6 +194,100 @@ def _set_purge_delete_authorized(
         )
 
 
+def _enforce_retention_floor(window: RetentionWindow) -> int:
+    """Return *window* in seconds, rejecting anything below the configured floor.
+
+    Checked before a single row is claimed, so a too-short window deletes nothing.
+    """
+    window_seconds = _WINDOW_SECONDS[window]
+    floor_seconds = settings.AUDIT_PURGE_MIN_RETENTION_SECONDS
+    if window_seconds < floor_seconds:
+        raise AuditRetentionFloorError(
+            f"retention window {window.value!r} ({window_seconds}s) is below "
+            f"the configured minimum-retention floor ({floor_seconds}s); "
+            "lowering the floor requires an explicit operator config change"
+        )
+    return window_seconds
+
+
+def _claim_purge_batch(
+    session: Session, *, horizon: datetime, batch: int
+) -> list[PrivilegedActionAudit]:
+    """Claim up to *batch* rows older than *horizon*, oldest first.
+
+    ``FOR UPDATE SKIP LOCKED`` mirrors the outbox worker's batching, so a
+    concurrent purge skips rows this one already holds rather than blocking.
+    """
+    return list(
+        session.exec(
+            select(PrivilegedActionAudit)
+            .where(col(PrivilegedActionAudit.created_at) < horizon)
+            .order_by(col(PrivilegedActionAudit.created_at))
+            .limit(batch)
+            .with_for_update(skip_locked=True)
+        ).all()
+    )
+
+
+def _delete_claimed_batch(
+    session: Session,
+    rows: list[PrivilegedActionAudit],
+    *,
+    dialect: str,
+    guarded: bool,
+) -> None:
+    """Delete one claimed batch and commit it.
+
+    The schema-level guard flag is held only for the delete itself and cleared
+    immediately after, so an ad-hoc ``DELETE`` on the same pooled connection is
+    still rejected by the trigger.
+    """
+    if guarded:
+        _set_purge_delete_authorized(session, dialect, active=True)
+    for row in rows:
+        session.delete(row)
+    session.commit()
+    if guarded:
+        _set_purge_delete_authorized(session, dialect, active=False)
+
+
+def _sweep_expired_rows(
+    session: Session,
+    *,
+    horizon: datetime,
+    batch: int,
+    dialect: str,
+    guarded: bool,
+) -> int:
+    """Batch-delete every row older than *horizon*; return the number removed.
+
+    Each batch is committed before the next is claimed, so a large purge never
+    holds one long-lived lock over the table. Re-selecting an identical id set
+    after a commit means the deletes are being silently suppressed — that is a
+    stall (:class:`AuditPurgeStalledError`), not an empty result, and detecting it
+    is what stops this loop from spinning forever.
+    """
+    removed = 0
+    previous_ids: Optional[frozenset] = None
+    while True:
+        rows = _claim_purge_batch(session, horizon=horizon, batch=batch)
+        if not rows:
+            break
+        ids = frozenset(row.id for row in rows)
+        if previous_ids is not None and ids == previous_ids:
+            raise AuditPurgeStalledError(
+                "audit purge made no progress: the same "
+                f"{len(ids)} row(s) were re-selected after a commit — deletes "
+                "are being silently suppressed"
+            )
+        _delete_claimed_batch(session, rows, dialect=dialect, guarded=guarded)
+        removed += len(rows)
+        if len(rows) < batch:
+            break
+        previous_ids = ids
+    return removed
+
+
 def purge_expired_audit_rows(
     session: Session,
     *,
@@ -241,51 +335,19 @@ def purge_expired_audit_rows(
     Raises:
         AuditRetentionFloorError: *window* is shorter than the configured floor.
     """
-    window_seconds = _WINDOW_SECONDS[window]
-    floor_seconds = settings.AUDIT_PURGE_MIN_RETENTION_SECONDS
-    if window_seconds < floor_seconds:
-        raise AuditRetentionFloorError(
-            f"retention window {window.value!r} ({window_seconds}s) is below "
-            f"the configured minimum-retention floor ({floor_seconds}s); "
-            "lowering the floor requires an explicit operator config change"
-        )
-
+    window_seconds = _enforce_retention_floor(window)
     batch = batch_size or settings.AUDIT_PURGE_BATCH_SIZE
     current = _as_aware_utc(now or datetime.now(timezone.utc))
     horizon = current - timedelta(seconds=window_seconds)
     dialect = _dialect_name(session)
-    guarded = dialect in _PURGE_GUARDED_DIALECTS
 
-    removed = 0
-    previous_ids: Optional[frozenset] = None
-    while True:
-        rows = session.exec(
-            select(PrivilegedActionAudit)
-            .where(col(PrivilegedActionAudit.created_at) < horizon)
-            .order_by(col(PrivilegedActionAudit.created_at))
-            .limit(batch)
-            .with_for_update(skip_locked=True)
-        ).all()
-        if not rows:
-            break
-        ids = frozenset(row.id for row in rows)
-        if previous_ids is not None and ids == previous_ids:
-            raise AuditPurgeStalledError(
-                "audit purge made no progress: the same "
-                f"{len(ids)} row(s) were re-selected after a commit — deletes "
-                "are being silently suppressed"
-            )
-        if guarded:
-            _set_purge_delete_authorized(session, dialect, active=True)
-        for row in rows:
-            session.delete(row)
-        session.commit()
-        if guarded:
-            _set_purge_delete_authorized(session, dialect, active=False)
-        removed += len(rows)
-        if len(rows) < batch:
-            break
-        previous_ids = ids
+    removed = _sweep_expired_rows(
+        session,
+        horizon=horizon,
+        batch=batch,
+        dialect=dialect,
+        guarded=dialect in _PURGE_GUARDED_DIALECTS,
+    )
 
     record_privileged_action(
         session,

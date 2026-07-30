@@ -412,6 +412,86 @@ class RateLimitEnforcer:
         return limits
 
 
+def _enforce_api_key_retention_floor(window: RetentionWindow) -> int:
+    """Return *window* in seconds, rejecting anything below the configured floor.
+
+    ``API_KEY_PURGE_MIN_RETENTION_SECONDS`` is a dedicated floor, separate from
+    the audit table's. Checked before a single row is claimed, so a too-short
+    window deletes nothing.
+    """
+    from auth_user_service.core.config import settings  # noqa: PLC0415
+
+    window_seconds = _WINDOW_SECONDS[window]
+    floor_seconds = settings.API_KEY_PURGE_MIN_RETENTION_SECONDS
+    if window_seconds < floor_seconds:
+        raise ApiKeyPurgeRetentionFloorError(
+            f"retention window {window.value!r} ({window_seconds}s) is below "
+            f"the configured minimum-retention floor ({floor_seconds}s); "
+            "lowering the floor requires an explicit operator config change"
+        )
+    return window_seconds
+
+
+def _dead_key_predicate(horizon: datetime) -> sa.ColumnElement[bool]:
+    """Match keys that are dead as of *horizon*.
+
+    Two independent bases: revoked (dated by ``updated_at``, which stops
+    advancing once revocation happens because the ``last_used_at`` write-behind
+    no longer touches it) or carrying a non-null ``expires_at`` in the past.
+    ``expires_at IS NULL`` never qualifies on the expiry basis.
+    """
+    return sa.or_(
+        sa.and_(col(ApiKey.revoked).is_(True), col(ApiKey.updated_at) < horizon),
+        sa.and_(
+            col(ApiKey.expires_at).is_not(None),
+            col(ApiKey.expires_at) < horizon,
+        ),
+    )
+
+
+def _sweep_dead_keys(
+    session: Session, *, dead_predicate: sa.ColumnElement[bool], batch: int
+) -> int:
+    """Batch-delete every key matching *dead_predicate*; return the number removed.
+
+    The purge unit is the parent ``ApiKey`` row, never an audience row alone —
+    deleting it lets the existing ``ON DELETE CASCADE`` clear its
+    ``api_key_audiences`` and ``RateLimit`` children in the same operation. Each
+    batch is committed before the next is claimed, so a large purge never holds
+    one long-lived lock over the key table. Re-selecting an identical id set after
+    a commit means the deletes are being silently suppressed — that is a stall
+    (:class:`ApiKeyPurgeStalledError`), not an empty result, and detecting it is
+    what stops this loop from spinning forever.
+    """
+    removed = 0
+    previous_ids: Optional[frozenset] = None
+    while True:
+        rows = session.exec(
+            select(ApiKey)
+            .where(dead_predicate)
+            .order_by(col(ApiKey.id))
+            .limit(batch)
+            .with_for_update(skip_locked=True)
+        ).all()
+        if not rows:
+            break
+        ids = frozenset(row.id for row in rows)
+        if previous_ids is not None and ids == previous_ids:
+            raise ApiKeyPurgeStalledError(
+                "api-key purge made no progress: the same "
+                f"{len(ids)} row(s) were re-selected after a commit — deletes "
+                "are being silently suppressed"
+            )
+        for row in rows:
+            session.delete(row)
+        session.commit()
+        removed += len(rows)
+        if len(rows) < batch:
+            break
+        previous_ids = ids
+    return removed
+
+
 def purge_dead_api_keys(
     session: Session,
     *,
@@ -468,55 +548,18 @@ def purge_dead_api_keys(
         ApiKeyPurgeRetentionFloorError: *window* is shorter than the
             configured floor.
     """
-    from auth_user_service.core.config import settings
+    from auth_user_service.core.config import settings  # noqa: PLC0415
 
-    window_seconds = _WINDOW_SECONDS[window]
-    floor_seconds = settings.API_KEY_PURGE_MIN_RETENTION_SECONDS
-    if window_seconds < floor_seconds:
-        raise ApiKeyPurgeRetentionFloorError(
-            f"retention window {window.value!r} ({window_seconds}s) is below "
-            f"the configured minimum-retention floor ({floor_seconds}s); "
-            "lowering the floor requires an explicit operator config change"
-        )
-
+    window_seconds = _enforce_api_key_retention_floor(window)
     batch = batch_size or settings.API_KEY_PURGE_BATCH_SIZE
     current = _as_aware_utc(now or datetime.now(timezone.utc))
     horizon = current - timedelta(seconds=window_seconds)
 
-    dead_predicate = sa.or_(
-        sa.and_(col(ApiKey.revoked).is_(True), col(ApiKey.updated_at) < horizon),
-        sa.and_(
-            col(ApiKey.expires_at).is_not(None),
-            col(ApiKey.expires_at) < horizon,
-        ),
+    removed = _sweep_dead_keys(
+        session,
+        dead_predicate=_dead_key_predicate(horizon),
+        batch=batch,
     )
-
-    removed = 0
-    previous_ids: Optional[frozenset] = None
-    while True:
-        rows = session.exec(
-            select(ApiKey)
-            .where(dead_predicate)
-            .order_by(col(ApiKey.id))
-            .limit(batch)
-            .with_for_update(skip_locked=True)
-        ).all()
-        if not rows:
-            break
-        ids = frozenset(row.id for row in rows)
-        if previous_ids is not None and ids == previous_ids:
-            raise ApiKeyPurgeStalledError(
-                "api-key purge made no progress: the same "
-                f"{len(ids)} row(s) were re-selected after a commit — deletes "
-                "are being silently suppressed"
-            )
-        for row in rows:
-            session.delete(row)
-        session.commit()
-        removed += len(rows)
-        if len(rows) < batch:
-            break
-        previous_ids = ids
 
     record_privileged_action(
         session,
