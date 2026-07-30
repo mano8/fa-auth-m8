@@ -437,16 +437,20 @@ def _handle_api_key_redis_degraded(api_key: ApiKey) -> None:
         # Codacy UI — inline `nosemgrep` is not honored). It is a format string
         # and `ref` is the key's id.
         _logger.warning(
-            "api_key.rate_limit_unavailable decision=deny mode=fail_closed ref=%s",
+            "api_key.rate_limit_unavailable "  # nosec B106
+            "decision=deny mode=fail_closed "  # nosec B106
+            "ref=%s",  # nosec B106
             ref,
-        )  # nosec B106
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Rate limiting service unavailable",
         )
     # ref is the opaque key id, not a secret (same false positive as above)
     _logger.warning(
-        "api_key.rate_limit_unavailable decision=allow mode=fail_open unsafe=true ref=%s",
+        "api_key.rate_limit_unavailable "  # nosec B106
+        "decision=allow mode=fail_open "  # nosec B106
+        "unsafe=true ref=%s",  # nosec B106
         ref,
     )  # nosec B106
 

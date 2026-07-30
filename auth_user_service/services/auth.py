@@ -248,7 +248,8 @@ class AuthController:
             # reason code, the user id, and a timestamp. No claim value or
             # signing material is logged.
             _logger.critical(
-                "event=token.sign.blocked reason=%s user_id=%s ts=%s",
+                "event=token.sign.blocked "  # nosec B106
+                "reason=%s user_id=%s ts=%s",  # nosec B106
                 str(ex),
                 str(user.id),
                 datetime.now(timezone.utc).isoformat(),
