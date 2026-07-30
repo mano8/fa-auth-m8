@@ -12,6 +12,7 @@ style.
 """
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -126,3 +127,85 @@ class TestCreateRefusals:
             ).all()
         )
         assert after == before
+
+
+def _dead_key(user, *, revoked: bool = False, expires_at=None) -> ApiKey:
+    """A key row that is no longer usable — revoked, or past its expiry."""
+    return ApiKey(
+        id=uuid.uuid4(),
+        name=f"dead-{uuid.uuid4().hex[:6]}",
+        key_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+        user_id=user.id,
+        revoked=revoked,
+        expires_at=expires_at,
+        access_mode=ApiKeyAccessMode.READ_ONLY,
+    )
+
+
+class TestLiveKeyCapAdmitsAReplacement:
+    """``APIKEY-LIFECYCLE-01``: the per-user cap bounds *live* credentials.
+
+    ``tests/services/api_keys_test.py::TestCreationCapExcludesExpiredKeys``
+    proves the corrected predicate at the query level, but it re-declares that
+    predicate inside the test — so it would still pass if the route reverted to
+    counting revoked keys only. These call the route itself, which is the thing
+    an owner actually hits, so the cap and the route cannot drift apart.
+    """
+
+    _CAP = 2
+
+    @pytest.fixture
+    def capped(self):
+        """Shrink the per-user maximum so the boundary is reachable in a test."""
+        with patch(
+            "auth_user_service.routes.api_keys.settings.API_KEY_MAX_PER_USER",
+            self._CAP,
+        ):
+            yield
+
+    def test_live_keys_at_the_cap_refuse_a_new_key(
+        self, db_session, sample_user, capped
+    ):
+        for _ in range(self._CAP):
+            _create(db_session, sample_user, ttl_hours=24)
+
+        with pytest.raises(HTTPException) as exc_info:
+            _create(db_session, sample_user, ttl_hours=24)
+
+        assert exc_info.value.status_code == 409
+
+    def test_expired_keys_at_the_cap_admit_a_replacement(
+        self, db_session, sample_user, capped
+    ):
+        """The regression this correction fixes: an owner whose keys have all
+        expired could not issue a replacement without manually revoking corpses."""
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        for _ in range(self._CAP):
+            db_session.add(_dead_key(sample_user, expires_at=past))
+        db_session.commit()
+
+        created = _create(db_session, sample_user, name="replacement", ttl_hours=24)
+
+        assert created.plaintext.startswith("ak_")
+        assert db_session.get(ApiKey, created.id) is not None
+
+    def test_revoked_keys_at_the_cap_admit_a_replacement(
+        self, db_session, sample_user, capped
+    ):
+        for _ in range(self._CAP):
+            db_session.add(_dead_key(sample_user, revoked=True))
+        db_session.commit()
+
+        created = _create(db_session, sample_user, name="replacement", ttl_hours=24)
+
+        assert db_session.get(ApiKey, created.id) is not None
+
+    def test_another_users_keys_never_consume_this_owners_cap(
+        self, db_session, sample_user, superuser, capped
+    ):
+        for _ in range(self._CAP):
+            _create(db_session, superuser, ttl_hours=24)
+
+        created = _create(db_session, sample_user, name="mine", ttl_hours=24)
+
+        assert db_session.get(ApiKey, created.id).user_id == sample_user.id
