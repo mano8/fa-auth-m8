@@ -18,7 +18,16 @@ engines:
     enabled: false
 
 exclude_paths:
+  # Test trees are out of scope everywhere, not just at the root. The bare
+  # "tests/**" glob missed the bundled example's suite, so its fixtures were the
+  # only test code being scanned — 8 Bandit B105 "hardcoded password" hits on
+  # fake fixture values (HS256, "stateless", "false", ExampleTests-* secrets) and
+  # a W0611 on the deliberate `import fastapi_full.db_models` that registers the
+  # tables. The root suite has 171 of the same B105 hits, all already excluded.
+  # Both globs are kept: "**/" is not guaranteed to match zero directories, and
+  # losing the root exclusion would surface all 171.
   - "tests/**"
+  - "**/tests/**"
   - "dist/**"
   - "*.egg-info/**"
   - ".pytest_cache/**"
