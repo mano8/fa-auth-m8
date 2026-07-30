@@ -360,6 +360,28 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   (default `600`) bounds the per-consumer anti-abuse ceiling, observed with the
   registry-bounded consumer id label only.
 
+### Added — Live stateful downgrade gate as a repeatable suite (Phase 5 / Phase 7)
+
+- New `tests/live/test_role_downgrade_gate.py` (Layer C, marks `live` /
+  `live_stateful` / `require_token_mode("stateful")` / `require_redis`) turns the
+  plan's writer→reader downgrade gate into a re-runnable module instead of a
+  one-off manual attestation. It drives the bundled `fastapi_full` consumer end to
+  end through the WRITER-gated category route Phase 7 introduced: a WRITER write
+  succeeds; a superadmin `PATCH /users/update/{user_id}/` returns `200` with the
+  advanced `auth_generation` and `revocation_enqueued: true`; the **already
+  issued** token is then denied; and a freshly minted READER token reads
+  categories but is refused a write with the canonical `403`.
+- The discriminating assertion is the _read_ denial on the old token, not the
+  write denial. A READER is entitled to read, so only the session revocation the
+  downgrade triggered can refuse it — which separates "the session was revoked"
+  from "the role check now fails". Confirmed discriminating by running the module
+  against the same stack with the consumer switched to `TOKEN_MODE=hybrid`: the
+  two revocation assertions fail there and the other four still pass.
+- The module requires the consumer to be stateful and fail-closed and is skipped
+  otherwise, so a hybrid/stateless stack reports a skip rather than a false
+  failure. It provisions its own throwaway writer account and tears down every
+  account and category it created. Documented in the README live-suite table.
+
 ### Security — Deletion-tombstone lifecycle completed (`REV-GEN-01`, 3.5.1)
 
 - **The tombstone retention horizon now covers every artefact that can replay a

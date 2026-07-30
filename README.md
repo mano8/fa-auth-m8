@@ -1517,8 +1517,16 @@ The live suite is modular — each file carries a `require_algorithm` / `require
 | `test_asymmetric.py` | `live_asymmetric` | alg=none confusion, JWKS exposure, attacker-generated key — RS256 / ES256 only |
 | `test_hs256.py` | `live_hs256` | HS256-specific attacks |
 | `test_stateful.py` | `live_stateful` | Token revocation, session-chain invalidation |
+| `test_role_downgrade_gate.py` | `live_stateful` | The end-to-end writer→reader downgrade gate: a WRITER write, the role change with its `auth_generation` + `revocation_enqueued` response, revocation of the already-issued token, and the fresh reader token's read-only ceiling — driven through the bundled `fastapi_full` consumer |
 | `test_hybrid.py` | `live_hybrid` | Partial-Redis degraded mode behaviour |
 | `test_stateless.py` | `live_stateless` | No-Redis guarantees |
+
+`test_role_downgrade_gate.py` requires the consumer to run **stateful and
+fail-closed** (`TOKEN_MODE=stateful`, `AUTH_SERVICE_ROLE=consumer`, revocation
+client plus event-stream bridge enabled — the default of every maintained
+Compose example). In hybrid or stateless mode the issuer never revokes an
+already-issued access token, so the old token stays usable until it expires;
+the module is skipped on such a stack rather than reporting a false failure.
 
 The `tests/security/` unit suite (no live stack required) covers JWT security, Redis resilience, refresh lifecycle, refresh key-rotation fallback (`REFRESH_SECRET_KEY_OLD`), input sanitisation, JWKS endpoint, OAuth adversarial, iss/aud validation, session-chain invalidation, exception handling, and client IP attribution.
 
