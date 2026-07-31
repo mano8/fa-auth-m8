@@ -29,6 +29,8 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
 )
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
+from tests.live.suites.auth_flows import _ADMIN_EMAIL, _ADMIN_PASSWORD
+
 # ---------------------------------------------------------------------------
 # Stack endpoints and test credentials (match compose stack defaults)
 # ---------------------------------------------------------------------------
@@ -36,9 +38,6 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 AUTH_BASE = "http://localhost:9000/user"
 SVC_BASE = "http://localhost:9000/fastapi"
 TIMEOUT = 10
-
-_ADMIN_EMAIL = "admin@example.com"
-_ADMIN_PASSWORD = "Password@#@"
 
 _HEALTH_URL = f"{AUTH_BASE}/health/"
 _JWKS_URL = f"{AUTH_BASE}/.well-known/jwks.json"

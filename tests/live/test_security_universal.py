@@ -30,15 +30,19 @@ from typing import Any, cast
 import pytest
 import requests
 
-from tests.live.suites.auth_flows import AUTH_BASE, SVC_BASE, TIMEOUT
+from tests.live.suites.auth_flows import (
+    AUTH_BASE,
+    SVC_BASE,
+    TIMEOUT,
+    _ADMIN_EMAIL,
+    _ADMIN_PASSWORD,
+)
 from tests.live.suites.token_forge import forge_alg_none
 
 pytestmark = [pytest.mark.live, pytest.mark.live_security]
 
 _LOGIN_URL = f"{AUTH_BASE}/login/access-token"
 _REFRESH_URL = f"{AUTH_BASE}/login/refresh-token/"
-_ADMIN_EMAIL = "admin@example.com"
-_ADMIN_PASSWORD = "Ocoti123@#@"
 
 
 def _auth(bearer: str) -> dict:
