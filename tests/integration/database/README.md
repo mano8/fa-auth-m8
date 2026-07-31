@@ -62,6 +62,24 @@ that cannot pass options.
 | `test_concurrency.py` | two-connection last-superuser race; concurrent-login-during-downgrade generation race; concurrent role changes; rollback after partial failure |
 | `test_revocation_persistence.py` | database persistence for every 3.5.4 revocation path, each re-proven **with Redis unavailable** through the real v2 JTI-status route |
 | `test_audit_and_purge.py` | the audit table's schema-level write-once/no-targeted-delete guards, and both retention purges (floor, horizon, batching, maintenance-row survival) |
+| `test_example_audit_triggers.py` | the **bundled example's** `app_privileged_action_audit` guards on the same engine: update rejected, targeted delete rejected, the example's own purge clearing the guard and the rows actually gone, and survival of the audited row's deletion |
+
+## The bundled example's chain
+
+`test_example_audit_triggers.py` applies the consumer example's `m8_app` chain
+from the same certifying compose stack that supplies the issuer chain, through
+the **example's own** `alembic/env.py`, and drives
+`fastapi_full.app.audit.purge_expired_audit_rows` rather than re-implementing
+it. That is what makes the example's write-once guarantee _gated_ instead of
+attested: its unit suite runs on SQLite, where the migration never runs and the
+trigger does not exist, and `example-smoke.yaml` proves only that the migration
+applies.
+
+The job therefore installs `fastapi-m8` and `python-slugify` on top of
+`auth_user_service/requirements_dev.txt` — the example's audit import chain, and
+nothing more. `examples/fastapi_full/requirements_base.txt` is deliberately not
+installed here: its `redis>=8.0.1` line contradicts the issuer's `redis<6.0.0`
+pin, and this job runs the issuer's code rather than only type-checking it.
 
 ## CI policy
 

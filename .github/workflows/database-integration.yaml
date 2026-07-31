@@ -70,9 +70,11 @@ jobs:
 
           # Database-sensitive surfaces (TEST-LAYER-01): models, migrations,
           # repositories/transactions, database configuration, the operator
-          # scripts that mutate authorization state, and this layer itself.
+          # scripts that mutate authorization state, the bundled example's own
+          # persistence/audit code (Layer B now gates its `m8_app` chain and
+          # runs its retention purge), and this layer itself.
           if echo "$changed" | grep -Eq \
-            '^auth_user_service/(db_models|alembic|services|scripts)/|^auth_user_service/core/(db_utils|engine_async|engine_sync|init_db|config)\.py$|^examples/docker_compose/[^/]+/shared_migrations/|^tests/integration/|^pytest\.ini$|^\.github/workflows/database-integration\.yaml$|requirements.*\.txt$'
+            '^auth_user_service/(db_models|alembic|services|scripts)/|^auth_user_service/core/(db_utils|engine_async|engine_sync|init_db|config)\.py$|^examples/docker_compose/[^/]+/shared_migrations/|^examples/fastapi_full/(alembic|app|db_models|core)/|^tests/integration/|^pytest\.ini$|^\.github/workflows/database-integration\.yaml$|requirements.*\.txt$'
           then
             echo "run_matrix=true" >> "$GITHUB_OUTPUT"
             echo "reason=database-sensitive files changed" >> "$GITHUB_OUTPUT"
@@ -133,8 +135,16 @@ jobs:
           cache: "pip"
           cache-dependency-path: auth_user_service/requirements_dev.txt
 
+      # The example-chain module imports the bundled example's audit code so the
+      # purge under test is the one `fastapi_full` ships. Only that import chain
+      # is installed, never `examples/fastapi_full/requirements_base.txt` as a
+      # whole: its `redis>=8.0.1` line contradicts the issuer's `redis<6.0.0`
+      # pin, and this job — unlike `typecheck` — actually runs the issuer's code.
       - name: Install dependencies
-        run: pip install -r auth_user_service/requirements_dev.txt
+        run: |
+          pip install -r auth_user_service/requirements_dev.txt
+          pip install "fastapi-m8[db,mysql,postgres]>=4.2.0,<5.0.0" \
+                      "python-slugify>=8.0.4"
 
       # The suite waits for the service container with the real driver rather
       # than a port probe, so no health-check options are needed here: a

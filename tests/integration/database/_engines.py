@@ -82,17 +82,31 @@ class EngineSpec:
     command: tuple[str, ...] = ()
 
     @property
-    def version_locations(self) -> Path:
-        """Alembic ``version_locations`` for this dialect's certified chain."""
+    def shared_migrations(self) -> Path:
+        """Root of the certifying stack's shared Alembic chains."""
         return (
             REPO_ROOT
             / "examples"
             / "docker_compose"
             / self.example_stack
             / "shared_migrations"
-            / "auth_user"
-            / "versions"
         )
+
+    @property
+    def version_locations(self) -> Path:
+        """Alembic ``version_locations`` for this dialect's certified chain."""
+        return self.shared_migrations / "auth_user" / "versions"
+
+    @property
+    def app_version_locations(self) -> Path:
+        """``version_locations`` for the same stack's bundled-example chain.
+
+        Every maintained compose stack ships the consumer example's ``m8_app``
+        chain next to the issuer's ``auth_user`` chain, so the dialect selection
+        that picks one picks the other — the example chain needs no second
+        selector, only a second version table.
+        """
+        return self.shared_migrations / "m8_app" / "versions"
 
 
 ENGINE_SPECS: dict[str, EngineSpec] = {

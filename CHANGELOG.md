@@ -489,6 +489,33 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `database_integration` marker, so the 100% unit-coverage gate measures exactly what it measured
   before.
 
+### Added — Layer B gate for the bundled example's audit triggers (`TEST-DB-01`, §4.6)
+
+- New `tests/integration/database/test_example_audit_triggers.py`. The consumer example's
+  `app_privileged_action_audit` mirrors the issuer's write-once / no-targeted-delete contract
+  and its Expand migration installs the matching guard trigger, but that half of the mirror had
+  no gate anywhere: the example's own suite runs on SQLite, where the migration never runs and
+  by the example's own `_PURGE_GUARDED_DIALECTS` design no trigger exists, and
+  `example-smoke.yaml` proves a migration _applies_, never that an `UPDATE` or a targeted
+  `DELETE` is _rejected_. The guarantee was attested rather than gated.
+- The module now asserts on every certified engine exactly what `test_audit_and_purge.py`
+  asserts for the issuer's table: an `UPDATE` is rejected, a targeted `DELETE` without the
+  purge-authorization flag is rejected — both matched against the guard's own message text, so
+  "the trigger rejected this" is distinguishable from any other statement failure — the
+  authorized purge clears the guard and **the rows are actually gone**, and an audit row
+  survives the deletion of what it describes, with no foreign key declared on the real engine.
+- The chain is applied through the **example's own** `alembic/env.py` — the config the deployed
+  consumer runs — against its own private version table, and the purge exercised is
+  `fastapi_full.app.audit.purge_expired_audit_rows` itself rather than a re-implementation, so
+  the `_PURGE_GUARDED_DIALECTS` toggle is what performs the authorization dance. `EngineSpec`
+  gained `app_version_locations` beside `version_locations`: every certifying compose stack
+  ships the `m8_app` chain next to the `auth_user` chain, so one dialect selector covers both.
+- `database-integration.yaml` installs the example's audit import chain (`fastapi-m8`,
+  `python-slugify`) on top of the issuer's dev requirements — deliberately not
+  `examples/fastapi_full/requirements_base.txt` as a whole, whose `redis>=8.0.1` line
+  contradicts the issuer's `redis<6.0.0` pin — and its database-sensitivity path filter now
+  covers `examples/fastapi_full/{alembic,app,db_models,core}/`.
+
 ### Fixed — PostgreSQL privileged-action audit guard suppressed the retention purge
 
 - The PostgreSQL guard trigger installed by the audit-table Expand migration returned `NULL`.
