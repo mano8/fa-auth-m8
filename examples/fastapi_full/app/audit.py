@@ -250,6 +250,19 @@ class AuditRetentionFloorError(ValueError):
     """
 
 
+class AuditPurgeStalledError(RuntimeError):
+    """Raised when the purge loop selects the same rows twice in a row.
+
+    Mirrors the issuer's
+    :class:`~auth_user_service.services.audit.AuditPurgeStalledError` (P8-6):
+    the loop's only progress evidence is the claimed batch actually shrinking
+    or emptying between iterations; if a delete is silently suppressed (e.g. a
+    ``BEFORE DELETE`` trigger returning ``NULL``), the same eligible rows would
+    otherwise be re-selected forever, holding a database session open
+    indefinitely.
+    """
+
+
 @dataclass(frozen=True)
 class AuditPurgeResult:
     """Outcome of one retention-purge run."""
@@ -364,17 +377,29 @@ def _sweep_expired_rows(
     """Batch-delete every row older than *horizon*; return the number removed.
 
     Each batch is committed before the next is claimed, so a large purge never
-    holds one long-lived lock over the table.
+    holds one long-lived lock over the table. Re-selecting an identical id set
+    after a commit means the deletes are being silently suppressed — that is a
+    stall (:class:`AuditPurgeStalledError`), not an empty result, and detecting
+    it is what stops this loop from spinning forever.
     """
     removed = 0
+    previous_ids: Optional[frozenset] = None
     while True:
         rows = _claim_purge_batch(session, horizon=horizon, batch=batch)
         if not rows:
             break
+        ids = frozenset(row.id for row in rows)
+        if previous_ids is not None and ids == previous_ids:
+            raise AuditPurgeStalledError(
+                "audit purge made no progress: the same "
+                f"{len(ids)} row(s) were re-selected after a commit — deletes "
+                "are being silently suppressed"
+            )
         _delete_claimed_batch(session, rows, dialect=dialect, guarded=guarded)
         removed += len(rows)
         if len(rows) < batch:
             break
+        previous_ids = ids
     return removed
 
 

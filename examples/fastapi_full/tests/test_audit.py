@@ -19,6 +19,7 @@ from sqlmodel import select
 
 from fastapi_full.app import audit as audit_module
 from fastapi_full.app.audit import (
+    AuditPurgeStalledError,
     AuditRetentionFloorError,
     RetentionWindow,
     purge_expired_audit_rows,
@@ -401,6 +402,34 @@ class TestPurgeExpiredAuditRows:
         )
 
         assert result.removed == 1
+
+    def test_raises_when_a_delete_is_silently_suppressed(self, db_session) -> None:
+        """Mirrors the issuer's stall guard test: if a delete never actually
+        removes the row (a ``BEFORE DELETE ... RETURN NULL`` guard trigger
+        defect), the loop must terminate instead of re-selecting the same row
+        forever. ``batch_size=1`` with exactly one eligible row means the
+        fetched batch never falls short of the batch size, so the only way the
+        loop would stop is via the progress guard."""
+        now = datetime.now(timezone.utc)
+        old_row = _audit_row(created_at=now - timedelta(days=400))
+        db_session.add(old_row)
+        db_session.commit()
+
+        with patch.object(db_session, "delete", lambda obj: None):
+            with pytest.raises(AuditPurgeStalledError):
+                purge_expired_audit_rows(
+                    db_session,
+                    window=RetentionWindow.ONE_YEAR,
+                    actor_user_id=ACTOR_ID,
+                    actor_role="superadmin",
+                    now=now,
+                    batch_size=1,
+                )
+
+        # Clean up for real so this ~400-day-old row cannot become collateral
+        # damage of a later test's table-wide purge in this session-scoped engine.
+        db_session.delete(old_row)
+        db_session.commit()
 
     def test_writes_its_own_maintenance_row_that_survives_the_purge(
         self, db_session
