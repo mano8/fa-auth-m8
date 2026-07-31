@@ -489,6 +489,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `database_integration` marker, so the 100% unit-coverage gate measures exactly what it measured
   before.
 
+### Added — Declared coverage gate for the bundled example (P9-15, G9-12)
+
+- The `example-tests` CI job ran the bundled example's suite with **no
+  `--cov-fail-under` at all**, so the example's coverage could regress silently
+  while the issuer's held at 100%. The example now carries its own
+  `examples/fastapi_full/.coveragerc` and declares an enforced floor in
+  `examples/fastapi_full/pytest.ini` (`--cov`, `--cov-config`, branch coverage,
+  `--cov-fail-under=95`; measured 95.68% when introduced). The number is not
+  100 and is not meant to be — the point is that it is declared, justified, and
+  enforced rather than absent.
+- Every omission is named and reasoned in `.coveragerc` the way the issuer's
+  own `.coveragerc` names its live-tested-only surfaces: the ASGI entrypoint,
+  the settings bootstrap, the SSE bridge consumer (`core/events.py`, a live
+  surface by construction), the API-key-gated router that only exists when
+  `API_KEY_INTROSPECTION_ENABLED=true`, and the Alembic chain that Layer B
+  gates on real engines. What remains under the floor is listed in the config
+  too, so the gap is visible rather than absorbed — none of it is an
+  authorization or audit surface.
+- `app/routes/category.py`'s three not-found branches are now covered
+  (`examples/fastapi_full/tests/test_routes_category_missing.py`), including the
+  asymmetry they document: `read_item` answers `200` with `success=False` for a
+  missing row while `update_item` and `delete_item` answer `404`. Asserted as it
+  ships; no item owns changing the example's response contract.
+- Bundled-example suite: **213 passed** (was 208).
+
 ### Added — Layer B gate for the bundled example's audit triggers (`TEST-DB-01`, §4.6)
 
 - New `tests/integration/database/test_example_audit_triggers.py`. The consumer example's

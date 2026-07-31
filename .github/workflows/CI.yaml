@@ -187,8 +187,12 @@ jobs:
 
       # The example carries its own pytest config: it is a consumer service
       # with its own settings and package root, so it is not measured by the
-      # issuer's --cov=auth_user_service gate. tests/conftest.py supplies a
-      # complete throwaway environment, so no .env is needed here.
+      # issuer's --cov=auth_user_service gate. It carries its own coverage gate
+      # too — examples/fastapi_full/.coveragerc names and justifies each
+      # omission, and pytest.ini declares the enforced floor. Run from the
+      # repository root, which is what the --cov-config path is relative to.
+      # tests/conftest.py supplies a complete throwaway environment, so no .env
+      # is needed here.
       - name: Run bundled-example unit tests
         run: pytest -c examples/fastapi_full/pytest.ini examples/fastapi_full/tests
 
