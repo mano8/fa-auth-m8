@@ -219,7 +219,7 @@ histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
 | `ACCESS_TOKEN_ALGORITHM` | `HS256` | `HS256` for symmetric, `RS256` for asymmetric |
 | `ACCESS_SECRET_KEY` | — | HMAC secret (HS256 only) |
 | `REFRESH_SECRET_KEY` | — | HMAC secret for refresh tokens |
-| `SELECTED_DB` | `Postgres` | `Mysql` or `Postgres` |
+| `SELECTED_DB` | `Postgres` | `Mysql`, `Mariadb`, or `Postgres` |
 | `DB_HOST` | `m8_db` | Docker service name — do not change for compose |
 | `FRONTEND_HOST` | `http://localhost:5173` | Added to CORS allowed origins |
 | `AUTH_PREFIX` | `/user` | Path prefix consumers use to reach auth |

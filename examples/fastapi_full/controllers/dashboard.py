@@ -3,10 +3,14 @@ Dashboard Controller
 """
 
 from datetime import datetime, timedelta
+from typing import Union
+from fastapi.responses import JSONResponse
 from sqlalchemy import case, and_
 from sqlmodel import Session, select, func
-from auth_sdk_m8.controllers.base import BaseController
+from fastapi_m8 import has_superuser_privileges
+from fastapi_full.app.ownership import as_stored_owner_id
 from fastapi_full.core.deps import CurrentUser
+from fastapi_full.core.exceptions import handle_route_exception
 from fastapi_full.schemas.dashboard import (
     ActivityStats,
     RangeActivityType,
@@ -111,11 +115,18 @@ class DashboardController:
                     )
                 ).label("added"),
             ).select_from(model)
-            if not current_user.is_superuser or is_current is True:
+            if (
+                not has_superuser_privileges(
+                    current_user.role, current_user.is_superuser
+                )
+                or is_current is True
+            ):
                 if model_name == "User":
                     stmt = stmt.where(model.id == current_user.id)
                 else:
-                    stmt = stmt.where(model.owner_id == current_user.id)
+                    stmt = stmt.where(
+                        model.owner_id == as_stored_owner_id(current_user.id)
+                    )
             row = session.exec(stmt).first()
             updated_count: int = (
                 int(row.updated) if row and row.updated is not None else 0  # type: ignore[attr-defined]
@@ -136,7 +147,7 @@ class DashboardController:
         current_user: CurrentUser,
         time_range: RangeActivityType,
         is_current: bool = False,
-    ) -> UsersActivity:
+    ) -> Union[UsersActivity, JSONResponse]:
         """
         Retrieves dashboard user statistics.
 
@@ -176,4 +187,4 @@ class DashboardController:
                 activity=activity,
             )
         except Exception as ex:
-            return BaseController.handle_exception(ex=ex, session=session)
+            return handle_route_exception(ex=ex, session=session)

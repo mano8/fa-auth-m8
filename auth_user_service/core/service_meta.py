@@ -17,13 +17,12 @@ SERVICE_NAME = "fa-auth-m8"
 #: Public API version label.
 API_VERSION = "v1"
 #: Contract version the plugin pins (astro-auth-m8 FA_AUTH_M8_CONTRACT_VERSION).
-CONTRACT_VERSION = "1.0"
-#: Compatible service-version range. Lower bound raised to 1.0.0 — the first
-#: stable line, which retires the legacy single-``PRIVATE_API_SECRET`` private-API
-#: gate in favour of per-consumer scoped credentials / short-TTL service tokens
-#: (on top of the 0.9.x security-remediation baseline). Consumers should pin to
-#: the 1.x line.
-CONTRACT_RANGE = ">=1.1.0 <2.0.0"
+CONTRACT_VERSION = "2.0"
+#: Compatible service-version range. Lower bound raised to 2.0.0 — major release
+#: implementing the canonical role/flag invariant, generation-backed revocation,
+#: durable outbox, API-key access-mode and audience bindings, and the v2 private
+#: API contract. Consumers on 4.x fastapi-m8 must upgrade to 2.0.0.
+CONTRACT_RANGE = ">=2.0.0 <3.0.0"
 
 
 def build_service_meta() -> ServiceMeta:

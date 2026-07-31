@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from auth_sdk_m8.schemas.base import RoleType
+
 from auth_user_service.schemas.dashboard import RangeActivityType, UsersActivity
 from auth_user_service.services.dashboard import DashboardController
 
@@ -70,6 +72,7 @@ class TestGetActivityCountByModel:
     def test_superuser_gets_all_data(self, db_session, sample_user):
         current_user = MagicMock()
         current_user.is_superuser = True
+        current_user.role = RoleType.SUPERADMIN
         current_user.id = sample_user.id
 
         result = DashboardController.get_activity_count_by_model(
@@ -86,6 +89,7 @@ class TestGetActivityCountByModel:
     def test_non_superuser_filters_by_user_id(self, db_session, sample_user):
         current_user = MagicMock()
         current_user.is_superuser = False
+        current_user.role = RoleType.USER
         current_user.id = sample_user.id
 
         result = DashboardController.get_activity_count_by_model(
@@ -99,6 +103,7 @@ class TestGetActivityCountByModel:
     def test_is_current_flag(self, db_session, sample_user):
         current_user = MagicMock()
         current_user.is_superuser = True
+        current_user.role = RoleType.SUPERADMIN
         current_user.id = sample_user.id
 
         result = DashboardController.get_activity_count_by_model(
@@ -113,6 +118,7 @@ class TestGetActivityCountByModel:
     def test_activity_entry_has_expected_keys(self, db_session, sample_user):
         current_user = MagicMock()
         current_user.is_superuser = True
+        current_user.role = RoleType.SUPERADMIN
         current_user.id = sample_user.id
 
         result = DashboardController.get_activity_count_by_model(
@@ -131,6 +137,7 @@ class TestGetUpdateCountByModel:
     def test_superuser_returns_update_list(self, db_session, sample_user):
         current_user = MagicMock()
         current_user.is_superuser = True
+        current_user.role = RoleType.SUPERADMIN
 
         result = DashboardController.get_updates_count_by_model(
             session=db_session,
@@ -143,6 +150,7 @@ class TestGetUpdateCountByModel:
     def test_non_superuser_filters_by_user(self, db_session, sample_user):
         current_user = MagicMock()
         current_user.is_superuser = False
+        current_user.role = RoleType.USER
         current_user.id = sample_user.id
 
         result = DashboardController.get_updates_count_by_model(
@@ -158,6 +166,7 @@ class TestGetDashUsersStats:
     def test_superuser_includes_user_count(self, db_session, sample_user):
         current_user = MagicMock()
         current_user.is_superuser = True
+        current_user.role = RoleType.SUPERADMIN
         current_user.id = sample_user.id
 
         result = DashboardController.get_dash_users_stats(
@@ -172,6 +181,7 @@ class TestGetDashUsersStats:
     def test_non_superuser_nb_users_is_zero(self, db_session, sample_user):
         current_user = MagicMock()
         current_user.is_superuser = False
+        current_user.role = RoleType.USER
         current_user.id = sample_user.id
 
         result = DashboardController.get_dash_users_stats(
@@ -186,6 +196,7 @@ class TestGetDashUsersStats:
     def test_is_current_flag(self, db_session, sample_user):
         current_user = MagicMock()
         current_user.is_superuser = True
+        current_user.role = RoleType.SUPERADMIN
         current_user.id = sample_user.id
 
         result = DashboardController.get_dash_users_stats(
@@ -200,6 +211,7 @@ class TestGetDashUsersStats:
     def test_handles_exception_gracefully(self, db_session):
         current_user = MagicMock()
         current_user.is_superuser = True
+        current_user.role = RoleType.SUPERADMIN
 
         with patch.object(
             DashboardController,

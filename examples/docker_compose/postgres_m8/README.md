@@ -194,7 +194,7 @@ To connect with a GUI client (pgAdmin, TablePlus, DBeaver), use `localhost:5432`
 | `ACCESS_TOKEN_ALGORITHM` | `HS256` | `HS256` for symmetric signing |
 | `ACCESS_SECRET_KEY` | — | HMAC secret (HS256 only) |
 | `REFRESH_SECRET_KEY` | — | HMAC secret for refresh tokens |
-| `SELECTED_DB` | `Postgres` | `Mysql` or `Postgres` |
+| `SELECTED_DB` | `Postgres` | `Mysql`, `Mariadb`, or `Postgres` |
 | `DB_HOST` | `m8_db` | Docker service name — do not change for compose |
 | `DB_PORT` | `5432` | PostgreSQL port |
 | `FRONTEND_HOST` | `http://localhost:5173` | Added to CORS allowed origins |

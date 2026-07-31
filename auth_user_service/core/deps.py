@@ -14,9 +14,17 @@ from typing import Callable
 from fastapi import Depends, Header, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer
 from redis import ConnectionPool, Redis
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 
+from auth_sdk_m8.authorization import (
+    has_minimum_role,
+    has_superuser_privileges,
+    privilege_claims_are_consistent,
+    validate_api_key_required_role,
+)
 from auth_sdk_m8.core.exceptions import InvalidToken
+from auth_sdk_m8.schemas.api_key import ApiKeyPrincipal
+from auth_sdk_m8.schemas.base import ApiKeyAccessMode, RoleType
 from auth_sdk_m8.schemas.user import UserModel
 from auth_sdk_m8.security import (
     ValidationHooks,
@@ -40,6 +48,7 @@ from auth_user_service.services.service_token import (
 from auth_sdk_m8.observability.metrics import get as _get_metrics
 from auth_user_service.core.engine_sync import SessionDep  # noqa: F401 (re-exported)
 from auth_user_service.db_models.api_keys import ApiKey
+from auth_user_service.db_models.users import User
 from auth_user_service.services.api_keys import ApiKeyService, RateLimitEnforcer
 
 # Redis hash key for write-behind last_used_at updates: field=key_id, value=ISO timestamp
@@ -232,13 +241,24 @@ def get_current_user(token: TokenDep) -> UserModel:
 CurrentUser = Annotated[UserModel, Depends(get_current_user)]
 
 
-def get_current_active_superuser(current_user: CurrentUser) -> UserModel:
-    """Verify that the current user holds superuser privileges.
+def get_current_active_admin(current_user: CurrentUser) -> UserModel:
+    """Verify that the current user holds at least ADMIN role (§3.3.1).
+
+    Authorized solely through the SDK's ``has_minimum_role`` role-hierarchy
+    predicate on the JWT-authenticated user; ``is_superuser`` is never
+    consulted for a role threshold, so the flag alone can never satisfy this
+    guard. The issuer builds its own dependency surface and does not call
+    fastapi-m8's ``build_auth_deps``, so this mirrors that framework's
+    ``require_role(RoleType.ADMIN)`` guard directly against
+    ``auth_user_service.core.deps.get_current_user`` — the issuer's existing
+    per-request validation already re-checks the token and, in stateful mode,
+    the JTI revocation state on every call, so there is no separate
+    positive-cache path to bypass here.
 
     Raises:
-        HTTPException 403: Insufficient privileges.
+        HTTPException 403: Role below ADMIN.
     """
-    if not current_user.is_superuser:
+    if not has_minimum_role(current_user.role, RoleType.ADMIN):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="The user doesn't have enough privileges",
@@ -246,16 +266,37 @@ def get_current_active_superuser(current_user: CurrentUser) -> UserModel:
     return current_user
 
 
-def require_private_scope(
-    scope: ConsumerScope | str,
-) -> Callable[[Request], None]:
-    """Build the private-route auth dependency for a required *scope* (9.1).
+def get_current_active_superuser(current_user: CurrentUser) -> UserModel:
+    """Verify that the current user holds superuser privileges.
 
-    Authorizes a private call by one of two paths:
+    Authorization uses the canonical SDK dual-evidence predicate
+    (``role == SUPERADMIN`` **and** ``is_superuser is True``); the
+    ``is_superuser`` flag alone never grants access.
+
+    Raises:
+        HTTPException 403: Insufficient privileges.
+    """
+    if not has_superuser_privileges(current_user.role, current_user.is_superuser):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The user doesn't have enough privileges",
+        )
+    return current_user
+
+
+def authenticate_private_consumer(request: Request, scope: ConsumerScope | str) -> str:
+    """Authenticate a private-route caller for *scope* and return its consumer id.
+
+    Authorizes a private call by one of two paths and, on success, returns the
+    **authenticated consumer's registry identity** (its ``client_id``) — the
+    single source of truth for the caller's identity, used by the API-key
+    introspection endpoint to derive the evaluated audience (never from the
+    request body, §3.12):
 
     1. **Short-TTL service token** — an ``Authorization: Bearer <token>`` minted
        at ``/private/v1/service-token``. Verified and required to carry *scope*
-       (``401`` invalid/expired, ``403`` missing scope).
+       (``401`` invalid/expired, ``403`` missing scope). The identity is the
+       token subject.
     2. **Per-consumer bootstrap credential** — ``X-Internal-Client`` +
        ``X-Internal-Token`` authorized against the registry for *scope*
        (``401`` unknown client / wrong secret — indistinguishable, no
@@ -271,47 +312,61 @@ def require_private_scope(
     The verification primitives are reused from ``auth-sdk-m8``; this is the
     issuer-side wiring plus the service-token branch.
     """
+    registry = get_consumer_registry()
+    if registry is None:
+        # Legacy single-secret gate retired: with no per-consumer registry
+        # there is no identity to authenticate against — deny by default.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
+        )
 
-    def _dependency(request: Request) -> None:
-        registry = get_consumer_registry()
-        if registry is None:
-            # Legacy single-secret gate retired: with no per-consumer registry
-            # there is no identity to authenticate against — deny by default.
+    bearer = extract_bearer_token(request)
+    if bearer is not None:
+        try:
+            claims = decode_service_token(
+                bearer,
+                signing_secret=settings.PRIVATE_API_SECRET.get_secret_value(),
+            )
+        except ServiceTokenError as exc:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
-            )
-
-        bearer = extract_bearer_token(request)
-        if bearer is not None:
-            try:
-                claims = decode_service_token(
-                    bearer,
-                    signing_secret=settings.PRIVATE_API_SECRET.get_secret_value(),
-                )
-            except ServiceTokenError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
-                ) from exc
-            if str(scope) not in claims.scopes:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
-                )
-            return
-
-        try:
-            registry.authorize(
-                request.headers.get(INTERNAL_CLIENT_HEADER),
-                request.headers.get(INTERNAL_TOKEN_HEADER),
-                scope,
-            )
-        except ConsumerScopeError as exc:
+            ) from exc
+        if str(scope) not in claims.scopes:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
-            ) from exc
-        except ConsumerAuthenticationError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
-            ) from exc
+            )
+        return claims.client_id
+
+    try:
+        credential = registry.authorize(
+            request.headers.get(INTERNAL_CLIENT_HEADER),
+            request.headers.get(INTERNAL_TOKEN_HEADER),
+            scope,
+        )
+    except ConsumerScopeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
+        ) from exc
+    except ConsumerAuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
+        ) from exc
+    return credential.client_id
+
+
+def require_private_scope(
+    scope: ConsumerScope | str,
+) -> Callable[[Request], None]:
+    """Build the private-route auth dependency for a required *scope* (9.1).
+
+    A thin wrapper over :func:`authenticate_private_consumer` for routes that
+    only need the gate, not the caller identity: it authenticates the consumer
+    and discards the returned id. See that function for the full authorization
+    contract and the retired-legacy-gate rationale.
+    """
+
+    def _dependency(request: Request) -> None:
+        authenticate_private_consumer(request, scope)
 
     return _dependency
 
@@ -376,22 +431,28 @@ def _handle_api_key_redis_degraded(api_key: ApiKey) -> None:
         ).inc()
     ref = str(api_key.id)
     if strict:
-        # nosec B106 — logfmt event line; ref is the opaque key id, not a secret
-        RATE_LIMIT_UNAVAILABLE_LOG = (
-            "api_key.rate_limit_unavailable decision=deny mode=fail_closed ref=%s",
+        # nosec B106 — logfmt event line; ref is the opaque key id, not a secret.
+        # Codacy/Opengrep also reads the template itself as a hardcoded secret
+        # because it contains "api_key" (false positive, must be dismissed in the
+        # Codacy UI — inline `nosemgrep` is not honored). It is a format string
+        # and `ref` is the key's id.
+        _logger.warning(
+            "api_key.rate_limit_unavailable "  # nosec B106
+            "decision=deny mode=fail_closed "  # nosec B106
+            "ref=%s",  # nosec B106
             ref,
-        )  # nosec B106
-        _logger.warning(RATE_LIMIT_UNAVAILABLE_LOG)
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Rate limiting service unavailable",
         )
-    RATE_LIMIT_UNAVAILABLE_LOG = (
-        "api_key.rate_limit_unavailable decision=allow mode=fail_open unsafe=true ref=%s",
+    # ref is the opaque key id, not a secret (same false positive as above)
+    _logger.warning(
+        "api_key.rate_limit_unavailable "  # nosec B106
+        "decision=allow mode=fail_open "  # nosec B106
+        "unsafe=true ref=%s",  # nosec B106
         ref,
     )  # nosec B106
-    # ref is the opaque key id, not a secret
-    _logger.warning(RATE_LIMIT_UNAVAILABLE_LOG)
 
 
 def get_current_api_key(
@@ -429,3 +490,123 @@ def get_current_api_key(
 
 
 CurrentApiKey = Annotated[ApiKey, Depends(get_current_api_key)]
+
+
+def resolve_api_key_owner_principal(
+    session: Session, api_key: ApiKey
+) -> Optional[ApiKeyPrincipal]:
+    """Resolve an authenticated *api_key* to its canonical live owner principal,
+    or ``None`` when the owner cannot vouch for the key.
+
+    An API key stores no role — it is an opaque pointer to its owner — so a
+    request is authorized as the owner, at the owner's **current** persisted
+    role, and can never exceed it (3.11). The owner is loaded with a **fresh
+    query** (``populate_existing`` — never a stale identity-map object); a
+    missing, inactive, or claim-inconsistent owner yields ``None`` so the caller
+    can render the **generic** rejection for its transport (the issuer-local
+    dependency raises ``401``; the remote introspection endpoint answers
+    ``active: false``) without ever disclosing another account's state.
+
+    The returned :class:`ApiKeyPrincipal` is the SDK-owned canonical type shared
+    by the local and remote paths, so both evaluate one identical object and
+    cannot drift; it carries the owner's current ``auth_generation`` as evidence
+    for this decision only.
+
+    The key's immutable ``access_mode`` caps the principal (``APIKEY-MODE-01``).
+    It is read live from the key; a stand-in without the attribute falls back to
+    the most restrictive ``READ_ONLY``, so the surface always stays fail-closed.
+    """
+    owner = session.exec(
+        select(User)
+        .where(col(User.id) == api_key.user_id)
+        .execution_options(populate_existing=True)
+    ).first()
+    if (
+        owner is None
+        or not owner.is_active
+        or not privilege_claims_are_consistent(owner.role, owner.is_superuser)
+    ):
+        return None
+    access_mode = getattr(api_key, "access_mode", ApiKeyAccessMode.READ_ONLY)
+    return ApiKeyPrincipal(
+        user_id=str(owner.id),
+        role=owner.role,
+        is_superuser=owner.is_superuser,
+        access_mode=access_mode,
+        auth_generation=owner.auth_generation,
+    )
+
+
+def _resolve_api_key_principal(session: Session, api_key: ApiKey) -> ApiKeyPrincipal:
+    """Issuer-local variant of :func:`resolve_api_key_owner_principal`.
+
+    Maps the ``None`` (owner cannot vouch) outcome onto the **generic**
+    ``401 Invalid or expired API key`` response the local dependency surface
+    uses, so an unknown/revoked/expired key and a missing/inactive/inconsistent
+    owner are externally indistinguishable.
+    """
+    principal = resolve_api_key_owner_principal(session, api_key)
+    if principal is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired API key",
+        )
+    return principal
+
+
+def get_current_api_key_principal(
+    api_key: CurrentApiKey,
+    session: SessionDep,
+) -> ApiKeyPrincipal:
+    """Resolve the presented API key to the canonical live owner principal (3.11).
+
+    Composes the existing :func:`get_current_api_key` authentication (hash /
+    revoked / expiry validation + rate limiting) with a fresh owner load. This is
+    the **base** active-principal dependency; a capability-bearing route MUST
+    depend on a role dependency (:func:`require_api_key_role` and its
+    ``reader``/``writer`` specializations), never on this bare principal —
+    depending on it never implies any write capability.
+    """
+    return _resolve_api_key_principal(session, api_key)
+
+
+CurrentApiKeyPrincipal = Annotated[
+    ApiKeyPrincipal, Depends(get_current_api_key_principal)
+]
+
+
+def require_api_key_role(
+    required_role: RoleType,
+) -> Callable[[ApiKeyPrincipal], ApiKeyPrincipal]:
+    """Build an API-key capability dependency for *required_role* (3.11).
+
+    Authorizes through the **shared SDK capability check**
+    (:meth:`ApiKeyPrincipal.has_capability`) evaluated on the owner's current
+    claims and the key's immutable access mode — the *same* predicate the JWT
+    guards and the remote introspection path use — so a key can never exceed its
+    owner's current role and an owner downgrade takes effect on the key's next
+    request. ``required_role`` is capped at ``WRITER``: an API key never carries
+    administrative or superuser authority, so a higher requirement is a
+    programming error the surface rejects at wiring time
+    (:class:`ApiKeyCapabilityCeilingError`), not a routine denial. An owner whose
+    role (or a read-only key on a write capability) is insufficient returns the
+    standard 403.
+    """
+    validate_api_key_required_role(required_role)
+
+    def _require_api_key_role(principal: CurrentApiKeyPrincipal) -> ApiKeyPrincipal:
+        if not principal.has_capability(required_role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The API key owner doesn't have enough privileges",
+            )
+        return principal
+
+    return _require_api_key_role
+
+
+# The only reusable specializations — reader and writer. There is deliberately
+# no ``_admin``/``_superuser`` member: administrative and superuser operations
+# are JWT-only (APIKEY-CAP-01 capability ceiling).
+get_current_api_key_reader = require_api_key_role(RoleType.READER)
+get_current_api_key_writer = require_api_key_role(RoleType.WRITER)

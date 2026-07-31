@@ -21,13 +21,16 @@ jobs:
           python-version: "3.14"
 
       - name: Install lint tools
-        run: pip install ruff
+        run: pip install ruff==0.16.0
 
       - name: Check formatting
         run: ruff format --check .
 
       - name: Lint
         run: ruff check .
+
+      - name: Ban direct is_superuser authorization checks
+        run: python -m auth_user_service.scripts.check_no_direct_superuser_auth auth_user_service examples/fastapi_full
 
   typecheck:
     runs-on: ubuntu-latest
@@ -167,6 +170,31 @@ jobs:
         with:
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
           coverage-reports: coverage.xml
+
+  example-tests:
+    name: Bundled-example unit tests (fastapi_full)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: pip install -r examples/fastapi_full/requirements_dev.txt
+
+      # The example carries its own pytest config: it is a consumer service
+      # with its own settings and package root, so it is not measured by the
+      # issuer's --cov=auth_user_service gate. It carries its own coverage gate
+      # too — examples/fastapi_full/.coveragerc names and justifies each
+      # omission, and pytest.ini declares the enforced floor. Run from the
+      # repository root, which is what the --cov-config path is relative to.
+      # tests/conftest.py supplies a complete throwaway environment, so no .env
+      # is needed here.
+      - name: Run bundled-example unit tests
+        run: pytest -c examples/fastapi_full/pytest.ini examples/fastapi_full/tests
 
   trivy-image:
     runs-on: ubuntu-latest

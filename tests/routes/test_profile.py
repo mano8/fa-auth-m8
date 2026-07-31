@@ -7,6 +7,8 @@ import pytest
 from fastapi import HTTPException
 from sqlmodel import select
 
+from auth_sdk_m8.schemas.base import RoleType
+
 from auth_user_service.db_models.api_keys import ApiKey
 from auth_user_service.db_models.users import UpdatePassword, UserUpdateMe
 from auth_user_service.routes.profile import (
@@ -26,6 +28,9 @@ def _user(*, is_superuser: bool = False, user_id: uuid.UUID | None = None) -> Ma
     m = MagicMock()
     m.id = user_id or uuid.uuid4()
     m.is_superuser = is_superuser
+    # Keep the role/flag pair canonical so the SDK superuser predicate resolves
+    # correctly (is_superuser=True <=> role SUPERADMIN).
+    m.role = RoleType.SUPERADMIN if is_superuser else RoleType.USER
     return m
 
 

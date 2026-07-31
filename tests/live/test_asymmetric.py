@@ -38,7 +38,13 @@ import requests
 from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePrivateKey
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
-from tests.live.suites.auth_flows import AUTH_BASE, SVC_BASE, TIMEOUT
+from tests.live.suites.auth_flows import (
+    AUTH_BASE,
+    SVC_BASE,
+    TIMEOUT,
+    _ADMIN_EMAIL,
+    _ADMIN_PASSWORD,
+)
 from tests.live.suites.token_forge import (
     access_payload,
     b64url_nopad,
@@ -280,7 +286,7 @@ class TestH_JWKS:
         """The kid in the JWKS must match the kid in issued tokens."""
         login = requests.post(
             f"{AUTH_BASE}/login/access-token",
-            data={"username": "admin@example.com", "password": "Ocoti123@#@"},
+            data={"username": _ADMIN_EMAIL, "password": _ADMIN_PASSWORD},
             timeout=TIMEOUT,
         )
         assert login.status_code == 200

@@ -32,8 +32,12 @@ class ConsumerCredentialConfig(BaseModel):
     encoded form (production — hashed at rest, never plaintext on disk); the
     loader auto-detects which by the ``sha256$`` prefix. ``scopes`` are
     deny-by-default — a consumer is refused every private operation until granted
-    one (``introspection`` / ``event-stream`` / ``user-create``, or a custom
-    string). See :mod:`auth_user_service.core.consumer_registry`.
+    one (``introspection`` / ``api-key-introspection`` / ``event-stream`` /
+    ``user-create``, or a custom string). ``api-key-introspection`` is the
+    dedicated §3.12 grant, never implied by ``introspection``, and the consumer
+    id holding it **is** the API-key audience — see the README's *Provisioning
+    the ``API_KEY_INTROSPECTION`` scope* runbook before granting or rotating it.
+    See :mod:`auth_user_service.core.consumer_registry`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -136,6 +140,52 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     # (it reconnects and resumes/flushes). Never blocks the emitting request.
     EVENT_STREAM_MAX_QUEUE: int = Field(64, ge=1, le=100000)
 
+    # ── Revocation outbox worker (3.5.2) ────────────────────────────────────
+    # Role-change revocation side effects (Redis blacklist + user-wide v2 event)
+    # are committed as durable outbox rows atomically with the DB revocation, then
+    # drained here with at-least-once delivery. The DB delete is already the
+    # authoritative revocation (3.5.4), so a disabled/lagging worker only slows
+    # cache eviction — it never changes correctness.
+    OUTBOX_WORKER_ENABLED: bool = True
+    # How often the in-process drain loop wakes to claim and deliver a batch.
+    OUTBOX_DRAIN_INTERVAL_SECONDS: float = Field(1.0, gt=0, le=3600)
+    # Max rows claimed per drain (FOR UPDATE SKIP LOCKED).
+    OUTBOX_BATCH_SIZE: int = Field(50, ge=1, le=10000)
+    # Lease duration on a claimed row; an expired lease is re-claimable so a
+    # crashed worker's in-flight rows recover without an alternative claim path.
+    OUTBOX_LEASE_SECONDS: int = Field(30, ge=1, le=86400)
+    # Delivery attempts before a row is dead-lettered (status='dead').
+    OUTBOX_MAX_ATTEMPTS: int = Field(5, ge=1, le=100)
+    # Exponential-backoff base and cap (seconds) between retries.
+    OUTBOX_BACKOFF_BASE_SECONDS: float = Field(2.0, gt=0, le=3600)
+    OUTBOX_BACKOFF_CAP_SECONDS: float = Field(300.0, gt=0, le=86400)
+    # How long a completed row is retained (idempotency window) before reaping.
+    OUTBOX_COMPLETED_RETENTION_SECONDS: int = Field(3600, ge=0, le=2592000)
+
+    # ── Deletion-tombstone retention horizon (3.5.1) ────────────────────────
+    # A deletion tombstone must outlive every artefact that could still replay a
+    # deleted subject's authorization. The issuer derives the token-lifetime and
+    # outbox-retention parts of that horizon itself; this setting declares the
+    # part it cannot observe — how long a *consumer* may still hold a positive
+    # cache entry for the subject or replay a session-revoked event about it.
+    # Set it to the longest consumer revocation-cache TTL / event-replay window
+    # across the deployment. It is a floor, never a ceiling: the effective
+    # retention is the maximum of this value, the access-token TTL, the
+    # refresh-session lifetime, and the completed-outbox retention.
+    TOMBSTONE_CONSUMER_HORIZON_SECONDS: int = Field(3600, ge=0, le=2592000)
+
+    # ── Privileged-action audit retention purge (Phase 7) ───────────────────
+    # The append-only privileged_action_audit table's only removal path: a
+    # superadmin-gated bulk delete of rows older than a chosen window
+    # (1w/1m/3m/6m/1y). This floor is the minimum retention window the purge
+    # will honour; a request for a shorter window is rejected unless an
+    # operator explicitly lowers this setting (config opt-in), never per-call.
+    AUDIT_PURGE_MIN_RETENTION_SECONDS: int = Field(90 * 86400, ge=0, le=3155760000)
+    # Rows claimed per delete batch (FOR UPDATE SKIP LOCKED), mirroring the
+    # outbox worker's batching so a large purge never holds one long-lived
+    # transaction/lock over the whole table.
+    AUDIT_PURGE_BATCH_SIZE: int = Field(500, ge=1, le=10000)
+
     # Optional static scoped credential for scraping {API_PREFIX}/metrics (1.4).
     # Metrics are internal-only by default — the network boundary (internal
     # entrypoint) is the control and this stays unset. Set it only when metrics
@@ -222,6 +272,32 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     API_KEY_DEFAULT_LIMIT_DAY: int = 10_000
     API_KEY_DEFAULT_LIMIT_MONTH: int = 200_000
     API_KEY_MAX_PER_USER: int = 10
+    # Maximum introspection audiences bindable to a single API key (APIKEY-AUD-01,
+    # §3.12). Bounds the blast radius of one key across services; operational
+    # guidance still recommends one key per integration.
+    API_KEY_MAX_AUDIENCES: int = Field(3, ge=1, le=50)
+
+    # ── Dead-key retention purge (APIKEY-LIFECYCLE-01, Phase 7 addendum) ────
+    # A revoked or expired ApiKey row is never removed except via ON DELETE
+    # CASCADE from a deleted owner, so dead rows (and their api_key_audiences/
+    # RateLimit children) accumulate indefinitely. This floor is a dedicated
+    # minimum-retention window — separate from AUDIT_PURGE_MIN_RETENTION_SECONDS
+    # so the two horizons tune independently — below which the purge rejects a
+    # requested window unless an operator explicitly lowers this setting.
+    API_KEY_PURGE_MIN_RETENTION_SECONDS: int = Field(90 * 86400, ge=0, le=3155760000)
+    # Rows claimed per delete batch (FOR UPDATE SKIP LOCKED), mirroring the
+    # audit-table purge's batching so a large sweep never holds one long-lived
+    # lock over the key table.
+    API_KEY_PURGE_BATCH_SIZE: int = Field(500, ge=1, le=10000)
+
+    # Per-consumer anti-abuse ceiling for POST /private/v1/api-keys/introspect
+    # (§3.12 step 3), consumed on every authenticated attempt — separate from and
+    # in addition to the introspected key's own functional quota. A fixed
+    # per-minute window keyed by the authenticated consumer id bounds how fast a
+    # single (compromised or buggy) internal consumer can probe keys, without
+    # ever touching the per-key counters. Observed with bounded labels only (the
+    # consumer id is a small registry-bounded set — never a JTI/key hash/user id).
+    API_KEY_INTROSPECTION_ANTIABUSE_PER_MINUTE: int = Field(600, ge=1, le=1_000_000)
 
     @property
     def effective_api_key_strict_rate_limit(self) -> bool:

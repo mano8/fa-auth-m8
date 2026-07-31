@@ -3,12 +3,14 @@ Dashboard Controller
 """
 
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Union
+from fastapi.responses import JSONResponse
 from sqlalchemy import case, and_
 from sqlmodel import Session, literal_column, select, func, union_all
-from auth_sdk_m8.controllers.base import BaseController
+from auth_sdk_m8.authorization import has_superuser_privileges
 from auth_user_service.services.users import UserController
 from auth_user_service.core.deps import CurrentUser
+from auth_user_service.core.exceptions import handle_route_exception
 from auth_user_service.schemas.dashboard import (
     ActivityStats,
     RangeActivityType,
@@ -84,7 +86,9 @@ class DashboardController:
                 .select_from(model)
                 .where(model.updated_at >= start, model.updated_at < end)
             )
-            if not current_user.is_superuser:
+            if not has_superuser_privileges(
+                current_user.role, current_user.is_superuser
+            ):
                 if model_name == "User":
                     query = query.where(model.id == current_user.id)
                 else:  # pragma: no cover
@@ -133,7 +137,12 @@ class DashboardController:
                     )
                 ).label("added"),
             ).select_from(model)
-            if not current_user.is_superuser or is_current is True:
+            if (
+                not has_superuser_privileges(
+                    current_user.role, current_user.is_superuser
+                )
+                or is_current is True
+            ):
                 if model_name == "User":
                     stmt = stmt.where(model.id == current_user.id)
                 else:  # pragma: no cover
@@ -158,13 +167,17 @@ class DashboardController:
         current_user: CurrentUser,
         time_range: RangeActivityType,
         is_current: bool = False,
-    ) -> UsersActivity:
+    ) -> Union[UsersActivity, JSONResponse]:
         """
         Retrieves dashboard user statistics.
+
+        Returns the statistics, or the error envelope
+        :func:`~auth_user_service.core.exceptions.handle_route_exception`
+        builds when the query fails.
         """
         try:
             nb_users = 0
-            if current_user.is_superuser:
+            if has_superuser_privileges(current_user.role, current_user.is_superuser):
                 nb_users = UserController.count_users(session=session)
 
             activity = DashboardController.get_activity_count_by_model(
@@ -175,4 +188,4 @@ class DashboardController:
             )
             return UsersActivity(nb_users=nb_users, activity=activity)
         except Exception as ex:
-            return BaseController.handle_exception(ex=ex, session=session)
+            return handle_route_exception(ex=ex, session=session)

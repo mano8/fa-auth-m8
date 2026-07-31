@@ -33,6 +33,19 @@ class TestCreateClientSession:
         assert result.jwt_jti == session_data.jwt_jti
         assert str(result.user_id) == str(sample_user.id)
 
+    def test_stamps_owner_generation_on_new_session(self, db_session, sample_user):
+        sample_user.auth_generation = 7
+        db_session.add(sample_user)
+        db_session.commit()
+
+        result = SessionController.create_client_session(
+            session=db_session,
+            current_user=sample_user,
+            session_data=_make_session_create(),
+        )
+
+        assert result.auth_generation == 7
+
     def test_updates_existing_session(
         self, db_session, sample_client_session, sample_user
     ):
@@ -46,6 +59,24 @@ class TestCreateClientSession:
         )
 
         assert result.jwt_jti == new_jti
+
+    def test_restamps_generation_on_existing_session(
+        self, db_session, sample_client_session, sample_user
+    ):
+        # Reusing a user's row re-stamps to the owner's current generation so a
+        # recycled session can never carry a superseded one.
+        sample_user.auth_generation = 9
+        db_session.add(sample_user)
+        db_session.commit()
+
+        result = SessionController.create_client_session(
+            session=db_session,
+            current_user=sample_user,
+            session_data=_make_session_create(),
+        )
+
+        assert result.id == sample_client_session.id
+        assert result.auth_generation == 9
 
     def test_stores_external_tokens(self, db_session, sample_user):
         now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -70,7 +101,7 @@ class TestCreateClientSession:
 
 
 class TestRevokeSessionJti:
-    def test_blacklists_jti_with_positive_ttl(self):
+    def test_blacklists_jti_with_positive_ttl(self, db_session):
         future = datetime.now(timezone.utc) + timedelta(minutes=30)
         mock_redis = MagicMock()
         mock_manager = MagicMock()
@@ -79,14 +110,16 @@ class TestRevokeSessionJti:
             "auth_user_service.services.client_sessions.RedisSessionManager"
         ) as mock_cls:
             mock_cls.return_value = mock_manager
-            SessionController.revoke_session_jti("my-jti", future, redis=mock_redis)
+            SessionController.revoke_session_jti(
+                "my-jti", future, redis=mock_redis, session=db_session
+            )
 
         mock_manager.blacklist_jti.assert_called_once()
         jti_arg, ttl_arg = mock_manager.blacklist_jti.call_args[0]
         assert jti_arg == "my-jti"
         assert ttl_arg >= 0
 
-    def test_does_not_blacklist_already_expired_jti(self):
+    def test_does_not_blacklist_already_expired_jti(self, db_session):
         past = datetime.now(timezone.utc) - timedelta(minutes=30)
         mock_redis = MagicMock()
         mock_manager = MagicMock()
@@ -95,11 +128,13 @@ class TestRevokeSessionJti:
             "auth_user_service.services.client_sessions.RedisSessionManager"
         ) as mock_cls:
             mock_cls.return_value = mock_manager
-            SessionController.revoke_session_jti("old-jti", past, redis=mock_redis)
+            SessionController.revoke_session_jti(
+                "old-jti", past, redis=mock_redis, session=db_session
+            )
 
         mock_manager.blacklist_jti.assert_not_called()
 
-    def test_handles_naive_datetime_as_utc(self):
+    def test_handles_naive_datetime_as_utc(self, db_session):
         naive_future = datetime.now() + timedelta(minutes=30)
         assert naive_future.tzinfo is None
 
@@ -110,12 +145,12 @@ class TestRevokeSessionJti:
         ) as mock_cls:
             mock_cls.return_value = mock_manager
             SessionController.revoke_session_jti(
-                "naive-jti", naive_future, redis=mock_redis
+                "naive-jti", naive_future, redis=mock_redis, session=db_session
             )
 
         mock_manager.blacklist_jti.assert_called_once()
 
-    def test_zero_ttl_still_blacklists(self):
+    def test_zero_ttl_still_blacklists(self, db_session):
         exactly_now = datetime.now(timezone.utc)
         mock_redis = MagicMock()
         mock_manager = MagicMock()
@@ -125,13 +160,13 @@ class TestRevokeSessionJti:
         ) as mock_cls:
             mock_cls.return_value = mock_manager
             SessionController.revoke_session_jti(
-                "zero-jti", exactly_now, redis=mock_redis
+                "zero-jti", exactly_now, redis=mock_redis, session=db_session
             )
 
         # TTL is 0 or just became non-negative; blacklist may or may not be called
         # depending on exact timing — just verify no exception is raised
 
-    def test_skips_blacklist_when_redis_is_none(self):
+    def test_skips_blacklist_when_redis_is_none(self, db_session):
         """When redis=None, revoke_session_jti must not call blacklist_jti."""
         future = datetime.now(timezone.utc) + timedelta(minutes=30)
         mock_manager = MagicMock()
@@ -140,7 +175,9 @@ class TestRevokeSessionJti:
             "auth_user_service.services.client_sessions.RedisSessionManager"
         ) as mock_cls:
             mock_cls.return_value = mock_manager
-            SessionController.revoke_session_jti("my-jti", future, redis=None)
+            SessionController.revoke_session_jti(
+                "my-jti", future, redis=None, session=db_session
+            )
 
         mock_manager.blacklist_jti.assert_not_called()
 
@@ -265,6 +302,116 @@ class TestDeleteSessionByJti:
         SessionController.delete_session_by_jti(
             session=db_session, jti="nonexistent-jti"
         )
+
+
+class TestCaptureAndDeleteUserSessions:
+    def test_captures_active_and_deletes_all_without_commit(
+        self, db_session, sample_user, sample_client_session
+    ):
+        targets, count = SessionController.capture_and_delete_user_sessions(
+            db_session, sample_user.id
+        )
+
+        assert count >= 1
+        assert [t.jti for t in targets] == [sample_client_session.jwt_jti]
+        remaining = SessionController.get_user_active_sessions(
+            db_session, sample_user.id
+        )
+        assert remaining == []
+
+    def test_no_sessions_returns_empty(self, db_session):
+        targets, count = SessionController.capture_and_delete_user_sessions(
+            db_session, uuid.uuid4()
+        )
+        assert targets == []
+        assert count == 0
+
+
+class TestApplyPostCommitRevocation:
+    def test_blacklists_targets_and_emits_event(self, db_session, sample_user):
+        from auth_user_service.services.client_sessions import RevocationTarget
+
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        targets = [RevocationTarget(jti="jti-1", expires_at=future)]
+        access_mgr = MagicMock()
+        refresh_store = MagicMock()
+        with (
+            patch(
+                "auth_user_service.services.client_sessions.RedisSessionManager",
+                return_value=access_mgr,
+            ),
+            patch(
+                "auth_user_service.services.client_sessions.RedisRefreshStore",
+                return_value=refresh_store,
+            ),
+            patch("auth_user_service.services.client_sessions.emit") as mock_emit,
+        ):
+            SessionController.apply_post_commit_revocation(
+                targets, sample_user.id, MagicMock()
+            )
+
+        access_mgr.blacklist_jti.assert_called_once()
+        refresh_store.revoke.assert_called_once_with("jti-1")
+        mock_emit.assert_called_once()
+
+    def test_skips_blacklist_for_expired_target(self, db_session, sample_user):
+        from auth_user_service.services.client_sessions import RevocationTarget
+
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        targets = [RevocationTarget(jti="old", expires_at=past)]
+        access_mgr = MagicMock()
+        refresh_store = MagicMock()
+        with (
+            patch(
+                "auth_user_service.services.client_sessions.RedisSessionManager",
+                return_value=access_mgr,
+            ),
+            patch(
+                "auth_user_service.services.client_sessions.RedisRefreshStore",
+                return_value=refresh_store,
+            ),
+            patch("auth_user_service.services.client_sessions.emit"),
+        ):
+            SessionController.apply_post_commit_revocation(
+                targets, sample_user.id, MagicMock()
+            )
+
+        access_mgr.blacklist_jti.assert_not_called()
+        refresh_store.revoke.assert_called_once_with("old")
+
+    def test_naive_expiry_treated_as_utc(self, sample_user):
+        from auth_user_service.services.client_sessions import RevocationTarget
+
+        naive_future = datetime.now() + timedelta(hours=1)
+        targets = [RevocationTarget(jti="naive", expires_at=naive_future)]
+        access_mgr = MagicMock()
+        with (
+            patch(
+                "auth_user_service.services.client_sessions.RedisSessionManager",
+                return_value=access_mgr,
+            ),
+            patch(
+                "auth_user_service.services.client_sessions.RedisRefreshStore",
+                return_value=MagicMock(),
+            ),
+            patch("auth_user_service.services.client_sessions.emit"),
+        ):
+            SessionController.apply_post_commit_revocation(
+                targets, sample_user.id, MagicMock()
+            )
+
+        access_mgr.blacklist_jti.assert_called_once()
+
+    def test_redis_none_only_emits_event(self, sample_user):
+        from auth_user_service.services.client_sessions import RevocationTarget
+
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        targets = [RevocationTarget(jti="jti-1", expires_at=future)]
+        with patch("auth_user_service.services.client_sessions.emit") as mock_emit:
+            SessionController.apply_post_commit_revocation(
+                targets, sample_user.id, None
+            )
+        mock_emit.assert_called_once()
 
 
 class TestRevokeAllUserSessions:

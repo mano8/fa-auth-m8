@@ -1,23 +1,42 @@
 """Category api routes."""
 
 from typing import Any, Optional, Union
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 from sqlmodel import func
 
-from fastapi_full.app.deps import CurrentUser, SessionDep
+from fastapi_full.app.audit import record_cross_owner_category_action
+from fastapi_full.app.deps import (
+    OwnerVerifierDep,
+    SessionDep,
+    get_current_active_reader,
+    get_current_active_writer,
+)
+from fastapi_full.app.ownership import (
+    OwnershipError,
+    as_stored_owner_id,
+    category_update_values,
+    is_canonical_superuser,
+    is_owned_by,
+    resolve_create_owner_id,
+)
+from fastapi_full.core.exceptions import handle_route_exception
 
 from fastapi_full.db_models.categories import (
     Category,
     CategoryCreate,
     CategoryUpdate,
     CategoriesPublic,
+    build_category,
 )
-from auth_sdk_m8.schemas.base import ResponseMessage, ResponseModelBase
-from auth_sdk_m8.controllers.base import BaseController
+from fastapi_full.db_models.privileged_action_audit import AuditAction
+from fastapi_m8 import BaseController, ResponseMessage, ResponseModelBase, UserModel
 
 router = APIRouter(prefix="/category", tags=["category"])
 # pylint: disable=broad-exception-caught, not-callable
+
+_DUPLICATE_NAME_DETAIL = "A category with this name already exists"
 
 
 @router.get(
@@ -26,25 +45,29 @@ router = APIRouter(prefix="/category", tags=["category"])
     responses=BaseController.get_error_responses(),
 )
 async def read_root(
-    session: SessionDep, current_user: CurrentUser, skip: int = 0, limit: int = 100
+    session: SessionDep,
+    current_user: UserModel = Depends(get_current_active_reader),
+    skip: int = 0,
+    limit: int = 100,
 ) -> Any:
     """Retrieve category list."""
     try:
-        if current_user.is_superuser:
+        if is_canonical_superuser(current_user):
             count_statement = select(func.count()).select_from(Category)
             count = session.exec(count_statement).one()
             statement = select(Category).offset(skip).limit(limit)
             items = session.exec(statement).all()
         else:
+            owner_id = as_stored_owner_id(current_user.id)
             count_statement = (
                 select(func.count())
                 .select_from(Category)
-                .where(Category.owner_id == current_user.id)
+                .where(Category.owner_id == owner_id)
             )
             count = session.exec(count_statement).one()
             statement = (
                 select(Category)
-                .where(Category.owner_id == current_user.id)
+                .where(Category.owner_id == owner_id)
                 .offset(skip)
                 .limit(limit)
             )
@@ -52,7 +75,7 @@ async def read_root(
 
         return CategoriesPublic(data=items, count=count)
     except Exception as ex:
-        return BaseController.handle_exception(ex=ex, session=session)
+        return handle_route_exception(ex=ex, session=session)
 
 
 @router.get(
@@ -60,7 +83,11 @@ async def read_root(
     response_model=Union[ResponseModelBase, ResponseMessage],
     responses=BaseController.get_error_responses(),
 )
-def read_item(session: SessionDep, current_user: CurrentUser, item_id: int) -> Any:
+def read_item(
+    item_id: int,
+    session: SessionDep,
+    current_user: UserModel = Depends(get_current_active_reader),
+) -> Any:
     """
     Get item by ID.
     """
@@ -68,13 +95,15 @@ def read_item(session: SessionDep, current_user: CurrentUser, item_id: int) -> A
         item = session.get(Category, item_id)
         if not item:
             return ResponseMessage(success=False, msg="Item not found.")
-        if not current_user.is_superuser and (item.owner_id != current_user.id):
-            raise HTTPException(status_code=401, detail="Not enough permissions")
+        if not is_canonical_superuser(current_user) and not is_owned_by(
+            item.owner_id, current_user.id
+        ):
+            raise HTTPException(status_code=403, detail="Not enough permissions")
         return ResponseModelBase(success=True, data=dict(item))
     except HTTPException as ex:
         raise ex
     except Exception as ex:
-        return BaseController.handle_exception(ex=ex, session=session)
+        return handle_route_exception(ex=ex, session=session)
 
 
 @router.post(
@@ -83,19 +112,51 @@ def read_item(session: SessionDep, current_user: CurrentUser, item_id: int) -> A
     responses=BaseController.get_error_responses(),
 )
 def create_item(
-    *, session: SessionDep, current_user: CurrentUser, item_in: CategoryCreate
+    *,
+    session: SessionDep,
+    verify_owner_exists: OwnerVerifierDep,
+    current_user: UserModel = Depends(get_current_active_writer),
+    item_in: CategoryCreate,
 ) -> Any:
     """
     Create new item.
+
+    The owner is resolved by the ownership rules, never taken from the body:
+    without ``target_owner_id`` the row belongs to the actor, and with one it
+    belongs to that exact user — a canonical superuser only, and only after the
+    issuer confirms the user exists.
+
+    A create on behalf of another user is a privileged action: the audit row is
+    written in this same transaction, so the category and its record commit or
+    roll back together.
     """
     try:
-        item = Category.model_validate(item_in, update={"owner_id": current_user.id})
+        owner_id = resolve_create_owner_id(
+            actor_id=current_user.id,
+            actor_is_canonical_superuser=is_canonical_superuser(current_user),
+            target_owner_id=item_in.target_owner_id,
+            verify_owner_exists=verify_owner_exists,
+        )
+        item = build_category(item_in, owner_id=owner_id)
         session.add(item)
+        session.flush()
+        record_cross_owner_category_action(
+            session,
+            actor=current_user,
+            action=AuditAction.ADD,
+            row_pk=item.id,
+            target_owner_id=owner_id,
+        )
         session.commit()
         session.refresh(item)
         return ResponseModelBase(success=True, data=dict(item))
+    except OwnershipError as ex:
+        raise HTTPException(status_code=ex.status_code, detail=ex.detail) from ex
+    except IntegrityError as ex:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=_DUPLICATE_NAME_DETAIL) from ex
     except Exception as ex:
-        BaseController.handle_exception(ex=ex, session=session)
+        handle_route_exception(ex=ex, session=session)
 
 
 @router.put(
@@ -105,28 +166,48 @@ def create_item(
 )
 def update_item(
     *,
-    session: SessionDep,
-    current_user: CurrentUser,
     item_id: int,
+    session: SessionDep,
+    current_user: UserModel = Depends(get_current_active_writer),
     item_in: CategoryUpdate,
 ) -> Any:
     """
     Update an item.
+
+    The edit operates on the fetched row's existing ``owner_id``: the payload
+    carries no ownership field and the applied values are stripped of every
+    ownership key, so an edit can never re-home a category.
+
+    Editing another user's category is a privileged action: the audit row is
+    written in this same transaction, against the owner read off the persisted
+    row rather than anything the request supplied.
     """
     try:
         item = session.get(Category, item_id)
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
-        if not current_user.is_superuser and (item.owner_id != current_user.id):
-            raise HTTPException(status_code=400, detail="Not enough permissions")
-        update_dict = item_in.model_dump(exclude_unset=True)
-        item.sqlmodel_update(update_dict)
+        if not is_canonical_superuser(current_user) and not is_owned_by(
+            item.owner_id, current_user.id
+        ):
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+        target_owner_id = item.owner_id
+        item.sqlmodel_update(category_update_values(item_in))
         session.add(item)
+        record_cross_owner_category_action(
+            session,
+            actor=current_user,
+            action=AuditAction.EDIT,
+            row_pk=item.id,
+            target_owner_id=target_owner_id,
+        )
         session.commit()
         session.refresh(item)
         return ResponseModelBase(success=True, data=dict(item))
+    except IntegrityError as ex:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=_DUPLICATE_NAME_DETAIL) from ex
     except Exception as ex:
-        BaseController.handle_exception(ex=ex, session=session)
+        handle_route_exception(ex=ex, session=session)
 
 
 @router.delete(
@@ -135,19 +216,39 @@ def update_item(
     responses=BaseController.get_error_responses(),
 )
 def delete_item(
-    session: SessionDep, current_user: CurrentUser, item_id: int
+    item_id: int,
+    session: SessionDep,
+    current_user: UserModel = Depends(get_current_active_writer),
 ) -> ResponseMessage:
     """
     Delete an item.
+
+    Authorization reads the fetched row's existing ``owner_id``; nothing about
+    the actor is written onto the row on the way out.
+
+    Deleting another user's category is a privileged action. The primary key and
+    the owner are captured **before** the row is removed, so the audit row —
+    written in the same transaction — outlives the row it describes.
     """
     try:
         item = session.get(Category, item_id)
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
-        if not current_user.is_superuser and (item.owner_id != current_user.id):
-            raise HTTPException(status_code=400, detail="Not enough permissions")
+        if not is_canonical_superuser(current_user) and not is_owned_by(
+            item.owner_id, current_user.id
+        ):
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+        deleted_row_pk = item.id
+        target_owner_id = item.owner_id
         session.delete(item)
+        record_cross_owner_category_action(
+            session,
+            actor=current_user,
+            action=AuditAction.DELETE,
+            row_pk=deleted_row_pk,
+            target_owner_id=target_owner_id,
+        )
         session.commit()
         return ResponseMessage(success=True, msg="Category deleted successfully")
     except Exception as ex:
-        BaseController.handle_exception(ex=ex, session=session)
+        handle_route_exception(ex=ex, session=session)

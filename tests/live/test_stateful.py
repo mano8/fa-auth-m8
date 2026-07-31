@@ -35,8 +35,6 @@ pytestmark = [
 ]
 
 _REFRESH_URL = f"{AUTH_BASE}/login/refresh-token/"
-_ADMIN_EMAIL = "admin@example.com"
-_ADMIN_PASSWORD = "Ocoti123@#@"
 
 _REFRESH_SECRET_KEY = (
     "z8c1bxk4l8a9abn_bndfg454gdfg4dg54KJJHHdcnDZRZRZ87dfs-hkg21ghk84k6"

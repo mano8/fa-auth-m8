@@ -177,7 +177,7 @@ All requests go through Traefik. Use port `9000` (HTTP) during development:
 | `ACCESS_TOKEN_ALGORITHM` | `HS256` | `HS256` for symmetric signing |
 | `ACCESS_SECRET_KEY` | — | HMAC secret (HS256 only) |
 | `REFRESH_SECRET_KEY` | — | HMAC secret for refresh tokens |
-| `SELECTED_DB` | `Mysql` | `Mysql` or `Postgres` |
+| `SELECTED_DB` | `Mariadb` | `Mysql`, `Mariadb`, or `Postgres` — this stack runs MariaDB, so it must declare `Mariadb` (4.6 dialect declaration; existing deployments declaring `Mysql` here are on the breaking config migration, see [CHANGELOG](../../../CHANGELOG.md)) |
 | `DB_HOST` | `m8_db` | Docker service name — do not change for compose |
 | `FRONTEND_HOST` | `http://localhost:5173` | Added to CORS allowed origins |
 | `API_PREFIX` | `/user` | URL prefix for all auth routes |

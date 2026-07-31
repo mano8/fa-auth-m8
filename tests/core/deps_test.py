@@ -10,6 +10,7 @@ from fastapi import HTTPException
 
 from auth_user_service.core.client import RateLimitResult
 from auth_user_service.core.deps import (
+    get_current_active_admin,
     get_current_active_superuser,
     get_current_api_key,
     get_current_user,
@@ -18,7 +19,7 @@ from auth_user_service.core.deps import (
 )
 from auth_user_service.core.security import SecurityHelper
 from auth_sdk_m8.schemas.auth import TokenAccessData, TokenSecret
-from auth_sdk_m8.schemas.base import Period
+from auth_sdk_m8.schemas.base import Period, RoleType
 from auth_sdk_m8.schemas.user import UserModel
 
 
@@ -199,6 +200,7 @@ class TestGetCurrentActiveSuperuser:
     def test_superuser_passes_through(self):
         user = MagicMock(spec=UserModel)
         user.is_superuser = True
+        user.role = RoleType.SUPERADMIN
 
         result = get_current_active_superuser(current_user=user)
 
@@ -207,9 +209,76 @@ class TestGetCurrentActiveSuperuser:
     def test_non_superuser_raises_403(self):
         user = MagicMock(spec=UserModel)
         user.is_superuser = False
+        user.role = RoleType.USER
 
         with pytest.raises(HTTPException) as exc_info:
             get_current_active_superuser(current_user=user)
+
+        assert exc_info.value.status_code == 403
+
+    def test_superuser_flag_without_superadmin_role_denied(self):
+        # A lone ``is_superuser=True`` flag with a lower role must NOT grant
+        # access: the canonical predicate also requires ``role == SUPERADMIN``.
+        user = MagicMock(spec=UserModel)
+        user.is_superuser = True
+        user.role = RoleType.USER
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_active_superuser(current_user=user)
+
+        assert exc_info.value.status_code == 403
+
+    def test_superadmin_role_without_flag_denied(self):
+        # Conversely, ``role == SUPERADMIN`` with ``is_superuser=False`` is an
+        # inconsistent pair and is denied — no single-field authorization.
+        user = MagicMock(spec=UserModel)
+        user.is_superuser = False
+        user.role = RoleType.SUPERADMIN
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_active_superuser(current_user=user)
+
+        assert exc_info.value.status_code == 403
+
+
+class TestGetCurrentActiveAdmin:
+    @pytest.mark.parametrize(
+        "role",
+        [RoleType.ADMIN, RoleType.SUPERADMIN],
+    )
+    def test_admin_or_above_passes_through(self, role: RoleType) -> None:
+        user = MagicMock(spec=UserModel)
+        user.role = role
+        user.is_superuser = role == RoleType.SUPERADMIN
+
+        result = get_current_active_admin(current_user=user)
+
+        assert result is user
+
+    @pytest.mark.parametrize(
+        "role",
+        [RoleType.USER, RoleType.READER, RoleType.WRITER],
+    )
+    def test_below_admin_raises_403(self, role: RoleType) -> None:
+        user = MagicMock(spec=UserModel)
+        user.role = role
+        user.is_superuser = False
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_active_admin(current_user=user)
+
+        assert exc_info.value.status_code == 403
+
+    def test_stray_is_superuser_flag_never_satisfies_role_threshold(self) -> None:
+        # A lone is_superuser=True on a sub-ADMIN role must not grant access —
+        # this guard is a pure role-hierarchy check that never consults the
+        # flag (mirrors the ADMIN/SUPERADMIN dependencies elsewhere).
+        user = MagicMock(spec=UserModel)
+        user.role = RoleType.USER
+        user.is_superuser = True
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_active_admin(current_user=user)
 
         assert exc_info.value.status_code == 403
 
@@ -511,6 +580,73 @@ class TestGetCurrentApiKey:
                     pass
 
             assert raw_key not in caplog.text
+
+    def test_degraded_fail_closed_logs_a_formatted_line_not_a_tuple(
+        self, db_session, caplog
+    ):
+        """G8-11: ``_logger.warning`` previously received a 2-tuple as its sole
+        argument, so the record rendered as a raw Python tuple repr instead of
+        the intended logfmt line. Assert the actual formatted event text (with
+        the key id interpolated) is what lands in the record, not a tuple."""
+        api_key = self._make_api_key()
+
+        with (
+            patch(
+                "auth_user_service.core.deps.ApiKeyService.get_active_key",
+                return_value=api_key,
+            ),
+            patch("auth_user_service.core.deps.settings") as mock_cfg,
+            caplog.at_level("WARNING"),
+        ):
+            mock_cfg.effective_api_key_strict_rate_limit = True
+            with pytest.raises(HTTPException):
+                get_current_api_key(
+                    session=db_session,
+                    redis=None,
+                    response=self._make_response(),
+                    x_api_key="ak_valid",
+                )
+
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert not isinstance(record.msg, tuple)
+        expected = (
+            "api_key.rate_limit_unavailable decision=deny mode=fail_closed "
+            f"ref={api_key.id}"
+        )
+        assert record.getMessage() == expected
+
+    def test_degraded_fail_open_logs_a_formatted_line_not_a_tuple(
+        self, db_session, caplog
+    ):
+        """G8-11, fail-open branch: same tuple-vs-formatted-line proof as the
+        fail-closed branch above."""
+        api_key = self._make_api_key()
+
+        with (
+            patch(
+                "auth_user_service.core.deps.ApiKeyService.get_active_key",
+                return_value=api_key,
+            ),
+            patch("auth_user_service.core.deps.settings") as mock_cfg,
+            caplog.at_level("WARNING"),
+        ):
+            mock_cfg.effective_api_key_strict_rate_limit = False
+            get_current_api_key(
+                session=db_session,
+                redis=None,
+                response=self._make_response(),
+                x_api_key="ak_valid",
+            )
+
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert not isinstance(record.msg, tuple)
+        expected = (
+            "api_key.rate_limit_unavailable decision=allow mode=fail_open "
+            f"unsafe=true ref={api_key.id}"
+        )
+        assert record.getMessage() == expected
 
     def test_redis_rate_limited_with_reset_at_raises_429(self, db_session):
         api_key = self._make_api_key()

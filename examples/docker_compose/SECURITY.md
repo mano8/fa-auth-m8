@@ -239,6 +239,69 @@ Requires Docker Compose **v2.24+** for the `!reset` / `!override` merge tags.
 
 ---
 
+## Major-version cutover (2.0.0): global legacy-session revocation
+
+The `1.x → 2.0.0` upgrade runs one write-quiescent maintenance sequence — stop
+old writers → Expand → preflight/repair → **global legacy-session
+revocation** → Enforce → start `2.0.0` — described in full in the plan's
+`40-migration-release.md` §4.1/§4.2. The revocation step deletes **every**
+pre-existing `ClientSession` row (every access and refresh session, for every
+user), not a per-user or per-role-change revocation:
+
+```bash
+python -m auth_user_service.scripts.legacy_session_revocation \
+    --confirm REVOKE-ALL-LEGACY-SESSIONS --actor <who> --reason "2.0.0 cutover"
+```
+
+**User impact — forced re-login, every user, no exceptions.** This is a
+one-time global logout: after this step, every previously issued refresh
+token and stateful access token is gone from the database, and there is no
+dual-key/no-downtime path (unlike the secret-rotation playbooks above) —
+generations are deliberately **never backfilled** onto legacy sessions,
+because doing so could bless an old canonical token carrying a stale role.
+Hybrid/stateless access tokens that are still wire-valid keep working only
+until their own natural expiry (the documented bounded window, §3.6); they
+are not immediately revoked by this step. Communicate the forced re-login to
+users/downstream consumers ahead of the maintenance window. The command is
+idempotent (a repeat run revokes zero additional sessions) and requires the
+literal `--confirm REVOKE-ALL-LEGACY-SESSIONS` token precisely because it is
+irreversible and blast-radius is every account, not one.
+
+**Validation.** After running, confirm a pre-cutover refresh token now fails
+(`401`) and that a fresh login after starting `2.0.0` succeeds normally.
+
+**Rollback.** Aborting the maintenance window *before* Enforce is safe
+(Expand is additive), but revoked sessions are never restored for
+availability — if this step already ran, affected users must re-login even if
+the window is later aborted. See `40-migration-release.md` §4.5 for the full
+rollback policy, including that issuer rollback below `2.0` after Enforce is
+forward-fix only.
+
+**Split migrations.** The Expand and Enforce Alembic revisions live in each
+maintained example's `shared_migrations/auth_user/versions/` (§4.1 step 3 and
+step 6 respectively); apply them via the normal `alembic upgrade head` flow
+already wired into `docker_start.sh`/`pre_start.sh` — there is no separate
+command. Expand is safe to apply with the previous issuer still running
+(additive only, no CHECK, `ClientSession.auth_generation` stays nullable);
+Enforce must run only after the preflight/repair pass and the global
+legacy-session revocation above.
+
+**Non-rollback rehearsal (tested, not just documented).** Before relying on
+"issuer rollback below `2.0` after Enforce is forward-fix only," prove it:
+
+```bash
+./auth_user_service/scripts/rollback_rehearsal.sh [<previous-git-ref>] [<example>]
+```
+
+Builds the current issuer image, migrates a disposable database to Enforce
+head, then starts the *previous* issuer image (default: the latest tag)
+against that same database and asserts it fails startup cleanly with an
+actionable Alembic error (`Can't locate revision identified by ...`) — never
+a crash loop from an old write path attempting inconsistent updates. Requires
+Docker; creates and tears down every resource itself.
+
+---
+
 ## Planned secret rotation
 
 Proactive, scheduled rotation — distinct from the leak-driven **Incident response** playbooks below

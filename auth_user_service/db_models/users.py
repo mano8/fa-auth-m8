@@ -4,21 +4,56 @@ These models define the structure of user data in the database and
 the validation rules for user-related operations.
 """
 
-from typing import List, Optional, TYPE_CHECKING
+from typing import Any, List, Optional, TYPE_CHECKING
 import uuid
 
+import sqlalchemy as sa
 from pydantic import EmailStr, ValidationError, field_validator, model_validator
 from sqlalchemy import Column
 from sqlmodel import Field, Relationship, SQLModel, Uuid
 
+from auth_sdk_m8.authorization import validate_privilege_claims
 from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 from auth_sdk_m8.models.shared import TimestampMixin
 from auth_sdk_m8.utils.email import normalize_email
 from auth_user_service.core.db_utils import get_table_args, prefixed_tables
 
+# Named DB check constraint enforcing the canonical role/flag invariant
+# ``is_superuser <=> role == SUPERADMIN``. SQLAlchemy persists the native enum
+# **member name** ``'SUPERADMIN'`` (verified per dialect: PostgreSQL native enum,
+# MySQL/MariaDB ``ENUM`` label, SQLite VARCHAR surrogate — all store the uppercase
+# member name), so the equivalence compares against that literal. Both operands
+# are ``NOT NULL`` in the schema, so NULL is rejected by ``NOT NULL`` (a SQL CHECK
+# passes on UNKNOWN); the CHECK rejects both non-NULL mismatch directions.
+_SUPERUSER_ROLE_CHECK_NAME = "ck_user_superuser_role_consistency"
+_SUPERUSER_ROLE_CHECK_SQL = "is_superuser = (role = 'SUPERADMIN')"
+
+# First authorization generation stamped on a new user (3.5.1). Defined here in
+# the dependency-free db_models layer and re-exported by
+# ``services.generation`` (which imports these models), so callers reference a
+# single value without the models depending on the services layer.
+GENERATION_START = 1
+
 if TYPE_CHECKING:
     from auth_user_service.db_models.api_keys import ApiKey, RateLimit
     from auth_user_service.db_models.sessions import ClientSession
+
+
+def _reject_client_is_superuser(data: Any) -> Any:
+    """Reject a client-submitted ``is_superuser`` on a public/admin request body.
+
+    ``is_superuser`` is server-derived from the role (``_derive_is_superuser``)
+    and never an accepted client input (§3.1: "no caller can submit both
+    privilege fields"). Checked in ``mode="before"`` against the raw payload so
+    an undeclared key (e.g. on :class:`UserRegister`, which has no
+    ``is_superuser`` field at all) is caught before pydantic silently drops it,
+    not just a declared-but-overridden one. Only dict payloads (an HTTP JSON
+    body) are checked — trusted internal callers that construct the model from
+    keyword arguments go through the unguarded :class:`UserCreate` instead.
+    """
+    if isinstance(data, dict) and "is_superuser" in data:
+        raise ValueError("is_superuser cannot be submitted by the client")
+    return data
 
 
 def _check_avatar_url(v: object) -> object:
@@ -178,12 +213,36 @@ class UserCreate(UserBase):
         return self
 
 
+class UserAdminCreate(UserCreate):
+    """The admin-facing ``POST /users/new_user/`` request body (G8-9).
+
+    Identical to :class:`UserCreate` except that it rejects a client-submitted
+    ``is_superuser`` instead of silently overriding it. Internal callers that
+    construct a user programmatically (bootstrap seeding, OAuth provisioning)
+    keep using the unguarded :class:`UserCreate` directly and may still set the
+    server-derived flag explicitly; only this stricter subclass is exposed as a
+    route's request-body type.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_is_superuser(cls, data: Any) -> Any:
+        """Reject a submitted ``is_superuser`` (G8-9); see the shared helper."""
+        return _reject_client_is_superuser(data)
+
+
 class UserRegister(SQLModel):
     """
     Payload for new user self-registration.
     """
 
     email: EmailStr = Field(..., max_length=255, description="User email address")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_is_superuser(cls, data: Any) -> Any:
+        """Reject a submitted ``is_superuser`` (G8-9); see the shared helper."""
+        return _reject_client_is_superuser(data)
 
     @field_validator("email", mode="before")
     @classmethod
@@ -243,6 +302,14 @@ class UserUpdate(SQLModel):
     role: Optional[RoleType] = Field(
         default=None,
         description="New role for the user (admin only)",
+    )
+    is_active: Optional[bool] = Field(
+        default=None,
+        description="Activate/deactivate the account (admin only). An activation "
+        "transition is an authorization-state change: it bumps the generation and "
+        "revokes sessions, and deactivation additionally revokes the owner's API "
+        "keys (never un-revoked on reactivation, 3.11). Applied only by the "
+        "route-owned superuser-set transaction, never a bare field write.",
     )
     provider: Optional[AuthProviderType] = None  # for validation context
 
@@ -352,7 +419,27 @@ class User(UserBase, table=True):
     """
 
     __tablename__ = prefixed_tables("user")
-    __table_args__ = (get_table_args(),)
+    __table_args__ = (
+        sa.CheckConstraint(
+            _SUPERUSER_ROLE_CHECK_SQL,
+            name=_SUPERUSER_ROLE_CHECK_NAME,
+        ),
+        get_table_args(),
+    )
+
+    @model_validator(mode="after")
+    def _validate_privilege_claim_consistency(self) -> "User":
+        """Reject a ``role``/``is_superuser`` pair outside the canonical table.
+
+        Mirrors the DB check constraint at the model layer so the service create
+        path (``User.model_validate``) fails closed on an inconsistent pair.
+        Direct ORM construction skips this hook (SQLModel table models do not
+        validate on ``__init__``); the DB constraint stays authoritative for
+        direct SQL and race paths.
+        """
+        validate_privilege_claims(self.role, self.is_superuser)
+        return self
+
     id: uuid.UUID = Field(
         sa_column=Column(
             "id",
@@ -386,6 +473,22 @@ class User(UserBase, table=True):
         index=True,
         description="Tenant the user belongs to (nullable; set out-of-band)",
     )
+    # Monotonic per-user authorization generation (revocation watermark, 3.5.1).
+    # Issuer-owned and never client-settable; kept off every public/admin payload
+    # (this column lives on the table model only). ``NOT NULL`` with default 1;
+    # incremented on role/is_active changes and repair by GenerationController.
+    auth_generation: int = Field(
+        default=GENERATION_START,
+        sa_column=Column(
+            "auth_generation",
+            sa.BigInteger,
+            nullable=False,
+            default=GENERATION_START,
+            server_default=sa.text("1"),
+        ),
+        description="Monotonic per-user authorization generation (revocation "
+        "watermark, 3.5.1).",
+    )
     api_keys: List["ApiKey"] = Relationship(
         back_populates="user",
         cascade_delete=True,
@@ -406,6 +509,27 @@ class UserPublic(UserBase):
     """
 
     id: uuid.UUID
+
+
+class UserAuthorizationUpdate(UserPublic):
+    """Result of an admin user update, carrying the role-change contract fields.
+
+    Extends the public user with the two fields the role-change endpoint must
+    surface once the single transaction commits (3.5.2): the post-change
+    ``auth_generation`` (an opaque monotonic cache-tag counter) and
+    ``revocation_enqueued`` — ``True`` when revocation side effects were durably
+    enqueued to the outbox, ``False`` for a pure profile update. The endpoint
+    returns ``200`` with this body, never a post-commit ``503``/``202``.
+    """
+
+    auth_generation: int = Field(
+        description="Owner's current authorization generation after the update "
+        "(opaque monotonic counter used for cache tagging, 3.5.2).",
+    )
+    revocation_enqueued: bool = Field(
+        description="Whether revocation side effects were durably enqueued to the "
+        "transactional outbox for post-commit propagation (3.5.2).",
+    )
 
 
 class UsersPublic(SQLModel):

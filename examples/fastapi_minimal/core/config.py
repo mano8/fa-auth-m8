@@ -4,8 +4,7 @@ from pathlib import Path
 
 from pydantic_settings import SettingsConfigDict
 
-from auth_sdk_m8.utils.paths import find_dotenv
-from fastapi_m8 import ConsumerServiceSettings
+from fastapi_m8 import ConsumerServiceSettings, find_dotenv
 
 from .. import __version__
 
@@ -23,8 +22,8 @@ class Settings(ConsumerServiceSettings):
     ENV_FILE_DIR: Path = Path(__file__).resolve().parent.parent
 
     SERVICE_VERSION: str = __version__
-    CONTRACT_VERSION: str = "1.0"
-    CONTRACT_RANGE: str = ">=1.1.0 <2.0.0"
+    CONTRACT_VERSION: str = "2.0"
+    CONTRACT_RANGE: str = ">=2.0.0 <3.0.0"
 
     model_config = SettingsConfigDict(
         env_file=find_dotenv(Path(__file__).resolve().parent.parent),

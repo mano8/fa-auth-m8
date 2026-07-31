@@ -1,0 +1,199 @@
+name: Maintained example smoke
+
+# Automated maintained-example smoke flow (§4.6, TEST-LAYER-01).
+#
+# Every maintained `examples/docker_compose/*` stack is exercised end to end —
+# database startup -> `alembic upgrade head` (applied automatically on
+# container start) -> application startup -> health check -> a minimal
+# authentication/database smoke test — on every push/PR touching an example
+# or this workflow, and in full on main, nightly, and release.
+#
+# This is deliberately not the Layer B database-integration matrix
+# (`database-integration.yaml`, which proves migrations/constraints/locking
+# against ephemeral containers): it proves the *deployment artifact* a real
+# operator runs — the compose file, the bootstrap script, the Dockerfile, and
+# the actual pinned engine image — actually comes up and serves traffic.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "examples/docker_compose/**"
+      - "auth_user_service/**"
+      - ".github/workflows/example-smoke.yaml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "examples/docker_compose/**"
+      - "auth_user_service/**"
+      - ".github/workflows/example-smoke.yaml"
+  schedule:
+    # Nightly full run, independent of what changed.
+    - cron: "0 4 * * *"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  smoke:
+    name: Smoke (${{ matrix.example }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # One maintained example per certified engine plus every distinct
+        # signing/monitoring/hardening posture (§4.6): quickstart_m8/rs256_m8
+        # certify MariaDB/MySQL respectively, the rest certify PostgreSQL.
+        example:
+          - quickstart_m8
+          - postgres_m8
+          - rs256_m8
+          - metrics_m8
+          - hardened_m8
+          - vault_dev_m8
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Bootstrap env files, keys, and certs
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: bash init.sh
+
+      - name: Seed CI-only strong secrets (replace 'changethis' placeholders)
+        # init.sh only copies the *.env.example templates verbatim — every
+        # secret is the literal placeholder 'changethis', which
+        # auth_sdk_m8.core.config.CommonSettings unconditionally rejects
+        # (fail-closed, regardless of ENVIRONMENT). Without this, every
+        # container in the stack crashes on boot and never turns healthy.
+        # The script seeds one value per *logical* secret, not per placeholder:
+        # several 'changethis' occurrences are the two ends of one credential
+        # (.env AUTH_DB_PASSWORD provisions the role auth.env DB_PASSWORD logs
+        # in as; PRIVATE_API_CONSUMERS holds the consumer's PRIVATE_API_SECRET),
+        # and seeding those independently yields a stack that boots but cannot
+        # authenticate — auth_user_service then never turns healthy either.
+        # Real deployments replace 'changethis' by hand; this script exists
+        # only so this unattended smoke test can prove the stack boots.
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: bash ../shared/scripts/seed-ci-secrets.sh
+
+      - name: Make the bootstrapped secrets readable by the container uid
+        # init-common.sh enforces 0600 on every env file and init-keys.sh 0600 on
+        # private.pem. That is right on an operator's own machine, where those
+        # files are owned by the human running the stack — but auth.env, api.env
+        # and ./keys are bind-mounted into containers that run as a *different*,
+        # non-root uid (appuser = 1000, see auth_user_service/Dockerfile), and a
+        # Linux bind mount passes the host's uid and mode straight through. At
+        # 0600 the service cannot read its own dotenv and dies at import with
+        # `PermissionError: '/opt/auth_user_service/.env'`, so it never turns
+        # healthy and every dependent fails with "dependency failed to start".
+        #
+        # Docker Desktop on macOS/Windows masks this completely — its filesystem
+        # layer ignores the guest uid and grants access regardless — so it
+        # reproduces only on a Linux engine such as this runner.
+        #
+        # These are throwaway secrets on an ephemeral runner. A real deployment
+        # keeps 0600 and instead runs the container as a uid that owns the files
+        # (or hands them over via a secret manager, as vault_dev_m8 shows).
+        # `.env` is deliberately left at 0600: nothing mounts it: it is read by
+        # Compose itself, on the host, as the user running the stack.
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          chmod a+r *.env
+          # HS256 examples have no keys/ at all; RS256 ones (rs256_m8,
+          # hardened_m8, vault_dev_m8) get private.pem at 0600 from init-keys.sh.
+          if [ -d keys ]; then
+            chmod a+rX keys
+            for pem in keys/*.pem; do chmod a+r "$pem"; done
+          fi
+          ls -l *.env keys/*.pem 2>/dev/null || true
+
+      - name: Pre-build the published-image reference (pre-release smoke)
+        # hardened_m8 and vault_dev_m8 deliberately consume the published
+        # tepochtli/fa-auth-m8 image (image:, no build:) to demonstrate the
+        # real deployment artifact. Before that tag's first release, `docker
+        # compose up` would otherwise have to pull a tag that does not exist
+        # yet. Try the real registry first so a released tag is genuinely
+        # smoke-tested; only if that tag isn't published yet, build the exact
+        # same Dockerfile/context locally under the same tag so compose finds
+        # it without touching the registry. A no-op for examples that build
+        # auth_user_service locally (no matching `image:` line).
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: |
+          set -euo pipefail
+          tag="$(grep -oP '(?<=image: )tepochtli/fa-auth-m8:\S+' docker-compose.yml | head -1 || true)"
+          if [ -n "$tag" ]; then
+            if docker pull "$tag"; then
+              echo "Using published $tag"
+            else
+              echo "$tag is not published yet — building it locally from auth_user_service/Dockerfile for this smoke run"
+              docker build -f ../../../auth_user_service/Dockerfile -t "$tag" ../../../
+            fi
+          fi
+
+      - name: Start the stack
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: docker compose up -d --build --wait --wait-timeout 600
+
+      - name: Health check — auth service
+        run: curl --fail --silent --show-error http://localhost:9000/user/health/
+
+      - name: Health check — consumer service
+        run: curl --fail --silent --show-error http://localhost:9000/fastapi/health/
+
+      - name: Minimal authentication/database smoke test
+        # A bogus login must reach the DB-backed credential lookup and come
+        # back as a structured 400 — not a 500/502/503 — proving the
+        # migrated schema, the seeded application user/grants, and the
+        # auth service's DB round trip all actually work end to end.
+        #
+        # 400 (not 401/404) is the deliberate contract: the issuer returns the
+        # same "Invalid credentials or inactive user" for an unknown account
+        # and for a wrong password, so the response cannot be used to probe
+        # which emails exist. Asserted as FINDING-A03 in
+        # tests/live/test_security_universal.py::test_a03_unknown_user_returns_400_not_404.
+        run: |
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -X POST http://localhost:9000/user/login/access-token \
+            -d 'username=smoke-test-nonexistent@example.invalid' \
+            -d 'password=wrong-password-not-a-real-account')"
+          echo "login status: $status"
+          if [[ "$status" != "400" ]]; then
+            echo "::error::expected 400 (invalid credentials against a live DB lookup), got $status"
+            exit 1
+          fi
+
+      - name: Dump logs on failure
+        if: failure()
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: docker compose logs --no-color --tail 500
+
+      - name: Tear down
+        if: always()
+        working-directory: examples/docker_compose/${{ matrix.example }}
+        run: docker compose down -v --remove-orphans
+
+  example-smoke:
+    # The one stable required check, mirroring `database-matrix`'s
+    # always()/pass-on-skip shape so it can be marked required in branch
+    # protection without blocking documentation-only pull requests.
+    name: Maintained example smoke matrix
+    needs: smoke
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate the matrix outcome
+        env:
+          SMOKE_RESULT: ${{ needs.smoke.result }}
+        run: |
+          set -euo pipefail
+          echo "smoke: $SMOKE_RESULT"
+          if [[ "$SMOKE_RESULT" != "success" && "$SMOKE_RESULT" != "skipped" ]]; then
+            echo "::error::one or more maintained examples failed to start cleanly (4.6)"
+            exit 1
+          fi

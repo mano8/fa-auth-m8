@@ -13,6 +13,7 @@ from auth_user_service.db_models.users import (
     UserUpdateMe,
 )
 from auth_user_service.schemas.user import ResponseUser
+from auth_sdk_m8.authorization import has_superuser_privileges
 from auth_sdk_m8.controllers.base import BaseController
 from auth_sdk_m8.models.shared import Message
 from auth_user_service.core.exceptions import handle_route_exception
@@ -115,7 +116,7 @@ def delete_user_me(session: SessionDep, current_user: CurrentUser) -> Any:
     Delete own user.
     """
     try:
-        if current_user.is_superuser:
+        if has_superuser_privileges(current_user.role, current_user.is_superuser):
             raise HTTPException(
                 status_code=403,
                 detail="Super users are not allowed to delete themselves",

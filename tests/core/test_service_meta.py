@@ -39,12 +39,12 @@ def test_build_service_meta_values() -> None:
 def test_service_version_in_contract_range() -> None:
     """The package version must stay inside the advertised compatibility range."""
     assert SERVICE_NAME == "fa-auth-m8"
-    # Lower bound matches CONTRACT_RANGE: raised to 1.1.0 — the first fully
-    # hardened line (per-consumer scoped credentials, hash-locked release deps,
-    # supply-chain attestations, Design-B /health, 11.x security wave).
-    assert Version(__version__) >= Version("1.1.0")
-    assert Version(__version__) < Version("2.0.0")
-    assert CONTRACT_RANGE == ">=1.1.0 <2.0.0"
+    # Lower bound matches CONTRACT_RANGE: raised to 2.0.0 — major release with
+    # canonical role/flag invariant, generation-backed revocation, durable outbox,
+    # API-key access-mode and audience bindings, and v2 private API.
+    assert Version(__version__) >= Version("2.0.0")
+    assert Version(__version__) < Version("3.0.0")
+    assert CONTRACT_RANGE == ">=2.0.0 <3.0.0"
 
 
 # ── Mounted routes ────────────────────────────────────────────────────────────

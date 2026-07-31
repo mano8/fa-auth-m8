@@ -94,7 +94,7 @@ services:
         # refresh-rotation Lua EVAL, connection handshake; dangerous/admin
         # denied). The default user is then stripped of all data/admin access
         # — it keeps only connection commands so the healthcheck PING works.
-        redis-cli ACL SETUSER auth on \>"${REDIS_PASSWORD}" "~oauth_session:*" "~auth_code:*" "~login:*" "~refresh:*" "~exchange:*" "~rt:*" "~jwt:blacklist:*" "~rate:*" "~api_key:*" +@read +@write +@transaction +@connection +eval -@dangerous "+client|setinfo"
+        redis-cli ACL SETUSER auth on \>"${REDIS_PASSWORD}" "~oauth_session:*" "~auth_code:*" "~login:*" "~refresh:*" "~exchange:*" "~rt:*" "~jwt:blacklist:*" "~rate:*" "~api_key:*" "~introspect:*" "~security:*" +@read +@write +@transaction +@connection +eval -@dangerous "+client|setinfo"
         redis-cli ACL SETUSER default on \>"${REDIS_PASSWORD}" resetkeys -@all +@connection -@dangerous
         wait
     environment:

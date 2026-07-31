@@ -6,6 +6,7 @@ This module defines the database models and schemas for client sessions,
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
+from sqlalchemy import BigInteger
 from sqlmodel import Column, Field, ForeignKey, Relationship, SQLModel, Uuid
 from auth_sdk_m8.schemas.base import AuthProviderType
 from auth_sdk_m8.models.shared import TimestampMixin
@@ -162,6 +163,21 @@ class ClientSession(ClientSessionBase, SQLModel, table=True):
             index=True,
         ),
         description="Owner user ID",
+    )
+
+    # Owner's authorization generation stamped at issuance (3.5.1). Nullable in
+    # Expand: legacy sessions predating this column carry ``NULL`` and are treated
+    # as revoked at runtime (never backfilled); the column becomes ``NOT NULL``
+    # only in Enforce, after the cutover revokes every legacy session.
+    auth_generation: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            "auth_generation",
+            BigInteger,
+            nullable=True,
+        ),
+        description="Owner's authorization generation at issuance; NULL/absent "
+        "is treated as revoked (3.5.1).",
     )
 
     user: "User" = Relationship(

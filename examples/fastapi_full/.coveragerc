@@ -1,0 +1,61 @@
+; Coverage configuration for the bundled consumer example (P9-15, G9-12).
+;
+; The example is a consumer service with its own settings and package root, so
+; it is not measured by the issuer's --cov=auth_user_service gate. Before this
+; file the example's CI job ran with no --cov-fail-under at all, which meant the
+; example's coverage could regress silently while the issuer's held at 100%.
+;
+; The number this gate enforces is not 100 and is not meant to be: the point is
+; that it is declared, justified, and enforced. Every omission below is named
+; and reasoned, exactly as .coveragerc names the issuer's.
+;
+; Measured at 95.68% (branch) when the gate was introduced; pytest.ini declares
+; the floor at 95. What sits in the remaining gap, so it is visible rather than
+; absorbed:
+;   * app/routes/category.py — three generic `except Exception ->
+;     handle_route_exception` fallbacks. Not authorization branches; the
+;     unique-name collision that used to land in one of them now answers 409 on
+;     its own branch, and the three not-found branches are covered.
+;   * controllers/dashboard.py — the hour/day/year time-range variants and the
+;     invalid-range guard of the reporting window helper.
+;   * app/routes/dashboard.py — one reporting route with no unit caller.
+; None is an authorization or audit surface. Raising the floor is a one-line
+; change once they are covered.
+
+[run]
+source = fastapi_full
+branch = True
+omit =
+    ; ASGI entrypoint — process wiring, exercised by the example-smoke
+    ; workflow's real stack rather than by unit tests. Mirrors the issuer's
+    ; auth_user_service/main.py omission.
+    */fastapi_full/main.py
+    ; Settings bootstrap. Mirrors the issuer's core/config.py omission: the
+    ; unit environment supplies its own settings through tests/conftest.py, so
+    ; the real construction path is never the one under test.
+    */fastapi_full/core/config.py
+    ; The fa-auth SSE bridge consumer. A live-stack surface by construction —
+    ; it holds an open event stream against a running issuer — so it has no
+    ; unit coverage, the same reason the issuer omits its live-tested-only
+    ; routes rather than pretending a mock proves them.
+    */fastapi_full/core/events.py
+    ; Built only when this deployment enables remote API-key introspection
+    ; (API_KEY_INTROSPECTION_ENABLED=true). The unit environment never enables
+    ; it, so the route bodies are unreachable here. The contract they
+    ; demonstrate is proven where it belongs: the workspace conformance
+    ; harness's API-key principal section (§3.12) and the issuer's own suites.
+    */fastapi_full/app/routes/api_key_category.py
+    ; Migration scripts. Applied and asserted against real engines by the
+    ; Layer B suite, not by this unit gate. Mirrors the issuer's alembic omit.
+    */fastapi_full/alembic/*
+    ; The tests themselves.
+    */fastapi_full/tests/*
+
+[report]
+show_missing = True
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    @abstractmethod
+    if TYPE_CHECKING:

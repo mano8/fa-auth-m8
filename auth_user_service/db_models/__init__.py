@@ -2,4 +2,15 @@
 
 from .users import User as User
 from .sessions import ClientSession as ClientSession
-from .api_keys import ApiKey as ApiKey, RateLimit as RateLimit
+from .api_keys import (
+    ApiKey as ApiKey,
+    ApiKeyAudience as ApiKeyAudience,
+    RateLimit as RateLimit,
+)
+from .tombstones import AuthTombstone as AuthTombstone
+from .security_policy import SecurityPolicy as SecurityPolicy
+from .outbox import RevocationOutbox as RevocationOutbox
+from .privileged_action_audit import (
+    AuditAction as AuditAction,
+    PrivilegedActionAudit as PrivilegedActionAudit,
+)

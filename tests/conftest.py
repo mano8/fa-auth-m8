@@ -158,7 +158,7 @@ def superuser(db_session):
         is_active=True,
         email_verified=True,
         is_superuser=True,
-        role=RoleType.USER,
+        role=RoleType.SUPERADMIN,
     )
     db_session.add(user)
     db_session.commit()
@@ -224,6 +224,28 @@ def expired_client_session(db_session, sample_user):
 
 
 _UNIT_DIRS = {"core", "services", "schemas", "db_models", "utils"}
+
+
+def pytest_addoption(parser) -> None:
+    """Register the Layer B engine selector (``TEST-LAYER-01`` developer workflow).
+
+    Declared here rather than in ``tests/integration/database/conftest.py``
+    because only the conftest files on the path from rootdir to the collected
+    arguments are *initial* conftests, and pytest honours ``pytest_addoption``
+    in initial conftests only. Registering it at the ``tests/`` root means
+    ``--database`` is accepted for every invocation shape, including
+    ``pytest -m database_integration`` with no explicit path.
+    """
+    parser.addoption(
+        "--database",
+        action="store",
+        default=None,
+        choices=["postgresql", "mysql", "mariadb"],
+        help=(
+            "Certified engine for the Layer B database integration matrix "
+            "(TEST-DB-01, §4.6). Ignored by the unit suite."
+        ),
+    )
 
 
 def pytest_collection_modifyitems(config, items: list) -> None:

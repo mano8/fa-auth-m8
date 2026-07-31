@@ -15,12 +15,20 @@ readonly -a WEAK_PASSWORDS=(
 )
 
 # ── Engine detection ──────────────────────────────────────────────────────────
+# MariaDB client packages also symlink a compatibility `mysql` binary, so
+# `mariadb` is checked first — its presence is what actually distinguishes a
+# MariaDB image from a real MySQL one, which ships only `mysql` (4.6 dialect
+# declaration: Mysql and Mariadb are separate certified engines and are never
+# conflated here either).
 if   command -v mariadb &>/dev/null && command -v psql &>/dev/null; then
     echo "ERROR: ambiguous DB client — both mariadb and psql found" >&2; exit 1
+elif command -v mysql &>/dev/null && command -v psql &>/dev/null; then
+    echo "ERROR: ambiguous DB client — both mysql and psql found" >&2; exit 1
 elif command -v mariadb &>/dev/null; then ENGINE=mariadb
+elif command -v mysql   &>/dev/null; then ENGINE=mysql
 elif command -v psql    &>/dev/null; then ENGINE=postgres
 else
-    echo "ERROR: no supported DB client (mariadb or psql) found" >&2; exit 1
+    echo "ERROR: no supported DB client (mariadb, mysql, or psql) found" >&2; exit 1
 fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -41,8 +49,14 @@ create_user_and_db() {
     local user="$1" db_pass="$2" dbname="$3" prefix="$4"
     echo "==> provisioning [${prefix}] ${dbname} (${user})"
     case "$ENGINE" in
-        mariadb)
-            mariadb -u root -p"${MARIADB_ROOT_PASSWORD}" <<SQL
+        mariadb|mysql)
+            local bin="$ENGINE" root_password
+            if [[ "$ENGINE" == "mariadb" ]]; then
+                root_password="${MARIADB_ROOT_PASSWORD}"
+            else
+                root_password="${MYSQL_ROOT_PASSWORD}"
+            fi
+            "$bin" -u root -p"${root_password}" <<SQL
 CREATE DATABASE IF NOT EXISTS \`${dbname}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '${user}'@'%' IDENTIFIED BY '${db_pass}';
 GRANT ALL PRIVILEGES ON \`${dbname}\`.* TO '${user}'@'%';

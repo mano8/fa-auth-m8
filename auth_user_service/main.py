@@ -21,6 +21,7 @@ from auth_user_service.routes import api_router
 from auth_user_service.core.config import settings
 from auth_user_service.events import get_hub, init_hub
 from auth_user_service.events import metrics as _event_metrics
+from auth_user_service.services import outbox_metrics as _outbox_metrics
 from auth_sdk_m8.controllers.meta import mount_service_meta
 from auth_sdk_m8.observability import metrics as _metrics
 from auth_sdk_m8.observability.middleware import MetricsMiddleware
@@ -38,6 +39,10 @@ _metrics.setup(
     api_prefix=settings.API_PREFIX,
 )
 _event_metrics.setup(
+    enabled=settings.METRICS_ENABLED,
+    api_prefix=settings.API_PREFIX,
+)
+_outbox_metrics.setup(
     enabled=settings.METRICS_ENABLED,
     api_prefix=settings.API_PREFIX,
 )
@@ -132,8 +137,46 @@ async def _last_used_at_flush_loop() -> None:
             _logger.exception("flush.last_used_at.loop_error")
 
 
+def _drain_outbox_once(worker) -> None:  # type: ignore[no-untyped-def]
+    """Claim and deliver one batch of revocation-outbox effects, then reap.
+
+    Runs in a worker thread (sync DB + Redis). The DB revocation is already
+    authoritative (3.5.4); this only accelerates Redis blacklisting and consumer
+    cache eviction, so any failure degrades to slower propagation, never to
+    incorrect authorization.
+    """
+    from auth_user_service.core.deps import get_redis_client
+    from auth_user_service.core.engine_sync import engine
+    from sqlmodel import Session
+
+    redis = get_redis_client()
+    with Session(engine) as session:
+        worker.drain_once(session, redis)
+        worker.reap_completed(session)
+
+
+async def _outbox_drain_loop() -> None:
+    """Drain the revocation outbox on the configured interval until cancelled."""
+    from auth_user_service.services.outbox import OutboxWorker
+
+    worker = OutboxWorker.from_settings(settings)
+    while True:
+        try:
+            await asyncio.sleep(settings.OUTBOX_DRAIN_INTERVAL_SECONDS)
+            await asyncio.to_thread(_drain_outbox_once, worker)
+        except asyncio.CancelledError:
+            _logger.info("outbox.drain.shutdown")
+            raise
+        except Exception:
+            _logger.exception("outbox.drain.loop_error")
+
+
 def _startup_checks() -> None:
     """Log warnings when required infrastructure is unreachable at startup."""
+    from auth_user_service.core.db_utils import (
+        DialectMismatchError,
+        verify_selected_db_dialect,
+    )
     from auth_user_service.core.deps import get_redis_client
     from auth_user_service.core.engine_sync import engine
     from sqlmodel import text
@@ -193,7 +236,17 @@ def _startup_checks() -> None:
         try:
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
-            _logger.info("STARTUP: Database connected OK")
+                # Fail-closed dialect declaration check (4.6): a deployment
+                # declaring the wrong engine — including MariaDB-vs-MySQL —
+                # must never run half-configured.
+                verify_selected_db_dialect(conn, settings.SELECTED_DB)
+            _logger.info(
+                "STARTUP: Database connected OK (SELECTED_DB=%s)",
+                settings.SELECTED_DB,
+            )
+        except DialectMismatchError as ex:
+            _logger.critical("STARTUP: %s", ex)
+            raise
         except Exception as ex:
             _logger.critical("STARTUP: Database unreachable: %s", ex)
 
@@ -202,6 +255,14 @@ def _startup_checks() -> None:
 async def lifespan(app: FastAPI):
     _startup_checks()
     flush_task = asyncio.create_task(_last_used_at_flush_loop())
+    # Revocation-outbox drain worker: applies the durable Redis blacklist + v2
+    # session-revoked publications enqueued by role-change transactions (3.5.2).
+    # Disabled ⇒ the DB revocation still stands; only propagation lags.
+    outbox_task = (
+        asyncio.create_task(_outbox_drain_loop())
+        if settings.OUTBOX_WORKER_ENABLED
+        else None
+    )
     # Auth event-stream bridge: build the hub and bind the running loop so sync
     # route handlers can publish thread-safely. None when EVENT_STREAM_ENABLED
     # is false — emission then no-ops fleet-wide.
@@ -219,6 +280,12 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(asyncio.shield(flush_task), timeout=6.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
+        if outbox_task is not None:
+            outbox_task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(outbox_task), timeout=6.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
         from auth_user_service.core.engine_sync import engine
 
         engine.dispose()

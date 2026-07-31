@@ -6,13 +6,15 @@ AuthController.py
 import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
+import logging
 import secrets
 from typing import Optional
 from urllib.parse import quote_plus
 
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 
 from auth_user_service.services.client_sessions import SessionController
+from auth_user_service.services.generation import is_session_generation_stale
 from auth_user_service.services.users import UserController
 from auth_user_service.db_models.users import User
 from auth_user_service.db_models.sessions import ClientSessionCreate, ClientSession
@@ -21,6 +23,8 @@ from auth_user_service.core.security import SecurityHelper
 
 from fastapi import HTTPException
 
+from auth_sdk_m8.authorization import validate_privilege_claims
+from auth_sdk_m8.core.exceptions import InconsistentPrivilegeClaimsError
 from auth_sdk_m8.schemas.auth import (
     ASYMMETRIC_ALGORITHMS,
     ExternalTokensData,
@@ -28,6 +32,8 @@ from auth_sdk_m8.schemas.auth import (
     TokenMinimalData,
     TokenSecret,
 )
+
+_logger = logging.getLogger(__name__)
 
 # Pre-computed hash used to run bcrypt for non-existent users, eliminating the
 # timing difference that would otherwise reveal valid email addresses.
@@ -166,6 +172,55 @@ class AuthController:
         return access_token_expires, refresh_token_expires
 
     @staticmethod
+    def reload_persisted_user_for_signing(
+        *, session: Session, user_id: object
+    ) -> Optional[User]:
+        """Re-read the persisted user fresh, under a row lock, for the signing path.
+
+        The refresh path shares the single :meth:`create_auth_tokens` signing
+        chokepoint with login, so before it re-signs it must read the owner's
+        **current** persisted claims rather than an identity-map object populated
+        earlier in the request. This reload issues a fresh query with
+        ``populate_existing=True`` and ``SELECT ... FOR UPDATE`` so a refresh
+        racing a role/activation change reads the committed row — its current
+        ``role``/``is_superuser``/``is_active``/``auth_generation`` — immediately
+        before signing (3.4). On SQLite ``FOR UPDATE`` is a no-op; the real
+        contention behaviour is certified on the engine matrix
+        (``tests/integration/database/``, ``TEST-DB-01``).
+        """
+        statement = (
+            select(User)
+            .where(col(User.id) == user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return session.exec(statement).first()
+
+    @staticmethod
+    def refresh_lineage_is_current(
+        *, session: Session, user: User, session_jti: str
+    ) -> bool:
+        """Whether the refreshed session lineage is still current for *user* (3.4).
+
+        A refresh racing a revocation must not preserve a superseded session
+        lineage. The lineage is current only when its ``ClientSession`` row still
+        exists and its stamped ``auth_generation`` equals the owner's current
+        generation; a missing row, or a stale/absent stamp (legacy ``NULL``
+        generations are treated as revoked, 3.5.1), means the lineage has been
+        revoked. Callers apply this only when sessions are tracked
+        (non-stateless); a stateless deployment keeps no lineage and relies on
+        the persisted-claim re-read to converge the role at the next refresh.
+        """
+        client_session = session.exec(
+            select(ClientSession).where(col(ClientSession.jwt_jti) == session_jti)
+        ).first()
+        if client_session is None:
+            return False
+        return not is_session_generation_stale(
+            client_session.auth_generation, user.auth_generation
+        )
+
+    @staticmethod
     def create_auth_tokens(user: User) -> tuple[str, str, str]:
         """
         Create authentication tokens for a user.
@@ -178,6 +233,32 @@ class AuthController:
             str: The JWT refresh token.
             str: The JWT JTI key.
         """
+        # Validate the persisted role/is_superuser pair before signing. This is
+        # the single signing chokepoint for both login and refresh, so an
+        # inconsistent row that somehow survived a write is caught here and the
+        # service fails closed — it never signs an inconsistent access token.
+        # Only the bounded reason code is logged; raw claim values never are.
+        try:
+            validate_privilege_claims(role=user.role, is_superuser=user.is_superuser)
+        except InconsistentPrivilegeClaimsError as ex:
+            # Codacy/Opengrep reads the logfmt template itself as a hardcoded
+            # secret because it contains the word "token" (false positive, must
+            # be dismissed in the Codacy UI — inline `nosemgrep` is not honored).
+            # It is a format string: the only interpolated values are the bounded
+            # reason code, the user id, and a timestamp. No claim value or
+            # signing material is logged.
+            _logger.critical(
+                "event=token.sign.blocked "  # nosec B106
+                "reason=%s user_id=%s ts=%s",  # nosec B106
+                str(ex),
+                str(user.id),
+                datetime.now(timezone.utc).isoformat(),
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Could not issue token.",
+            ) from ex
+
         access_token_expires, refresh_token_expires = AuthController.get_tokens_expire()
         algo = settings.ACCESS_TOKEN_ALGORITHM
         access_signing_secret = _resolve_access_secret(algo)

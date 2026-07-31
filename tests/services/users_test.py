@@ -6,8 +6,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from auth_user_service.db_models.users import UserCreate, UserUpdate
-from auth_user_service.services.users import UserController
-from auth_sdk_m8.schemas.base import AuthProviderType
+from auth_user_service.services.users import (
+    UserController,
+    UserUpdateOutcome,
+    _derive_is_superuser,
+)
+from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 
 
 class TestCreateUser:
@@ -24,6 +28,17 @@ class TestCreateUser:
         assert user.hashed_password is not None
         assert user.hashed_password != "securepassword"
         assert user.email == user_create.email
+
+    def test_new_user_starts_at_generation_one(self, db_session):
+        user_create = UserCreate(
+            email=f"gen_{uuid.uuid4().hex[:6]}@example.com",
+            password="securepassword",
+            provider=AuthProviderType.PASSWORD,
+        )
+
+        user = UserController.create_user(session=db_session, user_create=user_create)
+
+        assert user.auth_generation == 1
 
     def test_password_provider_sets_uuid_id(self, db_session):
         user_create = UserCreate(
@@ -58,6 +73,64 @@ class TestCreateUser:
         )
         with pytest.raises(ValueError, match="password is required"):
             UserController.create_user(session=db_session, user_create=bad_create)
+
+    def test_superadmin_role_derives_flag_true(self, db_session):
+        user_create = UserCreate(
+            email=f"super_{uuid.uuid4().hex[:6]}@example.com",
+            password="securepassword",
+            provider=AuthProviderType.PASSWORD,
+            role=RoleType.SUPERADMIN,
+        )
+
+        user = UserController.create_user(session=db_session, user_create=user_create)
+
+        assert user.role == RoleType.SUPERADMIN
+        assert user.is_superuser is True
+
+    def test_client_supplied_flag_is_ignored(self, db_session):
+        """A client-supplied is_superuser on a lower role is overridden to False."""
+        user_create = UserCreate(
+            email=f"inject_{uuid.uuid4().hex[:6]}@example.com",
+            password="securepassword",
+            provider=AuthProviderType.PASSWORD,
+            role=RoleType.USER,
+            is_superuser=True,
+        )
+
+        user = UserController.create_user(session=db_session, user_create=user_create)
+
+        assert user.role == RoleType.USER
+        assert user.is_superuser is False
+
+
+class TestBuildUser:
+    def test_persists_without_committing(self, db_session):
+        # Transaction-neutral: the row is flushed (id known) but not committed,
+        # so a privileged create route can enqueue its audit row in the same
+        # transaction. A rollback discards the user (nothing committed).
+        user_create = UserCreate(
+            email=f"neutral_{uuid.uuid4().hex[:6]}@example.com",
+            password="securepassword",
+            provider=AuthProviderType.PASSWORD,
+        )
+
+        user = UserController.build_user(session=db_session, user_create=user_create)
+        user_id = user.id
+
+        assert user_id is not None
+        assert user.is_superuser is False
+        assert user.auth_generation == 1
+        db_session.rollback()
+        assert UserController.get_user(session=db_session, user_id=user_id) is None
+
+    def test_missing_password_raises(self, db_session):
+        bad_create = UserCreate.model_construct(
+            email=f"bad_{uuid.uuid4().hex[:6]}@example.com",
+            password=None,
+            provider=AuthProviderType.PASSWORD,
+        )
+        with pytest.raises(ValueError):
+            UserController.build_user(session=db_session, user_create=bad_create)
 
 
 class TestUpdateUser:
@@ -99,6 +172,54 @@ class TestUpdateUser:
 
         assert updated.hashed_password == old_hash
 
+    def test_role_promotion_to_superadmin_derives_flag(self, db_session, sample_user):
+        update = UserUpdate(role=RoleType.SUPERADMIN)
+
+        updated = UserController.update_user(
+            session=db_session,
+            db_user=sample_user,
+            user_in=update,
+        )
+
+        db_session.refresh(updated)
+        assert updated.role == RoleType.SUPERADMIN
+        assert updated.is_superuser is True
+
+    def test_role_demotion_from_superadmin_clears_flag(self, db_session, superuser):
+        update = UserUpdate(role=RoleType.USER)
+
+        updated = UserController.update_user(
+            session=db_session,
+            db_user=superuser,
+            user_in=update,
+        )
+
+        db_session.refresh(updated)
+        assert updated.role == RoleType.USER
+        assert updated.is_superuser is False
+
+    def test_role_change_bumps_generation(self, db_session, sample_user):
+        start = sample_user.auth_generation
+        updated = UserController.update_user(
+            session=db_session,
+            db_user=sample_user,
+            user_in=UserUpdate(role=RoleType.ADMIN),
+        )
+        db_session.refresh(updated)
+        assert updated.auth_generation == start + 1
+
+    def test_same_role_update_does_not_bump_generation(self, db_session, sample_user):
+        start = sample_user.auth_generation
+        # A non-role update (and a same-role submission) is not an authorization
+        # transition here, so the generation stays put.
+        updated = UserController.update_user(
+            session=db_session,
+            db_user=sample_user,
+            user_in=UserUpdate(full_name="No Auth Change"),
+        )
+        db_session.refresh(updated)
+        assert updated.auth_generation == start
+
     def test_privileged_field_blocked_by_allowlist(self, db_session, sample_user):
         """is_superuser injected into the update dict must be dropped by _ADMIN_UPDATE_FIELDS."""
         user_in = MagicMock()
@@ -117,6 +238,40 @@ class TestUpdateUser:
         db_session.refresh(updated)
         assert updated.is_superuser == original_superuser
         assert updated.full_name == "Injected"
+
+
+class TestApplyUserUpdate:
+    def test_neutral_apply_does_not_commit_or_bump(self, db_session, sample_user):
+        start_gen = sample_user.auth_generation
+        outcome = UserController.apply_user_update(
+            db_user=sample_user, user_in=UserUpdate(role=RoleType.ADMIN)
+        )
+        # In-memory mutation only: the flag is derived and role_changed is
+        # reported, but the generation is untouched (the caller owns that).
+        assert isinstance(outcome, UserUpdateOutcome)
+        assert outcome.previous_role == RoleType.USER
+        assert outcome.new_role == RoleType.ADMIN
+        assert outcome.role_changed is True
+        assert sample_user.is_superuser is False
+        assert sample_user.auth_generation == start_gen
+
+    def test_no_role_change_reports_unchanged(self, db_session, sample_user):
+        outcome = UserController.apply_user_update(
+            db_user=sample_user, user_in=UserUpdate(full_name="X")
+        )
+        assert outcome.role_changed is False
+
+
+class TestDeriveIsSuperuser:
+    def test_superadmin_is_true(self):
+        assert _derive_is_superuser(RoleType.SUPERADMIN) is True
+
+    @pytest.mark.parametrize(
+        "role",
+        [RoleType.ADMIN, RoleType.WRITER, RoleType.READER, RoleType.USER],
+    )
+    def test_lower_roles_are_false(self, role):
+        assert _derive_is_superuser(role) is False
 
 
 class TestGetUser:

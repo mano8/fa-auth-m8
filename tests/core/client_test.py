@@ -16,6 +16,7 @@ from auth_user_service.core.client import (
     RedisRefreshStore,
     RedisSessionManager,
     RefreshRateLimiter,
+    SuperuserProbeRateLimiter,
 )
 from auth_sdk_m8.schemas.base import Period
 
@@ -547,6 +548,61 @@ class TestRefreshRateLimiter:
 
     def test_custom_max_requests_blocks_at_correct_count(self):
         limiter = RefreshRateLimiter(self.mock_redis, max_requests=3, window_seconds=60)
+        self.mock_redis.incr.return_value = 3
+        assert limiter.is_allowed(self.user_id) is True
+        self.mock_redis.incr.return_value = 4
+        assert limiter.is_allowed(self.user_id) is False
+
+
+class TestSuperuserProbeRateLimiter:
+    def setup_method(self):
+        self.mock_redis = MagicMock()
+        self.limiter = SuperuserProbeRateLimiter(self.mock_redis)
+        self.user_id = str(uuid.uuid4())
+
+    def test_key_format(self):
+        key = self.limiter._key(self.user_id)
+        assert key == f"security:superuser_probe:{self.user_id}"
+
+    def test_is_allowed_first_attempt_sets_expiry(self):
+        self.mock_redis.incr.return_value = 1
+        result = self.limiter.is_allowed(self.user_id)
+        assert result is True
+        self.mock_redis.expire.assert_called_once_with(
+            f"security:superuser_probe:{self.user_id}", 60
+        )
+
+    def test_is_allowed_within_max_attempts(self):
+        self.mock_redis.incr.return_value = 30
+        assert self.limiter.is_allowed(self.user_id) is True
+
+    def test_is_allowed_exceeds_max_attempts(self):
+        self.mock_redis.incr.return_value = 31
+        assert self.limiter.is_allowed(self.user_id) is False
+
+    def test_is_allowed_subsequent_no_expire(self):
+        self.mock_redis.incr.return_value = 3
+        self.limiter.is_allowed(self.user_id)
+        self.mock_redis.expire.assert_not_called()
+
+    def test_constants(self):
+        assert SuperuserProbeRateLimiter.DEFAULT_MAX_REQUESTS == 30
+        assert SuperuserProbeRateLimiter.DEFAULT_WINDOW_SECONDS == 60
+        assert SuperuserProbeRateLimiter.PREFIX == "security:superuser_probe:"
+
+    def test_custom_params_used_for_expiry(self):
+        limiter = SuperuserProbeRateLimiter(
+            self.mock_redis, max_requests=3, window_seconds=10
+        )
+        self.mock_redis.incr.return_value = 1
+        limiter.is_allowed(self.user_id)
+        _, ttl = self.mock_redis.expire.call_args[0]
+        assert ttl == 10
+
+    def test_custom_max_requests_blocks_at_correct_count(self):
+        limiter = SuperuserProbeRateLimiter(
+            self.mock_redis, max_requests=3, window_seconds=10
+        )
         self.mock_redis.incr.return_value = 3
         assert limiter.is_allowed(self.user_id) is True
         self.mock_redis.incr.return_value = 4

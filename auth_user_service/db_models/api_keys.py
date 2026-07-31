@@ -4,14 +4,14 @@ These models are used to manage API keys and their associated rate limits.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, List, Optional
 
 import sqlalchemy as sa
 from sqlalchemy import Uuid
 from sqlmodel import Column, Field, ForeignKey, Relationship, SQLModel
 
-from auth_sdk_m8.schemas.base import Period
+from auth_sdk_m8.schemas.base import ApiKeyAccessMode, Period
 from auth_sdk_m8.models.shared import TimestampMixin
 from auth_user_service.core.db_utils import (
     get_table_args,
@@ -47,7 +47,12 @@ class ApiKeyBase(TimestampMixin, SQLModel):
 
 
 class ApiKeyCreate(SQLModel):
-    """Schema for creating a new API key."""
+    """Schema for creating a new API key.
+
+    ``access_mode`` and ``audiences`` are the two additive, explicit-only fields
+    of §3.12 — both fixed at issuance. Omitting them yields the security-first
+    default: a ``READ_ONLY`` key bound to no audience (issuer-local use only).
+    """
 
     name: Optional[str] = Field(
         default=None,
@@ -59,6 +64,21 @@ class ApiKeyCreate(SQLModel):
         default=24,
         gt=0,
         description="Time to live for the key in hours",
+    )
+    access_mode: ApiKeyAccessMode = Field(
+        default=ApiKeyAccessMode.READ_ONLY,
+        description="Immutable operation-category cap for the new key "
+        "(``APIKEY-MODE-01``). Defaults to the most restrictive ``READ_ONLY``; "
+        "``READ_WRITE`` is an explicit choice and cannot be changed afterwards — "
+        "issue a replacement key instead.",
+    )
+    audiences: Optional[list[str]] = Field(
+        default=None,
+        description="Registered consumer ids permitted to introspect this key "
+        "remotely (``APIKEY-AUD-01``, §3.12). Omitted/empty ⇒ issuer-local use "
+        "only (remote introspection answers ``active: false``). Each must be an "
+        "enabled consumer explicitly granted the ``api-key-introspection`` scope. "
+        "The set is immutable after issuance.",
     )
 
 
@@ -98,9 +118,31 @@ class ApiKey(ApiKeyBase, SQLModel, table=True):
         default=None,
         description="Last time the key was used (UTC)",
     )
+    access_mode: ApiKeyAccessMode = Field(
+        default=ApiKeyAccessMode.READ_ONLY,
+        sa_column_kwargs={
+            "nullable": False,
+            # Every existing key migrates to the most restrictive mode in Expand
+            # (server default), and READ_ONLY is the creation-time default. The
+            # enum persists its member name (READ_ONLY), matching the RoleType
+            # column convention. The mode is immutable after issuance
+            # (APIKEY-MODE-01) — there is deliberately no update path.
+            "server_default": ApiKeyAccessMode.READ_ONLY.name,
+        },
+        description="Immutable operation-category cap chosen at issuance "
+        "(APIKEY-MODE-01); never a role — the owner's live role stays the ceiling.",
+    )
 
     user: "User" = Relationship(back_populates="api_keys")
     rate_limits: List["RateLimit"] = Relationship(
+        back_populates="api_key",
+        cascade_delete=True,
+    )
+    # Normalized audience bindings (APIKEY-AUD-01, §3.12). No rows ⇒ the key is
+    # issuer-local only, so remote introspection answers active:false — the
+    # fail-closed cutover that stops any legacy key silently becoming a
+    # cross-service credential.
+    audiences: List["ApiKeyAudience"] = Relationship(
         back_populates="api_key",
         cascade_delete=True,
     )
@@ -114,6 +156,161 @@ class ApiKeyPublic(ApiKeyBase, SQLModel):
         default=None,
         description="Last time the key was used (UTC)",
     )
+    access_mode: ApiKeyAccessMode = Field(
+        default=ApiKeyAccessMode.READ_ONLY,
+        description="The key's immutable operation-category cap (APIKEY-MODE-01).",
+    )
+    audiences: List[str] = Field(
+        default_factory=list,
+        description="Registered consumer ids permitted to introspect this key "
+        "remotely (APIKEY-AUD-01/APIKEY-AUD-02). Empty ⇒ issuer-local use only. "
+        "Immutable after issuance.",
+    )
+
+    @classmethod
+    def from_key(cls, api_key: "ApiKey") -> "ApiKeyPublic":
+        """Project an ``ApiKey`` ORM row to its owner-facing public view.
+
+        An explicit projection — never a bare ``from_attributes`` validation of
+        the ORM row — because ``ApiKey.audiences`` is a list of
+        :class:`ApiKeyAudience` rows, not ``list[str]``; validating the ORM
+        object directly against this model's ``audiences: list[str]`` field
+        would fail (``APIKEY-AUD-02``).
+        """
+        return cls(
+            id=api_key.id,
+            name=api_key.name,
+            expires_at=api_key.expires_at,
+            revoked=api_key.revoked,
+            created_at=api_key.created_at,
+            updated_at=api_key.updated_at,
+            last_used_at=api_key.last_used_at,
+            access_mode=api_key.access_mode,
+            audiences=[a.audience_id for a in (api_key.audiences or [])],
+        )
+
+
+class ApiKeyAdminPublic(SQLModel):
+    """Superadmin metadata view of *any* user's API key (Phase 7, §3.11/§3.12).
+
+    The limited superadmin surface may **list** and **revoke** other users' keys
+    but never read their secrets. This model therefore carries **metadata only** —
+    id, label (``name``), derived ``status``, ``created_at``/``last_used_at``, and
+    the owner id (``user_id``) — and, because it does **not** inherit from
+    :class:`ApiKey`, it structurally cannot expose ``key_hash`` (the stored hash)
+    or the raw key (which is never stored). The secret non-exposure invariant is
+    enforced by construction, not by omission.
+    """
+
+    id: uuid.UUID = Field(description="Unique API key ID")
+    name: Optional[str] = Field(default=None, description="Developer-defined key name")
+    user_id: uuid.UUID = Field(description="Owner user ID of the key")
+    revoked: bool = Field(description="Whether the key is revoked")
+    expires_at: Optional[datetime] = Field(
+        default=None, description="When the key expires (UTC)"
+    )
+    last_used_at: Optional[datetime] = Field(
+        default=None, description="Last time the key was used (UTC)"
+    )
+    created_at: datetime = Field(description="When the key was created (UTC)")
+    access_mode: ApiKeyAccessMode = Field(
+        default=ApiKeyAccessMode.READ_ONLY,
+        description="The key's immutable operation-category cap (APIKEY-MODE-01).",
+    )
+    status: str = Field(
+        description="Derived lifecycle status: 'active', 'revoked', or 'expired'.",
+    )
+    audiences: List[str] = Field(
+        default_factory=list,
+        description="Registered consumer ids permitted to introspect this key "
+        "remotely (APIKEY-AUD-01/APIKEY-AUD-02). Empty ⇒ issuer-local use only. "
+        "Immutable after issuance.",
+    )
+
+    @classmethod
+    def from_key(cls, api_key: "ApiKey") -> "ApiKeyAdminPublic":
+        """Project an ``ApiKey`` ORM row to its metadata-only admin view.
+
+        The ``status`` is derived the same way key validation resolves usability
+        (:meth:`ApiKeyService.get_active_key`): a revoked key is ``revoked``, an
+        elapsed ``expires_at`` is ``expired``, otherwise ``active``. No secret
+        column is read.
+        """
+        now = datetime.now(timezone.utc)
+        if api_key.revoked:
+            status = "revoked"
+        elif (
+            api_key.expires_at is not None
+            and api_key.expires_at.replace(tzinfo=timezone.utc) < now
+        ):
+            status = "expired"
+        else:
+            status = "active"
+        return cls(
+            id=api_key.id,
+            name=api_key.name,
+            user_id=api_key.user_id,
+            revoked=api_key.revoked,
+            expires_at=api_key.expires_at,
+            last_used_at=api_key.last_used_at,
+            created_at=api_key.created_at,
+            access_mode=api_key.access_mode,
+            status=status,
+            audiences=[a.audience_id for a in (api_key.audiences or [])],
+        )
+
+
+class ApiKeysAdminPublic(SQLModel):
+    """Wrapper for a paginated superadmin listing of a user's API keys."""
+
+    data: List[ApiKeyAdminPublic] = Field(
+        description="Metadata-only public rows for the target user's API keys."
+    )
+    count: int = Field(description="Total number of keys owned by the target user.")
+
+
+class ApiKeyAudience(SQLModel, table=True):
+    """One audience binding of an API key (normalized ``api_key_audiences``).
+
+    An audience is the immutable technical id of a registered consumer explicitly
+    permitted to introspect user API keys (``APIKEY-AUD-01``, §3.12). The set is
+    stored as its own relation — not a PostgreSQL-native array, JSON blob, or a
+    nullable plural column — because the supported engines include MySQL/MariaDB
+    (§4.6) and authorization data needs an exact physical contract. The complete
+    set is immutable after issuance; adding/replacing it requires key rotation.
+    """
+
+    __tablename__ = prefixed_tables("api_key_audiences")
+    __table_args__ = (get_table_args(),)
+
+    api_key_id: uuid.UUID = Field(
+        sa_column=Column(
+            "api_key_id",
+            Uuid(as_uuid=True),
+            ForeignKey(prefixed_fk("api_key", "id"), ondelete="CASCADE"),
+            primary_key=True,
+            nullable=False,
+        ),
+        description="Owning API key (composite PK; cascades on key delete).",
+    )
+    audience_id: str = Field(
+        sa_column=Column(
+            "audience_id",
+            sa.String(255),
+            primary_key=True,
+            nullable=False,
+        ),
+        description="Immutable technical id of a registered consumer permitted to "
+        "introspect this key. Exact-match after canonical normalization; no "
+        "wildcards; display names are never used for authorization.",
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column("created_at", sa.DateTime, nullable=False),
+        description="When the binding was recorded (UTC).",
+    )
+
+    api_key: "ApiKey" = Relationship(back_populates="audiences")
 
 
 # ---------------------------------------------------------------

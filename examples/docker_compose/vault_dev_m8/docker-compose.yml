@@ -143,7 +143,7 @@ services:
         # refresh-rotation Lua EVAL, connection handshake; dangerous/admin
         # denied). The default user is then stripped of all data/admin access
         # — it keeps only connection commands so the healthcheck PING works.
-        redis-cli ACL SETUSER auth on \>"${REDIS_PASSWORD}" "~oauth_session:*" "~auth_code:*" "~login:*" "~refresh:*" "~exchange:*" "~rt:*" "~jwt:blacklist:*" "~rate:*" "~api_key:*" +@read +@write +@transaction +@connection +eval -@dangerous "+client|setinfo"
+        redis-cli ACL SETUSER auth on \>"${REDIS_PASSWORD}" "~oauth_session:*" "~auth_code:*" "~login:*" "~refresh:*" "~exchange:*" "~rt:*" "~jwt:blacklist:*" "~rate:*" "~api_key:*" "~introspect:*" "~security:*" +@read +@write +@transaction +@connection +eval -@dangerous "+client|setinfo"
         redis-cli ACL SETUSER default on \>"${REDIS_PASSWORD}" resetkeys -@all +@connection -@dangerous
         wait
     environment:
@@ -169,10 +169,74 @@ services:
       - m8_app_network
     restart: unless-stopped
 
+  # One-shot host-path owner fixes. Both bind-mount targets below are written by
+  # containers that deliberately run as a non-root uid, and Docker creates a
+  # missing bind-mount source as root:root, so on a Linux engine neither service
+  # can write its own directory. Docker Desktop on macOS/Windows ignores
+  # bind-mount ownership, which is why this only bites on Linux (including CI).
+
+  # auth_user_service runs as appuser (uid 1000). This example ships no
+  # pre-generated migrations, so the entrypoint generates them into the mounted
+  # ./shared_migrations and otherwise dies with
+  # "PermissionError: '/opt/shared_migrations/auth_user'".
+  migrations-init:
+    image: alpine:3.22
+    volumes:
+      - ./shared_migrations:/opt/shared_migrations
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        chown -R 1000:1000 /opt/shared_migrations
+        chmod -R u+rwX,g+rwX /opt/shared_migrations
+        echo "==> migrations-init: shared_migrations owned by uid 1000, writable by all m8 services"
+    # Handing a directory to another uid inherently requires CAP_CHOWN, so this
+    # one-shot runs as root — but CAP_CHOWN (plus what it needs to read and
+    # re-run over an already-converted directory) is the *only* privilege it
+    # keeps: no network, read-only root filesystem, no privilege escalation,
+    # exactly one bind-mounted directory, and it exits before any service starts.
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+    security_opt: ["no-new-privileges:true"]
+    network_mode: "none"
+    read_only: true
+    restart: "no"
+
+  # grafana/grafana declares USER 472:0; without this it crash-loops on
+  # "GF_PATHS_DATA='/var/lib/grafana' is not writable". Prometheus and Vault need
+  # no equivalent: both images run as root and self-manage.
+  grafana-init:
+    image: alpine:3.22
+    volumes:
+      - ./grafana/data:/grafana_data
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        chown -R 472:0 /grafana_data
+        chmod -R u+rwX,g+rwX /grafana_data
+        echo "==> grafana-init: /grafana_data owned by grafana (472:0)"
+    # Handing a directory to another uid inherently requires CAP_CHOWN, so this
+    # one-shot runs as root — but CAP_CHOWN (plus what it needs to read and
+    # re-run over an already-converted directory) is the *only* privilege it
+    # keeps: no network, read-only root filesystem, no privilege escalation,
+    # exactly one bind-mounted directory, and it exits before Grafana starts.
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+    security_opt: ["no-new-privileges:true"]
+    network_mode: "none"
+    read_only: true
+    restart: "no"
+
   grafana:
     image: grafana/grafana:13.1.0-25530058790
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_started
+      grafana-init:
+        condition: service_completed_successfully
     env_file:
       - ./grafana.env
     volumes:
@@ -187,8 +251,8 @@ services:
   auth_user_service:
     # Published image — no local build required.
     # For production, pin to a specific release instead of latest:
-    #   tepochtli/fa-auth-m8:1.1.0
-    image: tepochtli/fa-auth-m8:1.1.0
+    #   tepochtli/fa-auth-m8:2.0.0
+    image: tepochtli/fa-auth-m8:2.0.0
     env_file:
       - ./auth.env
     environment:
@@ -203,6 +267,8 @@ services:
       - ./shared_migrations:/opt/shared_migrations
       - ./keys:/opt/keys:ro
     depends_on:
+      migrations-init:
+        condition: service_completed_successfully
       m8_db:
         condition: service_healthy
       redis_cache:

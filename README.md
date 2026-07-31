@@ -138,10 +138,12 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | profile | PATCH | `/profile/me/password/` | JWT | Change own password |
 | profile | DELETE | `/profile/delete/me/` | JWT | Delete own account (cascades to the user's sessions, API keys, and rate-limit rows) |
 | api-keys | GET | `/profile/api-keys/verify` | X-API-Key | Validate key header, enforce rate limits, return key metadata |
-| api-keys | POST | `/profile/api-keys/` | JWT | Create API key — plaintext returned once, never stored |
+| api-keys | POST | `/profile/api-keys/` | JWT | Create API key — plaintext returned once, never stored. Optional `access_mode` (`read_only`/`read_write`) and `audiences` (introspection consumer ids) are fixed at issuance (§3.11–§3.12); `409` on an invalid/ineligible audience |
 | api-keys | GET | `/profile/api-keys/` | JWT | List own API keys (metadata only) |
 | api-keys | GET | `/profile/api-keys/{key_id}` | JWT | Get single key metadata |
 | api-keys | DELETE | `/profile/api-keys/{key_id}` | JWT | Revoke API key |
+| api-keys-admin | GET | `/api-keys/by-user/{user_id}/` | superuser | Superadmin-only: list any user's API keys — **metadata only** (id, label, status, `created_at`/`last_used_at`, owner id); never the raw or hashed key (§3.11/§3.12). A read — not audited |
+| api-keys-admin | POST | `/api-keys/revoke/{key_id}/` | superuser | Superadmin-only: revoke any user's API key (delete-equivalent, same authoritative path as the owner revoke); writes one `delete` privileged-action audit row atomically. No create/edit or secret-read surface exists |
 | sessions | GET | `/sessions/` | superuser | List all sessions (paginated) |
 | sessions | GET | `/sessions/get/{session_id}/` | superuser | Get session by ID |
 | sessions | GET | `/sessions/get-by-user/{user_id}/` | superuser | Get session by user ID |
@@ -153,13 +155,14 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | users | POST | `/users/new_user/` | superuser | Create user with password |
 | users | POST | `/users/signup/` | superuser | Register user (no password set) |
 | users | GET | `/users/get/{user_id}/` | superuser | Get user by ID |
-| users | PATCH | `/users/update/{user_id}/` | superuser | Update user |
-| users | DELETE | `/users/delete/{user_id}/` | superuser | Delete user (cascades to the user's sessions, API keys, and rate-limit rows) |
+| users | PATCH | `/users/update/{user_id}/` | superuser | Update user (role/`is_active` changes run under the superuser-set lock: revoke sessions, bump the auth generation, enqueue revocation to the durable outbox, and — on deactivation — revoke the user's API keys; returns `200` with `auth_generation` + `revocation_enqueued`; `409 last_superuser_required` if it would remove the last active superuser; `403` on self-promotion) |
+| users | DELETE | `/users/delete/{user_id}/` | superuser | Delete user (cascades to the user's sessions, API keys, and rate-limit rows; `409 last_superuser_required` if it would remove the last active superuser; self-deletion allowed subject to that rule) |
 | dashboard | GET | `/dashboard/users/activity/` | JWT | All-user activity stats (monthly) |
 | dashboard | GET | `/dashboard/users/activity/current/` | JWT | Own activity stats (monthly) |
 | metrics | GET | `/metrics` | — | Prometheus metrics (`METRICS_ENABLED=true` only) |
 | private | POST | `/private/users/` | X-Internal-Client + X-Internal-Token (`user-create`) | Create user (inter-service, Docker network only) |
 | private | POST | `/private/v1/jti-status` | X-Internal-Client + X-Internal-Token (`introspection`) | Check whether an access-token JTI is revoked (inter-service) |
+| private | POST | `/private/v1/api-keys/introspect` | X-Internal-Client + X-Internal-Token (`api-key-introspection`) | Resolve a user API key to its canonical live owner principal (inter-service, §3.12) |
 | private | GET | `/private/v1/events/stream` | X-Internal-Client + X-Internal-Token (`event-stream`) | SSE bridge of `session-revoked` / `user-deleted` events (inter-service) |
 
 **Service triad (`/meta`, `/ping`, `/health/`).** `/ping` answers "is the process up?" (liveness — point container/orchestrator liveness probes here; never touches a dependency), `/health/` answers liveness publicly with a constant `{"status":"ok"}` and "are dependencies reachable?" (readiness — Redis/DB) **only in its credential-gated detail body** (the public body never reflects degradation — plan 9.4 Design B), and `/meta` answers "what version/contract is this?" (client compatibility, read pre-auth — satisfies `@fa-m8/astro-auth-m8`'s `assertFaAuthM8Compatibility`). `/meta` + `/ping` are the shared auth-sdk-m8 routes (`mount_service_meta`); the issuer mounts them directly since it doesn't use `fastapi_m8.create_app`. Since auth-sdk-m8 2.0.0 `/ping` is **single-mounted** at `{API_PREFIX}/ping` (the root `/ping` is no longer served when a prefix is set) and advertised in the schema — point container/orchestrator liveness probes at `{API_PREFIX}/ping`.
@@ -348,7 +351,7 @@ auth_user_service:
 
 # With this:
 auth_user_service:
-  image: tepochtli/fa-auth-m8:1.1.0   # pin to a specific release for production
+  image: tepochtli/fa-auth-m8:2.0.0   # pin to a specific release for production
 ```
 
 All env files, volumes, labels, and `depends_on` entries remain unchanged —
@@ -371,7 +374,28 @@ Set `SELECTED_DB` in `.env` (or `auth.env`):
 | Value | Driver | Default port |
 | ----- | ------ | ------------ |
 | `Mysql` (default) | `pymysql` / `aiomysql` | 3306 |
+| `Mariadb` | `pymysql` / `aiomysql` | 3306 |
 | `Postgres` | `psycopg2` / `asyncpg` | 5432 |
+
+**`Mysql` and `Mariadb` are separate certified dialects (§4.6), never
+interchangeable declarations.** They share the same `mysql+pymysql` driver
+family, but `SELECTED_DB` must name the engine actually deployed: `Mysql` is
+valid only against a real MySQL server, `Mariadb` only against a real MariaDB
+server. At startup the issuer compares `SELECTED_DB` against the connected
+server's SQLAlchemy dialect **and** its version string (the only thing that
+distinguishes a MariaDB server from a MySQL server on the shared wire
+protocol) and **fails startup cleanly with a dialect-mismatch error on any
+mismatch** — a deployment never runs half-configured.
+
+> **Breaking configuration migration — existing MariaDB deployments.**
+> Before this contract, a MariaDB deployment could declare
+> `SELECTED_DB=Mysql` (the two dialects were not distinguished). That is no
+> longer valid: **every existing MariaDB deployment must change
+> `SELECTED_DB` to `Mariadb` before upgrading**, or the issuer refuses to
+> start with a dialect-mismatch error. This is not automatic — the setting is
+> never rewritten silently. Deployments already declaring `Mysql` against a
+> real MySQL server are unaffected. See the CHANGELOG for the release that
+> introduced strict dialect verification.
 
 ---
 
@@ -448,7 +472,7 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 
 | Variable | Required | Default | Description |
 | -------- | -------- | ------- | ----------- |
-| `SELECTED_DB` | no | `Mysql` | `Mysql` or `Postgres` |
+| `SELECTED_DB` | no | `Mysql` | `Mysql`, `Mariadb`, or `Postgres` — must name the actually-deployed engine; verified fail-closed at startup (§4.6, see [Choosing a Database](#choosing-a-database)) |
 | `DB_HOST` | yes | — | Database host |
 | `DB_PORT` | yes | — | Database port |
 | `DB_DATABASE` | yes | — | Database name |
@@ -481,7 +505,7 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 | `OAUTH_ALLOWED_REDIRECT_PREFIXES` | no | Optional full-URI prefix allowlist. Required for `http://` and `https://` redirects to pin trusted callback origins; optional for native public-client schemes. Plain HTTP is limited to localhost and rejected in production/staging. |
 | `CORS_ALLOWED_ORIGIN_SCHEMES` | no | Scheme-level CORS origins for native-app `fetch()` calls (e.g. `chrome-extension://`). |
 | `PRIVATE_API_SECRET` | yes | Signs the short-TTL service tokens and gates the `/health` detail body + `/metrics`. **No longer a private-route gate** (the legacy shared `X-Internal-Token` path was retired in v1.0.0 — `PRIVATE_API_CONSUMERS` replaces it). |
-| `PRIVATE_API_CONSUMERS` | yes¹ | Per-consumer private-API credentials: JSON map of consumer id → `{secret, scopes}` (scopes: `introspection` / `event-stream` / `user-create`, deny-by-default; `secret` plaintext or hashed `sha256$<salt>$<digest>`). The **only** private-API auth model — each consumer presents `X-Internal-Client` + `X-Internal-Token` (or exchanges it for a service token). ¹Empty is allowed but then every `/private/*` call fails closed (`401`) and the service-token exchange is disabled (`404`). |
+| `PRIVATE_API_CONSUMERS` | yes¹ | Per-consumer private-API credentials: JSON map of consumer id → `{secret, scopes}` (scopes: `introspection` / `api-key-introspection` / `event-stream` / `user-create`, deny-by-default; `secret` plaintext or hashed `sha256$<salt>$<digest>`). The **only** private-API auth model — each consumer presents `X-Internal-Client` + `X-Internal-Token` (or exchanges it for a service token). `api-key-introspection` is the dedicated §3.12 grant — it is never implied by `introspection`, and the consumer id it is granted to **is** the API-key audience, so see [Provisioning the `API_KEY_INTROSPECTION` scope](#provisioning-the-api_key_introspection-scope) before granting it. ¹Empty is allowed but then every `/private/*` call fails closed (`401`) and the service-token exchange is disabled (`404`). |
 
 ### Event Signing
 
@@ -511,6 +535,51 @@ Each event `data` frame is HMAC-signed with the shared `EVENT_SIGNING_KEY` (reus
 | `EVENT_STREAM_MAX_QUEUE` | no | `64` | Per-connection outbound queue depth before a slow consumer is disconnected (it reconnects and resumes/flushes). Never blocks the emitting request. |
 
 > **Reverse proxies:** SSE needs response buffering **disabled** so frames flush immediately. The endpoint sends `X-Accel-Buffering: no` (honoured by nginx); for other proxies, disable response buffering and set the idle/read timeout above `EVENT_STREAM_HEARTBEAT_SECONDS`.
+
+### Database-authoritative revocation
+
+The database is the source of revocation correctness. Redis blacklist entries, outbox delivery and `session-revoked` events are **accelerators**: they evict consumer caches sooner, but they never decide. Every path that revokes authorization persists that revocation on the authoritative `ClientSession` row(s) — or on durable user state — in the same transaction/operation, so a Redis failure can never re-activate a database-inactive session and a fresh `POST /private/v1/jti-status` (v2) decision denies from database state alone.
+
+| Path | Authoritative persistence | Accelerator |
+| ---- | ------------------------- | ----------- |
+| Logout | Session row deleted (`revoke_session_jti`, then the idempotent `delete_session_by_jti`) | Access-JTI blacklist, refresh allowlist revoke, per-JTI event |
+| Individual session revocation (`revoke_session_jti`) | Session row deleted and committed **before** any Redis write | Access-JTI blacklist + per-JTI event |
+| Administrative revocation (`DELETE /sessions/delete/{id}/`, `/sessions/delete-by-user/{user_id}/`) | Session row(s) deleted and committed | Blacklist + refresh revoke + per-JTI (single) or user-wide (bulk) event |
+| Refresh rotation | The user's session row is re-stamped with the new JTI and the owner's current generation, so the superseded JTI matches no row | Refresh-store `rotate` (atomic swap) |
+| Refresh-token reuse response | Every session row for the user deleted (`revoke_all_user_sessions`) | Blacklist of all captured JTIs + user-wide event |
+| Role change / deactivation / reactivation | Route-owned transaction: `auth_generation` bump + session rows deleted + outbox rows enqueued, one commit | Durable outbox (blacklist + v2 event) |
+| Deletion | Durable authorization tombstone + row delete, one commit | Durable outbox |
+| Security repair | Same transaction as a runtime role change (generation bump, session delete, outbox enqueue) | Durable outbox |
+| Global legacy-session revocation (cutover) | All pre-Expand session rows deleted (never backfilled) | — (write-quiescent maintenance) |
+
+No revocation path is Redis-only: a Redis write with no corresponding authoritative database change is a defect. Authoritative-database unavailability is a `503` and never falls open; Redis unavailability falls back to the authoritative database decision, except where strict Redis-backed rate limiting itself mandates `503`.
+
+### Revocation outbox
+
+Role-change revocation side effects (the Redis blacklist writes and the user-wide `session-revoked` event) are recorded as durable rows in the `<prefix>_revocation_outbox` table **inside the same transaction** as the database revocation, then applied by a background drain worker with at-least-once delivery. This closes the crash window in which a best-effort post-commit push could strand revocation state. The DB revocation is already authoritative (`POST /private/v1/jti-status` decides from database state), so a disabled or lagging worker only slows cache-eviction propagation — it never changes correctness. The role-change endpoint therefore returns `200` with `auth_generation` and `revocation_enqueued: true` as soon as the transaction commits; it never returns a post-commit `503`/`202`. Outbox `publish` effects carry the **v2** event (`auth_generation`, deterministic `event_id`) that consumers dedup on; blacklist effects carry a TTL derived from the captured per-target token expiry.
+
+| Variable | Required | Default | Description |
+| -------- | -------- | ------- | ----------- |
+| `OUTBOX_WORKER_ENABLED` | no | `true` | Master switch for the in-process outbox drain loop. When `false`, effects still commit durably but propagation waits for another worker. |
+| `OUTBOX_DRAIN_INTERVAL_SECONDS` | no | `1.0` | How often the drain loop claims and delivers a batch. |
+| `OUTBOX_BATCH_SIZE` | no | `50` | Max rows claimed per drain (`FOR UPDATE SKIP LOCKED`). |
+| `OUTBOX_LEASE_SECONDS` | no | `30` | Lease held on a claimed row; an expired lease is re-claimable (crashed-worker recovery). |
+| `OUTBOX_MAX_ATTEMPTS` | no | `5` | Delivery attempts before a row is dead-lettered (`status='dead'`). |
+| `OUTBOX_BACKOFF_BASE_SECONDS` / `OUTBOX_BACKOFF_CAP_SECONDS` | no | `2.0` / `300.0` | Exponential-backoff base and cap between retries. |
+| `OUTBOX_COMPLETED_RETENTION_SECONDS` | no | `3600` | How long a completed row is retained (idempotency window) before reaping. |
+
+### Deletion tombstones
+
+Deleting a user removes the row that carries its `auth_generation`, so the delete transaction first writes a durable **authorization tombstone** — a `<prefix>_tombstone` row keyed by `user_id`, with no foreign key to the user, holding the subject's terminal generation. Introspection treats a tombstoned subject as fully revoked before it looks at anything else, and the write is an idempotent max upsert, so a replayed delete can only raise the terminal generation, never lower it. User ids are never reused, so a tombstone can never deny a legitimately new account.
+
+A tombstone is removed only when **both** guards allow it:
+
+- **Retention horizon.** It must be older than the maximum of the access-token TTL, the refresh-session lifetime, `OUTBOX_COMPLETED_RETENTION_SECONDS`, and `TOMBSTONE_CONSUMER_HORIZON_SECONDS` — i.e. it outlives every artefact that could still replay the deleted subject's authorization.
+- **No undelivered outbox effect references the subject.** A `pending`, `leased`, or `dead` row in the revocation outbox pins its subject's tombstone for as long as it exists (a leased row is a pending row a worker currently holds; a dead-lettered row awaits operator replay). This guard is independent of the horizon: an effect stuck in the dead-letter queue keeps the tombstone alive indefinitely. `completed` rows never pin — their idempotency window is already part of the horizon above.
+
+| Variable | Required | Default | Description |
+| -------- | -------- | ------- | ----------- |
+| `TOMBSTONE_CONSUMER_HORIZON_SECONDS` | no | `3600` | The part of the retention horizon the issuer cannot observe: how long a *consumer* may still hold a positive cache entry for the subject or replay a `session-revoked` event about it. Set it to the longest revocation-cache TTL / event-replay window across your consumers. A floor, never a ceiling — the effective retention is the maximum of all four values, so raising it is always safe. |
 
 ### Auth Degradation Policy
 
@@ -551,6 +620,7 @@ A startup warning is logged if the effective rate (requests ÷ window) exceeds 5
 | `API_KEY_DEFAULT_LIMIT_DAY` | no | `10000` | Default requests per day |
 | `API_KEY_DEFAULT_LIMIT_MONTH` | no | `200000` | Default requests per month |
 | `API_KEY_MAX_PER_USER` | no | `10` | Maximum API keys a user may create |
+| `API_KEY_MAX_AUDIENCES` | no | `3` | Maximum introspection audiences bindable to a single API key (§3.12) |
 
 ### Observability
 
@@ -794,6 +864,38 @@ API keys are created by authenticated users and validated by consumer services v
 - `last_used_at` is updated via a Redis write-behind queue flushed every 60 seconds.
 - Revoked with `DELETE /profile/api-keys/{key_id}`.
 
+### Limited superadmin surface (§3.11–§3.12)
+
+Superadmin authority over API keys is deliberately narrowed to **list + revoke**, never create/edit and never a secret read:
+
+- `GET /api-keys/by-user/{user_id}/` lists any user's keys as **metadata only** — id, label, derived status (`active`/`revoked`/`expired`), `created_at`/`last_used_at`, owner id, and the immutable access mode. It never returns the raw key (never stored) or the stored `key_hash`; the response model structurally cannot carry either (secret non-exposure invariant). Being a read, it writes no audit row.
+- `POST /api-keys/revoke/{key_id}/` revokes any user's key through the **same authoritative revocation path** as the owner's own revoke (delete-equivalent — the key is rejected on its next use). Because it mutates non-owned data, it writes exactly one `delete` privileged-action audit row atomically with the revocation.
+
+Deactivation-driven key revocation (a user going inactive revokes their keys in the same transaction) is unchanged. Every other `/profile/api-keys/*` route stays scoped to the caller's own keys (`APIKEY-OWNER-01`).
+
+### Privileged-action audit trail and retention purge (Phase 7, 3.5.1)
+
+`GET /security/audit-log` (excluded from the OpenAPI schema, JWT-only, rate limited) is the read-only surface over the append-only `privileged_action_audit` table: a superadmin sees every row, an admin sees only rows it authored. No create/update endpoint exists for this table, and no per-row delete path exists anywhere — the sole removal path is the retention purge below.
+
+`POST /security/audit-log/purge` (same JWT-only/schema-excluded/rate-limited posture, superadmin-only) bulk-deletes audit rows older than a chosen retention window — `1w`/`1m`/`3m`/`6m`/`1y` — and rejects any window shorter than the configured minimum-retention floor (`AUDIT_PURGE_MIN_RETENTION_SECONDS`, default >= 90 days; lowering it is an explicit operator config change, never a per-call parameter). Deletes run in `AUDIT_PURGE_BATCH_SIZE`-row batches (`FOR UPDATE SKIP LOCKED`, mirroring the outbox worker) so a large purge never holds one long-lived lock over the table. The purge always writes its own `delete` maintenance audit row (actor, window, rows removed) — it is timestamped after the horizon it was computed from, so it always survives the purge that wrote it, mirroring the tombstone retention-horizon + guarded-cleanup pattern.
+
+### Access mode and audiences (§3.11–§3.12)
+
+A key is an opaque **pointer to its owner** — it stores no role, so a request is authorized as the owner at the owner's *current* role and can never exceed it. Two additive, explicit-only fields fix a key's reach at issuance and are **immutable afterwards** (change requires issuing a replacement key):
+
+- `access_mode` (`read_only` | `read_write`) — an immutable operation-category cap (`APIKEY-MODE-01`), **not** a role. Defaults to the most restrictive `read_only`; a `read_write` key still only writes when its owner is currently authorized to write.
+- `audiences` — the registered consumer ids allowed to introspect the key **remotely** (`APIKEY-AUD-01`). Each must be an enabled consumer explicitly granted the `api-key-introspection` scope, capped by `API_KEY_MAX_AUDIENCES`. Stored in the normalized `api_key_audiences` relation.
+
+Effective downstream authority is the intersection *owner's current role ∩ key `access_mode` ∩ matching audience ∩ route policy* — each dimension only narrows. A key with **no audience rows is issuer-local only**: remote introspection answers `active: false`, so no legacy key silently becomes a cross-service credential. Audiences on existing (legacy) keys are set by the audited operator command `python -m auth_user_service.scripts.bind_api_key_audiences --key-id <uuid> --actor <who> --reason <why> --audience <consumer-id>` (audiences only; idempotent; refuses to change an already-bound set).
+
+### Dead-key retention purge (Phase 7 addendum, `APIKEY-LIFECYCLE-01`)
+
+Revocation is delete-**equivalent** for authorization but not a delete: a revoked key's row persists (`revoked = true`), and an expired key's row persists unchanged. Nothing removes an `ApiKey` row except `ON DELETE CASCADE` from a deleted owner, so dead rows — and their `api_key_audiences` and per-key `RateLimit` children — accumulate indefinitely without an explicit purge.
+
+`POST /security/api-keys/purge` (excluded from the OpenAPI schema, JWT-only, rate limited, superadmin-only) is that purge, mirroring the audit-log purge above: a key is **dead** when it is revoked (dated by `updated_at`, which stops advancing once revoked) or carries a non-null `expires_at` in the past (`expires_at IS NULL` never qualifies). Rows dead longer than a chosen window — `1w`/`1m`/`3m`/`6m`/`1y` — are bulk-deleted; a window shorter than `API_KEY_PURGE_MIN_RETENTION_SECONDS` (default >= 90 days, a **dedicated** floor independent of the audit table's) is rejected with `400`. Deletes run in `API_KEY_PURGE_BATCH_SIZE`-row `FOR UPDATE SKIP LOCKED` batches; deleting the parent row cascades `api_key_audiences` and `RateLimit` in the same operation — there is deliberately no audience-only delete path. The purge writes its own `delete` maintenance audit row (actor, window, rows removed), timestamped after the horizon so it survives the purge that wrote it. Its request/signature shape carries no key-id/owner-id parameter, so a targeted single-key purge is not expressible.
+
+The per-user creation cap (`API_KEY_MAX_PER_USER`) excludes both revoked **and** expired keys, so it bounds only *live* credentials — an expired row no longer forces a manual revoke before a replacement can be issued. The purge, not the cap, is what bounds total rows.
+
 ### Rate limiting
 
 Each key is checked against up to four fixed windows (MINUTE, HOUR, DAY, MONTH). Priority chain: per-key `RateLimit` rows → per-user defaults → `API_KEY_DEFAULT_LIMIT_*` settings.
@@ -819,7 +921,8 @@ Endpoints under `/user/private/` are for inter-service calls only:
 | Method | Path | Description |
 | ------ | ---- | ----------- |
 | POST | `/private/users/` | Create a user account (called by other microservices) |
-| POST | `/private/v1/jti-status` | Check whether a JTI is revoked (`stateful` mode only; fails-open when Redis unavailable) |
+| POST | `/private/v1/jti-status` | Introspect an access-token JTI. A subject-bound **v2** request (`{jti, expected_user_id, schema_version: "2"}`) gets the database-authoritative revocation decision in `stateful` mode — active carries `{user_id, auth_generation}`, every inactive cause is one generic `{active: false}`, and an unreachable database is `503` (never fail-open). A legacy `{jti}`-only request keeps the v1 `{active}` behaviour. |
+| POST | `/private/v1/api-keys/introspect` | Resolve a **user API key** to its canonical live owner principal (§3.12), for a consumer service that does not share the issuer database. Gated by the dedicated `api-key-introspection` scope (kept distinct from `introspection` so a JTI-status consumer is not implicitly granted key introspection). The raw key travels as a redacted `SecretStr` body (a client-generated hash is never accepted); the caller's internal credential stays on the private-route headers and determines the evaluated audience. An active result returns the owner's current role/superuser evidence ∩ the key's immutable access mode — never `is_active`, the key hash/id, or email; every unusable cause (unknown/revoked/expired key, missing/inactive/inconsistent owner, or an audience the key does not carry) returns one generic `200 {active: false}` so it is not an account-state oracle. The key's functional quota is consumed with parity to local auth (`429`+`Retry-After`), plus a separate per-consumer anti-abuse ceiling; DB-unavailable / unknown schema version are `503` (never fail-open). No audience rows on a key ⇒ issuer-local use only ⇒ remote introspection answers inactive. |
 | GET | `/private/v1/events/stream` | SSE bridge — pushes `session-revoked` / `user-deleted` events to consumers (best-effort accelerator; `jti-status` remains the revocation authority) |
 | POST | `/private/v1/service-token` | Exchange bootstrap credential for a short-TTL service token (scoped to granted scopes) |
 
@@ -881,7 +984,8 @@ PRIVATE_API_SECRET=<the secret for media-service in PRIVATE_API_CONSUMERS>
 
 #### Rotating a consumer secret
 
-Rolling rotation (no downtime):
+Rolling rotation (no downtime) — **only for a consumer that does *not* hold
+`api-key-introspection`**; see the warning below:
 
 1. Add a `<consumer-id>-new` entry to the issuer's `PRIVATE_API_CONSUMERS`
    with the new secret and the same scopes.
@@ -891,6 +995,27 @@ Rolling rotation (no downtime):
    the consumer.
 4. Remove the old `<consumer-id>` entry from `PRIVATE_API_CONSUMERS` and
    reload the issuer again.
+
+> **Never use the parallel-id recipe for an API-key introspection consumer.**
+> The consumer id **is** the evaluated audience (§3.12 step 8) and a key's
+> audience set is immutable after issuance, so a consumer that starts
+> presenting `<consumer-id>-new` is a *different* audience: every key bound to
+> `<consumer-id>` is answered `active: false`, which the consumer maps to a
+> generic `401 Invalid or expired API key`. Nothing fails loudly — the
+> credential is valid, the service is healthy, its JTI-status path keeps
+> working, and only API-key-authenticated callers are locked out, looking
+> exactly like a revoked key. Rotate such a consumer **in place** instead
+> (same client id, new secret), accepting a short window:
+>
+> 1. Write the new hashed secret onto the **existing** `<consumer-id>` entry
+>    and reload the issuer.
+> 2. Update the consumer's `PRIVATE_API_SECRET` and restart it.
+>
+> Between the two steps the consumer's API-key routes fail closed with `503`
+> (never bare-key acceptance), and its audience bindings are untouched.
+> If a genuinely zero-downtime rotation is required, it is a **key** rotation,
+> not a credential rotation: issue replacement keys bound to the new audience
+> id first, then migrate integrations, then retire the old id.
 
 If the consumer uses the service-token exchange (`/private/v1/service-token`),
 its short-TTL tokens expire within `SERVICE_TOKEN_TTL_SECONDS` (default 300 s)
@@ -934,11 +1059,177 @@ The suite covers:
 - Legacy `X-Internal-Token`-only shape rejected (no `X-Internal-Client`).
 - Revocation check via `POST /private/v1/jti-status`.
 
+### Provisioning the `API_KEY_INTROSPECTION` scope
+
+Run this **before** any consumer sets `API_KEY_INTROSPECTION_ENABLED=true`, and
+after the issuer is on `2.0.0` (the introspection endpoint must exist). Until it
+is done, the private endpoint is unconsumed and inert; after it is done, a
+consumer can resolve *user API keys* to their owners' live authority, so the
+grant is the security boundary of the whole §3.12 remote path.
+
+#### What the grant means
+
+- It is **deny-by-default and dedicated**: `api-key-introspection` is never
+  implied by `introspection`. A JTI-status consumer that is not explicitly
+  granted it is answered `403 Forbidden` by
+  `POST /private/v1/api-keys/introspect` while keeping full access to
+  `POST /private/v1/jti-status`.
+- The granted **consumer id is the audience**. The issuer derives the evaluated
+  audience from the authenticated consumer's registry identity — never from the
+  request body — and answers `active: false` for any key not bound to it.
+- Only a consumer holding this scope may be **named as a key audience**. Key
+  issuance (`POST /profile/api-keys/`) and the audited
+  `bind_api_key_audiences` command both reject an unknown or unscoped consumer
+  id with `409 Unknown or ineligible audience(s): …`, so a key can never be
+  bound to a service that was never approved to introspect it.
+
+#### 1 — Generate the per-consumer secret and hash it at rest
+
+```bash
+# One strong secret per consumer (never reused across consumers).
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# Convert it to the portable hashed-at-rest form the issuer stores.
+python3 -c "
+from auth_sdk_m8.security.consumer_auth import ConsumerCredential
+print(ConsumerCredential.create('prompt-engine-m8', '<generated-secret>').encoded_secret)
+"
+# -> sha256$<salt_hex>$<digest_hex>
+```
+
+#### 2 — Grant the scope to the approved consumers only
+
+Add or update the entry in `PRIVATE_API_CONSUMERS` (or the file referenced by
+`PRIVATE_API_CONSUMERS_FILE`). Grant nothing a consumer does not use:
+
+```json
+{
+  "prompt-engine-m8": {
+    "secret": "sha256$<salt_hex>$<digest_hex>",
+    "scopes": ["introspection", "event-stream", "api-key-introspection"]
+  },
+  "reporting-service": {
+    "secret": "sha256$<salt_hex>$<digest_hex>",
+    "scopes": ["introspection"]
+  }
+}
+```
+
+Reload the issuer (restart or `SIGHUP`) — the registry is read from
+configuration, so nothing is provisioned in the database.
+
+#### 3 — Configure the consumer
+
+```ini
+# consumer env
+INTERNAL_CLIENT_ID=prompt-engine-m8       # must equal the registry key = the audience
+PRIVATE_API_SECRET=<the plaintext secret hashed in step 1>
+INTROSPECTION_URL=http://auth_user_service:8000/user/private/v1/jti-status
+API_KEY_INTROSPECTION_ENABLED=true        # URL is derived from INTROSPECTION_URL
+```
+
+#### 4 — Bind audiences on the keys that need remote use
+
+No existing key is silently promoted into a cross-service credential: a key
+with **no** audience rows is issuer-local only and is answered `active: false`
+remotely. Bind at issuance (`"audiences": ["prompt-engine-m8"]` in the create
+body, immutable afterwards) or, for a pre-existing key that carries none, run
+the audited operator command:
+
+```bash
+python -m auth_user_service.scripts.bind_api_key_audiences \
+    --key-id <uuid> --actor <who> --reason <why> \
+    --audience prompt-engine-m8
+```
+
+#### 5 — Verify the grant (canary)
+
+A missing *scope* is the one dimension a consumer cannot detect at startup (see
+the matrix below), so verify it explicitly from inside the network:
+
+```bash
+# Approved consumer: admitted -> 200 {"active": false} for an unknown key.
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "X-Internal-Client: prompt-engine-m8" -H "X-Internal-Token: $SECRET" \
+  -H 'Content-Type: application/json' \
+  -d '{"api_key":"ak_0000000000000000000000000000000","schema_version":"1"}' \
+  http://auth_user_service:8000/user/private/v1/api-keys/introspect
+
+# A consumer holding only `introspection` must get 403 on the same call,
+# while POST /private/v1/jti-status still answers 200 for it.
+```
+
+Expected results — every one of these is a required outcome, not a nicety:
+
+| Check | Expected |
+| ----- | -------- |
+| Approved consumer, unknown key | `200 {"active": false, "schema_version": "1"}` |
+| Approved consumer, key bound to it | `200 {"active": true, …, "audience_id": "<consumer-id>"}` |
+| Approved consumer, key bound to a *different* approved consumer | `200 {"active": false}` |
+| Approved consumer, key with no audience | `200 {"active": false}` |
+| `introspection`-only consumer | `403 Forbidden` (and `200` on `jti-status`) |
+| Unknown consumer id, or wrong secret | `401 Unauthorized` (identical for both — no enumeration oracle) |
+| Service token minted without the scope | `403 Forbidden` |
+| Unsupported `schema_version` | `503` (never a guess at an unknown contract) |
+| Consumer route with the bound key | succeeds; the owner's live role is re-resolved on every call |
+| Consumer route with an unbound/unknown key | generic `401 Invalid or expired API key` |
+
+#### 6 — Where each failure is caught (fail-closed matrix)
+
+| Missing piece | Caught at | Result |
+| ------------- | --------- | ------ |
+| `INTERNAL_CLIENT_ID` | consumer **startup** | `CONFIG: API_KEY_INTROSPECTION_ENABLED=true requires INTERNAL_CLIENT_ID` |
+| `PRIVATE_API_SECRET` | consumer **startup** | `… requires PRIVATE_API_SECRET` |
+| both introspection URLs | consumer **startup** | `… requires API_KEY_INTROSPECTION_URL` |
+| unknown `API_KEY_INTROSPECTION_SCHEMA_VERSION` | consumer **startup** | `… is not a version this auth-sdk-m8 release implements` |
+| the **scope grant** itself | first request (**runtime**) | issuer `403` → consumer `503 API key verification unavailable.` |
+| the consumer's secret is stale (mid-rotation) | first request (**runtime**) | issuer `401` → consumer `503` |
+
+Startup validation covers this consumer's own configuration; it cannot cover a
+grant that lives in the *issuer's* registry, and the §3.12 client deliberately
+performs no startup probe (introspection consumes quota and is never cached).
+A missing or withdrawn grant therefore surfaces as `503` on the first
+capability-bearing request — fail closed, never a fallback to bare key
+validity — which is why step 5 is a required deployment step and not optional.
+
+**Ordinary service-token expiry does not produce this `503`.** A consumer
+running `SERVICE_TOKEN_EXCHANGE_ENABLED=true` refreshes its cached service
+token proactively, `SERVICE_TOKEN_REFRESH_LEEWAY_SECONDS` (default `30`)
+before the token's `exp` — before, not after, the next introspection call is
+sent — so continuous traffic never presents this issuer with an actually
+expired service token. The `401`-then-`503`-then-re-mint sequence above is
+reserved for the genuine edge cases: a withdrawn/rotated consumer secret, or a
+request that races the refresh margin (latency or clock skew). Accepted as
+operational behavior; no proactive change beyond the existing leeway is
+planned (Phase 9, P9-9).
+
+#### 7 — Rotation and revocation
+
+- **Rotation:** rotate an introspection consumer **in place** (same client id,
+  new secret). The parallel `<consumer-id>-new` recipe silently breaks every
+  audience binding — see the warning under
+  [Rotating a consumer secret](#rotating-a-consumer-secret).
+- **Revocation:** remove the consumer's entry and reload. Its bootstrap
+  credential is refused (`401`) immediately, and its id stops being an eligible
+  audience, so no new key can be bound to it. **Any short-TTL service token it
+  already minted keeps working until it expires** (`SERVICE_TOKEN_TTL_SECONDS`,
+  default 300 s) — the token is signature-verified and scope-checked, not
+  re-checked against the registry. Treat that window as the revocation latency
+  for a compromised consumer; to close it immediately, rotate
+  `PRIVATE_API_SECRET` (which signs those tokens) as well.
+
 ---
 
 ## Consumer Service Integration
 
-`examples/fastapi_full` and `examples/fastapi_minimal` are reference implementations showing how a downstream microservice integrates with `auth_user_service` using [fastapi-m8](https://github.com/mano8/fastapi-m8) and [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8). `fastapi_full` demonstrates DB session, health checks, auth deps, and lifespan teardown; `fastapi_minimal` is the minimal three-step setup.
+`examples/fastapi_full` and `examples/fastapi_minimal` are reference implementations showing how a downstream microservice integrates with `auth_user_service` using [fastapi-m8](https://github.com/mano8/fastapi-m8) `>=4.2.0,<5.0.0` and [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8). `fastapi_full` demonstrates DB session, health checks, auth deps, and lifespan teardown; `fastapi_minimal` is the minimal three-step setup. The `4.2.0` floor is what supplies the centralized reader-tier guard (`get_current_active_reader`) the full example's category surface is gated on.
+
+Both examples wire every JWT guard straight from the single `build_auth_deps` call — no route re-implements a role or `is_superuser` check:
+
+- `fastapi_minimal` (`routes.py`) demonstrates all four JWT levels: `GET /hello/` (any authenticated user), `/hello/writer` (WRITER+), `/hello/admin` (ADMIN+), and `/hello/superuser` (canonical superuser only).
+- `fastapi_full` (`app/routes/category.py`) demonstrates the five-role capability surface on real owned data: reads (`GET /category/`, `GET /category/get/{id}/`) are gated at READER and writes (`add`/`edit`/`delete`) at WRITER, so a plain USER is denied everything and a `writer → reader` downgrade is immediately observable. Non-superadmins see and mutate their own categories only; a canonical superuser reaches every user's, and each of those cross-owner mutations writes an audit row (below). Authorization failures answer the canonical `403`.
+- `fastapi_full` (`app/routes/audit.py`) demonstrates the consumer-side privileged-action audit trail: `GET /security/audit-log` is ADMIN-gated and read-only, `POST /security/audit-log/purge` is superadmin-only, and no other endpoint touches the table.
+- `fastapi_full` (`app/routes/api_key_category.py`) demonstrates the remote API-key principal dependency (§3.12): `POST /category/api-key/add/` depends on `get_current_api_key_writer` and resolves the key's owner live against `auth_user_service` on every call — capped at WRITER, never administrative or superuser. The route only exists when this deployment sets `API_KEY_INTROSPECTION_ENABLED=true` (plus `INTERNAL_CLIENT_ID` and an introspection URL, see `.example_env`); `get_current_api_key_writer` is `None` otherwise and the router is never built. Because §3.11 caps every key decision at WRITER, this route can never perform a cross-owner mutation and therefore never writes an audit row.
 
 [fastapi-m8](https://github.com/mano8/fastapi-m8) is the recommended consumer integration package — it wires CORS, health, lifespan, and auth dependencies in a few lines and bundles `auth-sdk-m8` for JWT validation and shared schemas:
 
@@ -946,6 +1237,29 @@ The suite covers:
 pip install fastapi-m8 --upgrade                        # minimal consumer
 pip install "fastapi-m8[db,postgres,mysql]" --upgrade   # with SQLModel + DB drivers (fastapi_full)
 ```
+
+### Ownership preservation
+
+`fastapi_full` treats the owner of a row as something the server resolves, never something a request body sets (`app/ownership.py`):
+
+- `owner_id` is not a request field. `CategoryCreate` and `CategoryUpdate` forbid unknown fields, so a body carrying `owner_id` is rejected with `422` instead of silently ignored, and `category_update_values()` strips every ownership key before an edit reaches the row.
+- An edit or a delete authorizes against — and preserves — the `owner_id` already persisted on the fetched row. No mutation path writes an ownership column.
+- A cross-owner create is superadmin-only and requires an explicit `target_owner_id`. It never defaults to the actor: omitting it creates a row owned by the actor, supplying it creates a row owned by that exact user, and a refusal, an unknown target, or an issuer outage raises (`403` / `404` / `503`) rather than falling back to the actor's id.
+- Because the user table belongs to `auth_user_service`, `target_owner_id` is confirmed over the issuer's HTTP contract (`GET {AUTH_PREFIX}/users/get/{user_id}/`, derived from `INTROSPECTION_URL`) using the caller's own bearer token — never by reading the auth database. An API-key-authorized create always refuses a cross-owner target: §3.11 caps every key decision at WRITER.
+
+The rules have their own unit suite (`examples/fastapi_full/tests/`), run by the `example-tests` CI job through `examples/fastapi_full/pytest.ini`.
+
+### Consumer-side privileged-action audit
+
+`fastapi_full` mirrors the issuer's audit contract for the data it owns (`app/audit.py`, `db_models/privileged_action_audit.py`), so a service copied from this example inherits the same guarantees rather than having to invent them:
+
+- **Every superadmin mutation of a category it does not own is recorded**, and only those: an `add` on behalf of another user, an `edit`, or a `delete` of someone else's row writes exactly one `app_privileged_action_audit` row. Ordinary work on one's own data records nothing, and a refused mutation records nothing. `actor_role` is snapshotted from the authenticated principal, never from client input.
+- **The row and the mutation share one transaction.** The recorder flushes into the route's session and never commits, so a category and its audit row commit or roll back together — an audited action cannot commit without its record. On a delete, the primary key and the owner are captured *before* the row is removed, so the record outlives what it describes.
+- **The table is write-once.** No update path and no targeted single-row delete exists anywhere in the code, and the Expand migration installs `BEFORE UPDATE`/`BEFORE DELETE` guard triggers on every certified dialect, so an ad-hoc `UPDATE` or a targeted `DELETE` is rejected by the database itself — not merely absent from the API.
+- **Read scope is decided server-side**: `GET /security/audit-log` (schema-excluded, JWT-only, ADMIN-gated) shows a superadmin every row and any other caller only the rows it authored, filtered against the authenticated principal's id. USER/READER/WRITER are denied `403` by the guard. In this example only a superadmin can mutate non-owned data, so an admin's own view is legitimately empty.
+- **The only removal path is the retention purge.** `POST /security/audit-log/purge` (superadmin-only) bulk-deletes rows older than a chosen window — `1w`/`1m`/`3m`/`6m`/`1y` — and rejects with `400` any window below `AUDIT_PURGE_MIN_RETENTION_SECONDS` (default >= 90 days; lowering it is an explicit operator config change). Deletes run in `AUDIT_PURGE_BATCH_SIZE`-row `FOR UPDATE SKIP LOCKED` batches, and the purge writes its own maintenance row, timestamped after the horizon so it survives the purge that wrote it. The request body and the purge signature carry no row identifier, so a targeted purge is not expressible.
+
+The audit table is created by the additive **Expand** migration chained onto each maintained compose example's `m8_app` head; it is a new table, so there is no Enforce step and no interaction with the issuer's migration sequence.
 
 ### Minimal integration
 
@@ -963,8 +1277,13 @@ CurrentUser = auth.CurrentUser
 from fastapi_m8 import AppLifecycle, create_app
 from .core.deps import auth
 
-app = create_app(settings, api_router, service_name="my-service", service_version="1.0.0",
-                 lifecycle=AppLifecycle(auth_deps=auth))
+app = create_app(
+    settings,
+    api_router,
+    service_name="my-service",
+    service_version="1.0.0",
+    lifecycle=AppLifecycle(auth_deps=auth),
+)
 ```
 
 `build_auth_deps` reads `ACCESS_TOKEN_ALGORITHM`, `ACCESS_SECRET_KEY` / `ACCESS_PUBLIC_KEY_FILE`, `TOKEN_ISSUER`, `TOKEN_AUDIENCE`, `JWKS_URI`, `TOKEN_MODE`, `INTROSPECTION_URL`, and failure-mode settings directly from a `ConsumerServiceSettings` instance.
@@ -997,9 +1316,13 @@ PRIVATE_API_SECRET=<this consumer's secret, matching its PRIVATE_API_CONSUMERS e
 `ACCESS_REVOCATION_FAILURE_MODE` from the consumer's settings. The **default is `fail_closed`**
 — any outage returns HTTP 503 rather than accepting a potentially-revoked token. Set
 `ACCESS_REVOCATION_FAILURE_MODE=fail_open` in `api.env` to restore availability-first behaviour,
-or `AUTH_STRICT_MODE=true` to force all failure-mode controls closed. The issuer's
-`/private/v1/jti-status` endpoint mirrors the same setting: Redis-unavailable returns
-`active=false` when `fail_closed` is effective.
+or `AUTH_STRICT_MODE=true` to force all failure-mode controls closed. For a legacy v1
+(`{jti}`-only) request the issuer's `/private/v1/jti-status` endpoint mirrors the same
+setting: Redis-unavailable returns `active=false` when `fail_closed` is effective. The
+subject-bound **v2** decision is database-authoritative instead — the Redis blacklist is only
+an accelerator, so a Redis outage falls back to the DB result, and only an unreachable
+authoritative database returns `503`; `ACCESS_REVOCATION_FAILURE_MODE=fail_open` is **not**
+honoured for that generation decision.
 
 ### Issuer / audience enforcement (secure-by-default)
 
@@ -1038,6 +1361,104 @@ alembic -c auth_user_service/alembic.ini revision --autogenerate -m "description
 alembic -c auth_user_service/alembic.ini upgrade head
 ```
 
+**MySQL prerequisite — trigger creation under binary logging.** The
+privileged-action audit table's write-once guard is a trigger. MySQL 8 enables
+binary logging by default, and a user without `SUPER` cannot then create a
+trigger unless `log_bin_trust_function_creators` is on (error **1419**), so
+`alembic upgrade head` fails for an ordinary application user on a stock MySQL 8
+server. Before migrating a MySQL deployment, either set
+
+```sql
+SET GLOBAL log_bin_trust_function_creators = 1;   -- or set it in my.cnf
+```
+
+or run the migration as a user holding `SUPER`. PostgreSQL and MariaDB are
+unaffected — MariaDB ships with binary logging off. The Layer B matrix applies
+the same prerequisite to its ephemeral MySQL target, so the certified migration
+path is the one a correctly provisioned deployment runs.
+
+### Upgrading 1.x → 2.0: the write-quiescent maintenance sequence
+
+Upgrading an existing 1.x database to 2.0 is **not** a rolling upgrade. The
+role/flag equivalence `CHECK` and the final `NOT NULL` on
+`auth_client_session.auth_generation` cannot be applied while an old issuer can
+still create sessions or write roles, so the whole cutover runs inside one
+maintenance window with **no old login, refresh, role-update, deactivation, or
+deletion process running between the repair and the new startup**.
+
+Each command below runs from the final 2.0 image against the target database.
+Steps are ordered; none may be skipped or reordered.
+
+#### Before the window
+
+1. **Confirm the declared dialect matches the real engine.** 2.0 verifies
+   `SELECTED_DB` against the connected server at startup and refuses to boot on
+   a mismatch, so an unnoticed mismatch fails *after* Enforce — the worst point
+   in the window. Every MariaDB deployment still declaring `SELECTED_DB=Mysql`
+   must be changed to `SELECTED_DB=Mariadb` first; the value is never rewritten
+   automatically (see [Choosing a Database](#choosing-a-database)).
+2. **MySQL only — grant trigger creation.** Enable
+   `log_bin_trust_function_creators` (or migrate as a `SUPER` user), or the
+   audit-table Expand fails with error **1419** *inside* the window (above).
+3. Build/pull the final 2.0 image; it carries every migration and both operator
+   CLIs.
+
+#### Inside the window
+
+```bash
+# 1. Pre-migration backup — the only supported rollback once Enforce applies.
+pg_dump -Fc -d "$AUTH_DB" -f auth_db.pre_cutover.dump
+
+# 2. Stop every old issuer writer (scale to zero / maintenance mode).
+#    Write quiescence begins here.
+docker compose stop auth_user_service fastapi_full
+
+# 3. Expand — additive only, no CHECK, no final NOT NULL.
+alembic -c /opt/auth_user_service/alembic.ini upgrade 50c9101b580d
+#    Consumer stacks running examples/fastapi_full also apply the example's
+#    additive audit-table Expand against their own database:
+alembic -c /opt/fastapi_full/alembic.ini upgrade head
+
+# 4. Preflight, then repair every mismatch explicitly. Exit 1 means "stop".
+python -m auth_user_service.scripts.security_preflight
+python -m auth_user_service.scripts.security_repair \
+    --user-id <uuid> --intended-role <role> --actor <who> --reason <why>
+python -m auth_user_service.scripts.security_preflight   # must now exit 0
+
+# 5. Revoke every legacy session — a one-time global logout, never a backfill.
+python -m auth_user_service.scripts.legacy_session_revocation \
+    --confirm REVOKE-ALL-LEGACY-SESSIONS --actor <who> --reason <why>
+
+# 6. Enforce (CHECK + final NOT NULL), then the issuer audit-table Expand,
+#    which is chained after Enforce in the revision graph.
+alembic -c /opt/auth_user_service/alembic.ini upgrade head
+
+# 7. Start 2.0.0. The outbox worker is an in-process task of the issuer, not a
+#    separate container; it drains the effects the repair enqueued.
+docker compose up -d auth_user_service
+```
+
+#### After startup
+
+- Confirm at least one **active canonical superuser** remains
+  (`role = 'SUPERADMIN' AND is_superuser AND is_active`).
+- Confirm the outbox drain loop is actually running — `OUTBOX_WORKER_ENABLED`
+  (default `true`) and `OUTBOX_DRAIN_INTERVAL_SECONDS` — and that every
+  `auth_revocation_outbox` row the repair enqueued has reached `completed`.
+- Keep remote API-key consumers disabled until the `API_KEY_INTROSPECTION`
+  scope is provisioned and proven; an unconsumed private endpoint is inert.
+
+**Expected user impact.** Every pre-existing access and refresh session is
+deleted at step 5, so all users sign in again after cutover. This is deliberate:
+backfilling a generation onto a legacy session could bless an old token carrying
+a stale role.
+
+**Rollback.** Aborting *before* Enforce is safe — Expand is additive and the old
+issuer ignores it. Once Enforce has applied, rollback below 2.0 is unsupported:
+incident response is a forward fix on the 2.0 line, or a full restore of the
+step-1 backup, which restores the pre-cutover session state as one consistent
+unit. Revocation is never rolled back for availability.
+
 ### Linting & formatting
 
 ```bash
@@ -1060,6 +1481,28 @@ bandit -r auth_user_service examples/fastapi_full --severity-level medium
 ```
 
 ### Tests
+
+The suite has three layers with distinct ownership; none substitutes for another.
+
+| Layer | Suite | Needs | Owns |
+| ----- | ----- | ----- | ---- |
+| A — unit | `tests/` (default run) | nothing (no Docker, no database) | the 100% coverage gate; portable ORM/service/route behaviour, using in-memory SQLite strictly as a surrogate |
+| B — database integration | `tests/integration/database/` | one ephemeral PostgreSQL, MySQL, or MariaDB container | migrations, engine-enforced constraints and enums, `FOR UPDATE` / `SKIP LOCKED`, cascades, and real-connection concurrency |
+| C — live security | `tests/live/` (and `security-tests-m8`) | a running Compose stack | black-box adversarial behaviour |
+
+100% Python coverage, database-dialect correctness, and end-to-end security
+correctness are three different guarantees. Layer A can never certify a
+migration, a lock, or a trigger — SQLite has no such semantics — so Layer B is
+the authoritative portability evidence, and it runs on every database-sensitive
+pull request plus main/nightly/release. See
+[`tests/integration/database/README.md`](tests/integration/database/README.md).
+
+```bash
+# Layer B — one certified dialect at a time (starts a disposable container)
+pytest -m database_integration tests/integration/database --database=postgresql --no-cov
+pytest -m database_integration tests/integration/database --database=mysql --no-cov
+pytest -m database_integration tests/integration/database --database=mariadb --no-cov
+```
 
 ```bash
 # Unit + integration tests (default — no live stack required)
@@ -1085,8 +1528,16 @@ The live suite is modular — each file carries a `require_algorithm` / `require
 | `test_asymmetric.py` | `live_asymmetric` | alg=none confusion, JWKS exposure, attacker-generated key — RS256 / ES256 only |
 | `test_hs256.py` | `live_hs256` | HS256-specific attacks |
 | `test_stateful.py` | `live_stateful` | Token revocation, session-chain invalidation |
+| `test_role_downgrade_gate.py` | `live_stateful` | The end-to-end writer→reader downgrade gate: a WRITER write, the role change with its `auth_generation` + `revocation_enqueued` response, revocation of the already-issued token, and the fresh reader token's read-only ceiling — driven through the bundled `fastapi_full` consumer |
 | `test_hybrid.py` | `live_hybrid` | Partial-Redis degraded mode behaviour |
 | `test_stateless.py` | `live_stateless` | No-Redis guarantees |
+
+`test_role_downgrade_gate.py` requires the consumer to run **stateful and
+fail-closed** (`TOKEN_MODE=stateful`, `AUTH_SERVICE_ROLE=consumer`, revocation
+client plus event-stream bridge enabled — the default of every maintained
+Compose example). In hybrid or stateless mode the issuer never revokes an
+already-issued access token, so the old token stays usable until it expires;
+the module is skipped on such a stack rather than reporting a false failure.
 
 The `tests/security/` unit suite (no live stack required) covers JWT security, Redis resilience, refresh lifecycle, refresh key-rotation fallback (`REFRESH_SECRET_KEY_OLD`), input sanitisation, JWKS endpoint, OAuth adversarial, iss/aud validation, session-chain invalidation, exception handling, and client IP attribution.
 

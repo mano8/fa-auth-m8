@@ -46,26 +46,39 @@ services:
       - m8_app_network
 
   m8_db:
-    image: mariadb:12.3.2-ubi
+    image: mysql:8.4.10
+    # Documented MySQL deployment prerequisite, not a test hack (see the
+    # "MySQL prerequisite — trigger creation under binary logging" section of
+    # the root README). MySQL 8 enables binary logging by default, and a user
+    # without SUPER cannot then create a trigger — error 1419. The
+    # privileged-action audit table's write-once guard *is* a trigger, so
+    # `alembic upgrade head` fails for the ordinary per-service application
+    # user this stack provisions. The README offers this setting or SUPER;
+    # this is the my.cnf-equivalent form, and it is the narrower of the two —
+    # granting the app user global SUPER would break the least-privilege model
+    # the rest of this example enforces. tests/integration/database applies the
+    # identical prerequisite to the Layer B MySQL target.
+    # PostgreSQL and MariaDB (quickstart_m8) need nothing here — MariaDB ships
+    # with binary logging off.
+    command: ["mysqld", "--log-bin-trust-function-creators=1"]
     volumes:
       - ./db_data:/var/lib/mysql
       - ../shared/db_init:/docker-entrypoint-initdb.d:ro
     env_file:
       - ./.env                              # exposes all .env vars so init-db.sh can discover DB triplets
     environment:
-      - MARIADB_ALLOW_EMPTY_ROOT_PASSWORD=0
-      - MARIADB_PORT_NUMBER=${DB_PORT}      # engine bootstrap — required by the official mariadb image
-      - MARIADB_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
+      - MYSQL_ALLOW_EMPTY_PASSWORD=no
+      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
     ports:
       - "127.0.0.1:3306:3306"
     healthcheck:
-      test: ["CMD-SHELL", "MYSQL_PWD=$$MARIADB_ROOT_PASSWORD mariadb -h 127.0.0.1 -u root -e 'SELECT 1'"]
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 -u root --silent"]
       interval: 10s
       timeout: 5s
       retries: 10
       # -h 127.0.0.1 forces a TCP connection (not Unix socket) so the probe only passes
       # once the TCP listener is accepting connections — critical on first boot where
-      # mariadb-install-db + init-db.sh run before TCP binds. start_period covers the
+      # MySQL's own initialization + init-db.sh run before TCP binds. start_period covers the
       # cold init window on slow (e.g. Windows) bind mounts; start_interval probes every
       # 2s so warm restarts flip healthy immediately.
       start_period: 180s
@@ -92,7 +105,7 @@ services:
         # refresh-rotation Lua EVAL, connection handshake; dangerous/admin
         # denied). The default user is then stripped of all data/admin access
         # — it keeps only connection commands so the healthcheck PING works.
-        redis-cli ACL SETUSER auth on \>"${REDIS_PASSWORD}" "~oauth_session:*" "~auth_code:*" "~login:*" "~refresh:*" "~exchange:*" "~rt:*" "~jwt:blacklist:*" "~rate:*" "~api_key:*" +@read +@write +@transaction +@connection +eval -@dangerous "+client|setinfo"
+        redis-cli ACL SETUSER auth on \>"${REDIS_PASSWORD}" "~oauth_session:*" "~auth_code:*" "~login:*" "~refresh:*" "~exchange:*" "~rt:*" "~jwt:blacklist:*" "~rate:*" "~api_key:*" "~introspect:*" "~security:*" +@read +@write +@transaction +@connection +eval -@dangerous "+client|setinfo"
         redis-cli ACL SETUSER default on \>"${REDIS_PASSWORD}" resetkeys -@all +@connection -@dangerous
         wait
     environment:

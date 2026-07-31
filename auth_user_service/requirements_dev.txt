@@ -4,12 +4,13 @@
 pytest>=9.0.3
 pytest-cov>=7.1.0
 coverage>=7.14.1
+hypothesis>=6.140.0
 
 # Debugging
 debugpy>=1.8.20
 
 # Linting / formatting / security
-ruff>=0.15.15
+ruff==0.16.0
 bandit>=1.9.4
 pip-audit>=2.10.1
 mypy>=2.1.0
