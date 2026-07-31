@@ -1192,6 +1192,17 @@ A missing or withdrawn grant therefore surfaces as `503` on the first
 capability-bearing request — fail closed, never a fallback to bare key
 validity — which is why step 5 is a required deployment step and not optional.
 
+**Ordinary service-token expiry does not produce this `503`.** A consumer
+running `SERVICE_TOKEN_EXCHANGE_ENABLED=true` refreshes its cached service
+token proactively, `SERVICE_TOKEN_REFRESH_LEEWAY_SECONDS` (default `30`)
+before the token's `exp` — before, not after, the next introspection call is
+sent — so continuous traffic never presents this issuer with an actually
+expired service token. The `401`-then-`503`-then-re-mint sequence above is
+reserved for the genuine edge cases: a withdrawn/rotated consumer secret, or a
+request that races the refresh margin (latency or clock skew). Accepted as
+operational behavior; no proactive change beyond the existing leeway is
+planned (Phase 9, P9-9).
+
 #### 7 — Rotation and revocation
 
 - **Rotation:** rotate an introspection consumer **in place** (same client id,
