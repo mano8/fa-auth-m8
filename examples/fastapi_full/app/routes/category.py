@@ -2,6 +2,7 @@
 
 from typing import Any, Optional, Union
 from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 from sqlmodel import func
 
@@ -34,6 +35,8 @@ from fastapi_m8 import BaseController, ResponseMessage, ResponseModelBase, UserM
 
 router = APIRouter(prefix="/category", tags=["category"])
 # pylint: disable=broad-exception-caught, not-callable
+
+_DUPLICATE_NAME_DETAIL = "A category with this name already exists"
 
 
 @router.get(
@@ -149,6 +152,9 @@ def create_item(
         return ResponseModelBase(success=True, data=dict(item))
     except OwnershipError as ex:
         raise HTTPException(status_code=ex.status_code, detail=ex.detail) from ex
+    except IntegrityError as ex:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=_DUPLICATE_NAME_DETAIL) from ex
     except Exception as ex:
         handle_route_exception(ex=ex, session=session)
 
@@ -197,6 +203,9 @@ def update_item(
         session.commit()
         session.refresh(item)
         return ResponseModelBase(success=True, data=dict(item))
+    except IntegrityError as ex:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=_DUPLICATE_NAME_DETAIL) from ex
     except Exception as ex:
         handle_route_exception(ex=ex, session=session)
 
