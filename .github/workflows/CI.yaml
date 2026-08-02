@@ -85,7 +85,7 @@ jobs:
           pip-audit -r examples/fastapi_full/requirements_base.txt
 
       - name: Trivy filesystem scan (CRITICAL/HIGH CVEs and secrets)
-        uses: aquasecurity/trivy-action@bfa4b33a029b9aa80ddb784b45574c30e072c59e # master
+        uses: aquasecurity/trivy-action@c07df6fec6fa692e6fd1200d50aaa1fdd66f03c8 # master
         with:
           scan-type: fs
           scan-ref: .
@@ -216,7 +216,7 @@ jobs:
           cache-from: type=gha
 
       - name: Trivy image scan (CRITICAL/HIGH CVEs — blocks PR on findings)
-        uses: aquasecurity/trivy-action@bfa4b33a029b9aa80ddb784b45574c30e072c59e # master
+        uses: aquasecurity/trivy-action@c07df6fec6fa692e6fd1200d50aaa1fdd66f03c8 # master
         with:
           scan-type: image
           image-ref: fa-auth-m8:ci-scan
