@@ -81,9 +81,9 @@ asyncpg==0.31.0 \
     --hash=sha256:f6b56b91bb0ffc328c4e3ed113136cddd9deefdf5f79ab448598b9772831df44 \
     --hash=sha256:f890de5e1e4f7e14023619399a471ce4b71f5418cd67a51853b9910fdfa73696
     # via -r requirements_base.txt
-auth-sdk-m8==3.1.0 \
-    --hash=sha256:137675e43dec5426244527451a1da71b83125e77cdc893cb270ca845a1734df6 \
-    --hash=sha256:2215b2a0c599d22d9289fcc2b715e17734c13e9e852dc70554ddd227d8af7efb
+auth-sdk-m8==3.1.2 \
+    --hash=sha256:767de565ca32d9c92f5725a226095fe42ff43fb2a308ad41b033ba6c1bea8e3d \
+    --hash=sha256:e86c4260f2dc1fdb9633a7243bdfd9f9acbd0a32563d39681fa226b38c64bdf6
     # via -r requirements_base.txt
 bcrypt==5.0.0 \
     --hash=sha256:046ad6db88edb3c5ece4369af997938fb1c19d6a699b9c1b27b0db432faae4c4 \
@@ -416,9 +416,9 @@ email-validator==2.3.0 \
     # via
     #   -r requirements_base.txt
     #   auth-sdk-m8
-fastapi==0.140.13 \
-    --hash=sha256:500172a08cf1459901f90b05c37d93060dada3b573fec8f0862445db52ba6b4b \
-    --hash=sha256:8b017110e1e9f30a95e8bdb8f71fbe2f0fe3af5717109e5b14f9e069df54f6d4
+fastapi==0.141.1 \
+    --hash=sha256:bfb91aa2d334c61cb35ba9a116fc123b3d3df31640b801cf57a7a78ec3f603b3 \
+    --hash=sha256:e8822fc40db1e1858054d7a949a888695bc9bdce70139178e33bd2871a453ca1
     # via -r requirements_base.txt
 google-auth==2.56.2 \
     --hash=sha256:c8270ea95b2697b74e3d8438ae9c5b898e38b623b915c7b5c5635921e7de68a6 \
