@@ -31,6 +31,8 @@ GFORM_PREFIX=gform
 PROMPTS_PREFIX=prompts
 
 # ── Database ──────────────────────────────────────────────────────────────────
+# SELECTED_DB determines the database dialect. Supported values: Mysql, Mariadb, Postgres.
+# Note: MariaDB support added in auth-sdk-m8 >= 3.0.0. Postgres is the recommended production choice.
 SELECTED_DB=Mysql
 DB_HOST=127.0.0.1
 DB_PORT=3306
@@ -86,6 +88,14 @@ TOKEN_STRICT_VALIDATION=false
 # it unset (stateless mode) and a cross-owner create fails closed with 503.
 INTROSPECTION_URL=http://auth_user_service:8000/user/private/v1/jti-status
 PRIVATE_API_SECRET=changethis
+
+# Revocation failure posture: determines how the app responds if the revocation
+# check (INTROSPECTION_URL) is unreachable. Set to fail_closed (default, recommended)
+# to deny access when revocation cannot be verified — security-first. Set to
+# fail_open only in development environments where revocation downtime is acceptable.
+# This value makes explicit the auth-sdk-m8 default (see G9-8). Must match
+# auth_user_service ACCESS_REVOCATION_FAILURE_MODE when both are stateful.
+ACCESS_REVOCATION_FAILURE_MODE=fail_closed
 
 # ── Remote API-key principal (§3.12, optional) ────────────────────────────────
 # Off by default: no dependency exists to authorize an API key when unset (the
