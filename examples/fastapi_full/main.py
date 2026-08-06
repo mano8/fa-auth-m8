@@ -4,10 +4,11 @@ Demonstrates: DB session, metrics, health checks, auth deps, lifespan teardown.
 All wiring is handled by ``create_app``; this file only imports and connects.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 from sqlmodel import select
 
+from auth_sdk_m8.security.guards import make_scrape_credential_guard
 from fastapi_m8 import (
     AppLifecycle,
     HealthCheckResult,
@@ -35,22 +36,42 @@ async def check_db() -> HealthCheckResult:
         )
 
 
-api_router = APIRouter(prefix=settings.API_PREFIX)
-api_router.include_router(domain_router)
+def _register_metrics_endpoint(
+    router: APIRouter, *, enabled: bool, credential: str | None = None
+) -> None:
+    """Expose Prometheus metrics under the API prefix when enabled.
 
-if settings.METRICS_ENABLED:
+    When ``credential`` is set, requests must present
+    ``Authorization: Bearer <credential>`` (constant-time match) or receive
+    ``401``. When unset the network boundary (internal entrypoint) is the sole
+    control.
+    """
+    if not enabled:
+        return
 
-    @api_router.get("/metrics", include_in_schema=False)
+    guard = make_scrape_credential_guard(credential)
+
+    @router.get("/metrics", include_in_schema=False, dependencies=[Depends(guard)])
     def metrics_endpoint() -> Response:
         data, content_type = render_metrics()
         return Response(content=data, media_type=content_type)
+
+
+api_router = APIRouter(prefix=settings.API_PREFIX)
+api_router.include_router(domain_router)
+
+_cred = settings.METRICS_SCRAPE_CREDENTIAL
+_register_metrics_endpoint(
+    api_router,
+    enabled=settings.METRICS_ENABLED,
+    credential=_cred.get_secret_value() if _cred else None,
+)
 
 
 app = create_app(
     settings,
     api_router,
     service_name=settings.PROJECT_NAME,
-    service_version="1.0.0",
     health=HealthConfig(checks=[check_db]),
     lifecycle=AppLifecycle(
         auth_deps=auth,
