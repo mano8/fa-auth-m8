@@ -133,7 +133,7 @@ auth_user_service reads secret/data/app → injects into CommonSettings
 | redis_cache | redis:8.8.0-alpine | `127.0.0.1:6379` |
 | prometheus | ubuntu/prometheus:3.11-26.04_stable | `127.0.0.1:9090` |
 | grafana | grafana/grafana:13.1.0 | `127.0.0.1:3000` |
-| auth_user_service | [tepochtli/fa-auth-m8:2.0.0](https://hub.docker.com/r/tepochtli/fa-auth-m8) | via Traefik at `/user` |
+| auth_user_service | [tepochtli/fa-auth-m8:2.0.2](https://hub.docker.com/r/tepochtli/fa-auth-m8) | via Traefik at `/user` |
 | fastapi_full | local build | via Traefik at `/fastapi` |
 
 ---
