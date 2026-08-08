@@ -1,5 +1,5 @@
 fastapi-m8[db,postgres,mysql]>=4.2.2,<5.0.0
-uvicorn>=0.49.0
+uvicorn>=0.52.1
 
 alembic>=1.18.4
 
@@ -21,7 +21,7 @@ python-slugify>=8.0.4
 
 jinja2>=3.1.6
 
-google-auth>=2.55.1
+google-auth>=2.56.3
 
 # Optional observability (required when METRICS_ENABLED=true)
 prometheus-client>=0.25.0
