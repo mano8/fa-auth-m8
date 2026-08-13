@@ -56,6 +56,14 @@ pytestmark = [
     pytest.mark.require_redis,
 ]
 
+# The gate drives one concrete consumer contract — the WRITER-gated
+# ``category`` routes of ``examples/fastapi_full``. Unlike the algorithm and
+# token-mode preconditions, that one has no marker, so a stack whose consumer
+# is a different ``fastapi-m8`` service used to report five red failures that
+# said nothing about authorization. Detect it and skip with a reason instead,
+# the way every other unmet precondition in this suite is reported.
+_CATEGORY_CONTRACT = f"{SVC_BASE}/category/"
+
 # How long the revocation may take to become observable. The issuer commits the
 # role change and its outbox rows in one transaction; the drain loop then writes
 # the Redis blacklist and publishes the event on OUTBOX_DRAIN_INTERVAL_SECONDS
@@ -70,6 +78,27 @@ _WRITER_PASSWORD = "GateWriter!Pass9"
 def _new_category_name(suffix: str) -> str:
     """Category names are globally unique, so every run mints its own."""
     return f"downgrade-gate-{suffix}"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _requires_category_contract() -> None:
+    """Skip the module when the configured consumer does not serve ``category``.
+
+    An unauthenticated probe is enough: the route answers 401/403 when it
+    exists and the proxy answers 404 when this stack runs a different consumer
+    behind ``SVC_BASE``.
+    """
+    try:
+        probe = requests.get(_CATEGORY_CONTRACT, timeout=TIMEOUT)
+    except requests.RequestException as exc:
+        pytest.skip(f"downgrade gate: consumer {_CATEGORY_CONTRACT} unreachable: {exc}")
+    if probe.status_code == 404:
+        pytest.skip(
+            f"downgrade gate: {_CATEGORY_CONTRACT} is not served (404) — this "
+            "stack's consumer does not expose the WRITER-gated category contract "
+            "the gate drives. Point LIVE_SVC_BASE at a fastapi_full-shaped "
+            "consumer to run it."
+        )
 
 
 @pytest.fixture(scope="module")

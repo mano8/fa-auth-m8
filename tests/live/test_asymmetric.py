@@ -41,6 +41,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from tests.live.suites.auth_flows import (
     AUTH_BASE,
     SVC_BASE,
+    SVC_PROTECTED_PATH,
     TIMEOUT,
     _ADMIN_EMAIL,
     _ADMIN_PASSWORD,
@@ -335,9 +336,14 @@ class TestH_JWKS:
 
 
 class TestI_CrossServiceTokens:
-    """Category I — Asymmetric token accepted/rejected by downstream fastapi_full service."""
+    """Category I — Asymmetric token accepted/rejected by the downstream consumer.
 
-    _SVC_LIST = f"{SVC_BASE}/category/"
+    The consumer is ``SVC_BASE`` + ``SVC_PROTECTED_PATH``; it is ``fastapi_full``
+    by default and any ``fastapi-m8`` consumer under the ``LIVE_SVC_*``
+    overrides. The test names keep the historical ``fastapi_full`` wording.
+    """
+
+    _SVC_LIST = f"{SVC_BASE}{SVC_PROTECTED_PATH}"
 
     def test_i01_valid_auth_token_accepted_by_fastapi_full(self, admin_headers: dict):
         r = requests.get(self._SVC_LIST, headers=admin_headers, timeout=TIMEOUT)
