@@ -23,6 +23,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `CHANGELOG.md`, so a release can no longer ship without a changelog entry
   the way `2.0.1` and `2.0.2` did.
 
+### Changed
+
+- CI test matrix floor raised to Python 3.12 (dropped 3.11); no
+  `pyproject.toml` in this repo, so only the workflow matrix moved.
+
 ### Documentation
 
 - Backfilled the `2.0.1` and `2.0.2` changelog entries below, reconstructed
