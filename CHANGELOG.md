@@ -8,6 +8,67 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 > entries (`0.10.0`, `0.11.0`) that predated the `0.9.0` release by date; they
 > have been folded back onto the real `0.8.x` line (`0.8.3`, `0.8.4`) so the
 > history descends monotonically and matches the tags and the codebase (`0.9.6`).
+> `2.0.1` and `2.0.2` (below) are reconstructed from Git history under
+> `A32-changelog-version-parity` — both were tagged and released with no
+> changelog entry; nothing here was invented past what the commits record.
+
+---
+
+## [2.0.3] - 2026-08-15
+
+### Added
+
+- `test_changelog_version_parity.py` — asserts the current
+  `auth_user_service.__version__` has a matching `## [x.y.z]` heading in
+  `CHANGELOG.md`, so a release can no longer ship without a changelog entry
+  the way `2.0.1` and `2.0.2` did.
+
+### Documentation
+
+- Backfilled the `2.0.1` and `2.0.2` changelog entries below, reconstructed
+  from Git history (`A32-changelog-version-parity`).
+
+---
+
+## [2.0.2] - 2026-08-08
+
+### Fixed
+
+- **`examples/fastapi_full`'s SSE handler stopped delegating to
+  `AuthDeps.handle_auth_event`** and re-derived `session.revoked` /
+  `user.deleted` eviction locally, losing the v2 generation watermark, the
+  `event_id` dedup, and the hyphen/dot `event_type` normalization that
+  `fastapi_m8._deps` / `_revocation` already provide. The example now passes
+  `on_event=auth.handle_auth_event` directly and wraps the sync
+  `auth.flush_cache` in an async `on_gap` to satisfy the callback contract.
+- **`examples/fastapi_full` reported the wrong OpenAPI version and left
+  `/metrics` unguarded.** `create_app` was called with a hardcoded
+  `service_version="1.0.0"` instead of falling through to
+  `settings.SERVICE_VERSION`, so `info.version` never matched the running
+  release; `/metrics` is now wrapped with `make_scrape_credential_guard`
+  (matching the `media-service-m8` pattern) so a request without the
+  `METRICS_SCRAPE_CREDENTIAL` bearer, when one is configured, gets `401`
+  instead of an open scrape endpoint.
+- `uvicorn` bumped to `0.52.1` and `google-auth` to `2.56.3` in
+  `requirements_base.txt` and the example's own requirements; Python version
+  and transitive pins refreshed in `requirements_prod.lock`.
+
+### Documentation
+
+- `.example_env` now documents `ACCESS_REVOCATION_FAILURE_MODE=fail_closed`
+  (with the SDK-default rationale) and the `SELECTED_DB` dialect options
+  (`Mysql`, `Mariadb`, `Postgres`), closing two example-env documentation gaps.
+
+---
+
+## [2.0.1] - 2026-08-03
+
+### Dependencies
+
+- `auth-sdk-m8` updated to `3.1.2`; `fastapi` updated to `0.141.1`;
+  `fastapi-m8` pinned at `4.2.2` in `requirements_base.txt`.
+- Dependabot-driven bumps: `anyio` to `4.14.2`, `uvicorn` to `0.51.0`,
+  `sqlmodel` to `0.0.39`, `prometheus-client` to `0.26.0`.
 
 ---
 
