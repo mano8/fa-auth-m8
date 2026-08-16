@@ -10,4 +10,22 @@ exclude = [
 [lint]
 # Explicitly state the historically enforced rule set rather than inherit
 # ruff's default, which widened between 0.15 and 0.16 (G8-2).
-select = ["E4", "E7", "E9", "F"]
+select = ["E4", "E7", "E9", "F", "TID251"]
+
+# The consumer import boundary, mirroring the rule A22a rolled out to
+# media-service-m8 / prompt-engine-m8 / reparto-docente-m8. It is declared
+# globally and *ignored* for the issuer below, because this repository is on
+# both sides of the boundary: `auth_user_service/**` is the issuer and reuses
+# auth-sdk-m8 directly by design, while `examples/**` are consumer references
+# and must reach the SDK only through fastapi-m8's re-exports.
+[lint.flake8-tidy-imports.banned-api]
+"auth_sdk_m8".msg = "auth-sdk-m8 must never be imported directly by a consumer service. Use fastapi-m8's re-exports instead. (Does not apply to auth_user_service/** — this repo is the issuer.)"
+
+[lint.per-file-ignores]
+# The issuer owns the SDK relationship; the ban is a consumer-side rule.
+# Both the issuer's source and its own test suite are exempt.
+"auth_user_service/**" = ["TID251"]
+"tests/**" = ["TID251"]
+# The import boundary applies to service code, not tests — same scope the
+# three consumer repositories use.
+"examples/*/tests/**" = ["TID251"]

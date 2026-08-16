@@ -1,4 +1,4 @@
-fastapi-m8[db,postgres,mysql]>=4.2.2,<5.0.0
+fastapi-m8[db,postgres,mysql]>=4.4.0,<5.0.0
 uvicorn>=0.52.1
 
 alembic>=1.18.4
