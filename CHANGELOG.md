@@ -27,6 +27,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 - CI test matrix floor raised to Python 3.12 (dropped 3.11); no
   `pyproject.toml` in this repo, so only the workflow matrix moved.
+- `auth-sdk-m8` floor raised to `>=3.1.3,<4.0.0` (was `>=3.1.2`) in
+  `requirements_base.txt`, pinned to `3.1.3` (updated hashes) in
+  `requirements_prod.lock`. No source change — `3.1.3` regenerates the SDK's
+  fixture-matrix checksum and raises its own Python floor; no new SDK API is
+  consumed. `examples/fastapi_minimal` and `examples/fastapi_full` stay at
+  `2.0.3`, unchanged, per this repository's example version-alignment
+  convention. Folded into this still-unreleased `2.0.3` (this branch is ahead
+  of `origin/main`, which is still at `2.0.2`) rather than a separate bump —
+  same one-bump-per-unpublished-release rule `fastapi-m8` applies.
 
 ### Documentation
 
