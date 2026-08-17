@@ -8,6 +8,105 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 > entries (`0.10.0`, `0.11.0`) that predated the `0.9.0` release by date; they
 > have been folded back onto the real `0.8.x` line (`0.8.3`, `0.8.4`) so the
 > history descends monotonically and matches the tags and the codebase (`0.9.6`).
+> `2.0.1` and `2.0.2` (below) are reconstructed from Git history under
+> `A32-changelog-version-parity` — both were tagged and released with no
+> changelog entry; nothing here was invented past what the commits record.
+
+---
+
+## [2.0.3] - 2026-08-15
+
+### Added
+
+- `test_changelog_version_parity.py` — asserts the current
+  `auth_user_service.__version__` has a matching `## [x.y.z]` heading in
+  `CHANGELOG.md`, so a release can no longer ship without a changelog entry
+  the way `2.0.1` and `2.0.2` did.
+- **`ruff.toml` now enforces the consumer import boundary (`TID251`)** on the
+  bundled examples, mirroring the rule already shipped in `media-service-m8`,
+  `prompt-engine-m8` and `reparto-docente-m8`. This repository sits on **both**
+  sides of that boundary, so the ban is declared globally and ignored where it
+  does not apply: `auth_user_service/**` and the issuer's own `tests/**` are
+  exempt — the issuer *is* the SDK's consumer of record and reuses it directly
+  by design — while `examples/**` must reach the SDK only through
+  `fastapi-m8`'s re-exports. Without this, the template was the one repository
+  in the fleet where the rule it defines was not enforced.
+
+### Fixed
+
+- **`examples/fastapi_full/main.py` imported `make_scrape_credential_guard`
+  straight from `auth_sdk_m8.security.guards`**, violating the operator ruling
+  the example itself is meant to demonstrate. It entered in `2.0.2`, when
+  `/metrics` was first wrapped with the guard, and went unnoticed because this
+  repo carried no `TID251` rule. Now imported from `fastapi_m8`, which has
+  re-exported it since `4.3.0` — the fix only became available once the example
+  moved to a `>=4.4.0` floor. `fastapi_minimal` was already clean.
+
+### Changed
+
+- CI test matrix floor raised to Python 3.12 (dropped 3.11); no
+  `pyproject.toml` in this repo, so only the workflow matrix moved.
+- **Bundled examples' `fastapi-m8` floor raised to `>=4.4.0,<5.0.0`** now that
+  `4.4.0` is published — `fastapi_full` from `>=4.2.2`, `fastapi_minimal` from
+  `>=4.2.0`. Neither example declares `auth-sdk-m8`; both resolve it
+  transitively (`3.1.3`) through `fastapi-m8`, which is the shape a consumer
+  service is supposed to copy.
+- `auth-sdk-m8` floor raised to `>=3.1.3,<4.0.0` (was `>=3.1.2`) in
+  `requirements_base.txt`, pinned to `3.1.3` (updated hashes) in
+  `requirements_prod.lock`. No source change — `3.1.3` regenerates the SDK's
+  fixture-matrix checksum and raises its own Python floor; no new SDK API is
+  consumed. `examples/fastapi_minimal` and `examples/fastapi_full` stay at
+  `2.0.3`, unchanged, per this repository's example version-alignment
+  convention. Folded into this still-unreleased `2.0.3` (this branch is ahead
+  of `origin/main`, which is still at `2.0.2`) rather than a separate bump —
+  same one-bump-per-unpublished-release rule `fastapi-m8` applies.
+
+### Documentation
+
+- Backfilled the `2.0.1` and `2.0.2` changelog entries below, reconstructed
+  from Git history (`A32-changelog-version-parity`).
+
+---
+
+## [2.0.2] - 2026-08-08
+
+### Fixed
+
+- **`examples/fastapi_full`'s SSE handler stopped delegating to
+  `AuthDeps.handle_auth_event`** and re-derived `session.revoked` /
+  `user.deleted` eviction locally, losing the v2 generation watermark, the
+  `event_id` dedup, and the hyphen/dot `event_type` normalization that
+  `fastapi_m8._deps` / `_revocation` already provide. The example now passes
+  `on_event=auth.handle_auth_event` directly and wraps the sync
+  `auth.flush_cache` in an async `on_gap` to satisfy the callback contract.
+- **`examples/fastapi_full` reported the wrong OpenAPI version and left
+  `/metrics` unguarded.** `create_app` was called with a hardcoded
+  `service_version="1.0.0"` instead of falling through to
+  `settings.SERVICE_VERSION`, so `info.version` never matched the running
+  release; `/metrics` is now wrapped with `make_scrape_credential_guard`
+  (matching the `media-service-m8` pattern) so a request without the
+  `METRICS_SCRAPE_CREDENTIAL` bearer, when one is configured, gets `401`
+  instead of an open scrape endpoint.
+- `uvicorn` bumped to `0.52.1` and `google-auth` to `2.56.3` in
+  `requirements_base.txt` and the example's own requirements; Python version
+  and transitive pins refreshed in `requirements_prod.lock`.
+
+### Documentation
+
+- `.example_env` now documents `ACCESS_REVOCATION_FAILURE_MODE=fail_closed`
+  (with the SDK-default rationale) and the `SELECTED_DB` dialect options
+  (`Mysql`, `Mariadb`, `Postgres`), closing two example-env documentation gaps.
+
+---
+
+## [2.0.1] - 2026-08-03
+
+### Dependencies
+
+- `auth-sdk-m8` updated to `3.1.2`; `fastapi` updated to `0.141.1`;
+  `fastapi-m8` pinned at `4.2.2` in `requirements_base.txt`.
+- Dependabot-driven bumps: `anyio` to `4.14.2`, `uvicorn` to `0.51.0`,
+  `sqlmodel` to `0.0.39`, `prometheus-client` to `0.26.0`.
 
 ---
 

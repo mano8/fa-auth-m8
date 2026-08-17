@@ -1522,6 +1522,31 @@ pytest -m live_stateless --no-cov                       # TOKEN_MODE=stateless
 
 The live suite is modular — each file carries a `require_algorithm` / `require_token_mode` mark so tests are automatically skipped when the running stack does not match. `conftest.py` auto-detects the stack's algorithm, token mode, and Redis availability at session start. Tests decorated with `require_redis`, as well as all `live_stateful` and `live_hybrid` tests, are automatically skipped when the `/health/` endpoint reports `redis=unavailable`.
 
+#### Targeting another stack
+
+The defaults describe the maintained Compose examples (issuer on `/user`, the
+bundled `fastapi_full` consumer on `/fastapi`, both behind
+`http://localhost:9000` and `https://localhost:4430`). Point the suite at any
+other `fa-auth-m8` + `fastapi-m8` deployment with configuration alone — the same
+way [`examples/docker_compose/shared_live_tests`](examples/docker_compose/shared_live_tests/README.md)
+is retargeted — with no source edit:
+
+| Variable | Default | Selects |
+| -------- | ------- | ------- |
+| `LIVE_AUTH_BASE` | `http://localhost:9000/user` | the issuer's base URL |
+| `LIVE_SVC_BASE` | `http://localhost:9000/fastapi` | the downstream consumer's base URL |
+| `LIVE_SVC_PROTECTED_PATH` | `/category/` | an authenticated consumer list route with no path parameter |
+| `LIVE_ADMIN_EMAIL` / `LIVE_ADMIN_PASSWORD` | the examples' seeded `FIRST_SUPERUSER` | the account the live fixtures authenticate with |
+| `LIVE_PUBLIC_BASE` / `LIVE_INTERNAL_BASE` | `https://localhost:4430` / `http://localhost:9000` | the exposure matrix's public and internal entryPoints |
+| `LIVE_AUTH_PREFIX` / `LIVE_SVC_PREFIX` | `/user` / `/fastapi` | the exposure matrix's route prefixes |
+| `LIVE_PRIVATE_API_SECRET` | unset (positive control skipped) | the inter-service secret for the `jti-status` positive control |
+| `LIVE_PRIVATE_API_CLIENT_ID` | unset (legacy single-secret shape) | the `X-Internal-Client` consumer id a per-consumer issuer requires |
+
+`LIVE_PRIVATE_API_SECRET` is deliberately distinct from `PRIVATE_API_SECRET`:
+the suite's root `conftest.py` seeds the latter with a hermetic throwaway before
+any import, so a positive control keyed on it would send a wrong secret to the
+live stack instead of skipping.
+
 | Module | Mark | Covers |
 | ------ | ---- | ------- |
 | `test_security_universal.py` | `live_security` | 13 attack categories (A–M): brute-force, JWT forgery, IDOR, rate-limit bypass, CORS, private API exposure, file upload, info disclosure, HTTP headers, cookie security, API key abuse |
@@ -1538,6 +1563,9 @@ client plus event-stream bridge enabled — the default of every maintained
 Compose example). In hybrid or stateless mode the issuer never revokes an
 already-issued access token, so the old token stays usable until it expires;
 the module is skipped on such a stack rather than reporting a false failure.
+It also drives one concrete consumer contract — the WRITER-gated `category`
+routes of `examples/fastapi_full` — so it is skipped, with that reason, when
+`LIVE_SVC_BASE` points at a consumer that does not serve them.
 
 The `tests/security/` unit suite (no live stack required) covers JWT security, Redis resilience, refresh lifecycle, refresh key-rotation fallback (`REFRESH_SECRET_KEY_OLD`), input sanitisation, JWKS endpoint, OAuth adversarial, iss/aud validation, session-chain invalidation, exception handling, and client IP attribution.
 

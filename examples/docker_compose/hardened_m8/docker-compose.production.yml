@@ -87,7 +87,7 @@ services:
     ports: !reset []
 
   auth_user_service:
-    image: tepochtli/fa-auth-m8:2.0.2   # pinned release (never :latest)
+    image: tepochtli/fa-auth-m8:2.0.3   # pinned release (never :latest)
     env_file: !override
       - ./auth.env.production
     volumes: !override

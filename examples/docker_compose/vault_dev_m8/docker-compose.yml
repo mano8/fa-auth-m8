@@ -251,8 +251,8 @@ services:
   auth_user_service:
     # Published image — no local build required.
     # For production, pin to a specific release instead of latest:
-    #   tepochtli/fa-auth-m8:2.0.0
-    image: tepochtli/fa-auth-m8:2.0.2
+    #   tepochtli/fa-auth-m8:2.0.3
+    image: tepochtli/fa-auth-m8:2.0.3
     env_file:
       - ./auth.env
     environment:

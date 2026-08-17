@@ -7,14 +7,24 @@ own copy, so the value cannot drift out of agreement with itself again. Set
 ``LIVE_ADMIN_EMAIL``/``LIVE_ADMIN_PASSWORD`` to point at a different stack;
 the defaults match the maintained Compose examples' seeded
 ``FIRST_SUPERUSER``/``FIRST_SUPERUSER_PASSWORD``.
+
+It is also the single owner of the stack endpoints. The defaults describe the
+maintained Compose examples (issuer at ``/user``, the ``fastapi_full`` consumer
+at ``/fastapi``); ``LIVE_AUTH_BASE``/``LIVE_SVC_BASE``/``LIVE_SVC_PROTECTED_PATH``
+retarget the suite at any other ``fa-auth-m8`` + ``fastapi-m8`` stack without a
+source edit, the same way ``examples/docker_compose/shared_live_tests`` is
+retargeted by configuration alone.
 """
 
 import os
 
 import requests
 
-AUTH_BASE = "http://localhost:9000/user"
-SVC_BASE = "http://localhost:9000/fastapi"
+AUTH_BASE = os.environ.get("LIVE_AUTH_BASE", "http://localhost:9000/user")
+SVC_BASE = os.environ.get("LIVE_SVC_BASE", "http://localhost:9000/fastapi")
+# An authenticated list route on the consumer: 200 for a valid token, 401/403
+# without one, and no required path parameter.
+SVC_PROTECTED_PATH = os.environ.get("LIVE_SVC_PROTECTED_PATH", "/category/")
 TIMEOUT = 10
 
 _ADMIN_EMAIL = os.environ.get("LIVE_ADMIN_EMAIL", "admin@example.com")

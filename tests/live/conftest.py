@@ -29,15 +29,21 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
 )
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
-from tests.live.suites.auth_flows import _ADMIN_EMAIL, _ADMIN_PASSWORD
+from tests.live.suites.auth_flows import (
+    AUTH_BASE,
+    SVC_BASE,
+    TIMEOUT,
+    _ADMIN_EMAIL,
+    _ADMIN_PASSWORD,
+)
 
 # ---------------------------------------------------------------------------
-# Stack endpoints and test credentials (match compose stack defaults)
+# Stack endpoints and test credentials
 # ---------------------------------------------------------------------------
+# Re-exported from ``suites.auth_flows`` so the endpoints have one owner and
+# one set of ``LIVE_*`` overrides; see that module's docstring.
 
-AUTH_BASE = "http://localhost:9000/user"
-SVC_BASE = "http://localhost:9000/fastapi"
-TIMEOUT = 10
+__all__ = ["AUTH_BASE", "SVC_BASE", "TIMEOUT"]
 
 _HEALTH_URL = f"{AUTH_BASE}/health/"
 _JWKS_URL = f"{AUTH_BASE}/.well-known/jwks.json"

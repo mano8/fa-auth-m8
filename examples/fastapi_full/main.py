@@ -8,13 +8,13 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 from sqlmodel import select
 
-from auth_sdk_m8.security.guards import make_scrape_credential_guard
 from fastapi_m8 import (
     AppLifecycle,
     HealthCheckResult,
     HealthConfig,
     HealthStatus,
     create_app,
+    make_scrape_credential_guard,
     render_metrics,
 )
 

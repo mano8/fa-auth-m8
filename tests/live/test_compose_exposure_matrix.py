@@ -53,10 +53,12 @@ pytestmark = [pytest.mark.live, pytest.mark.live_security]
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ── Entry points & prefixes ──────────────────────────────────────────────────
-PUBLIC_BASE = "https://localhost:4430"
-INTERNAL_BASE = "http://localhost:9000"
-AUTH_PREFIX = "/user"
-SVC_PREFIX = "/fastapi"
+# Defaults describe the maintained Compose examples; the ``LIVE_*`` overrides
+# retarget the matrix at another stack's entryPoints and consumer prefix.
+PUBLIC_BASE = os.environ.get("LIVE_PUBLIC_BASE", "https://localhost:4430")
+INTERNAL_BASE = os.environ.get("LIVE_INTERNAL_BASE", "http://localhost:9000")
+AUTH_PREFIX = os.environ.get("LIVE_AUTH_PREFIX", "/user")
+SVC_PREFIX = os.environ.get("LIVE_SVC_PREFIX", "/fastapi")
 
 # ── Topology selection ───────────────────────────────────────────────────────
 CASE_A = "case_a"
@@ -162,11 +164,31 @@ def internal_entrypoint() -> str:
 
 @pytest.fixture(scope="session")
 def private_api_secret() -> str:
-    """The inter-service secret, from the environment (positive control only)."""
-    secret = os.environ.get("PRIVATE_API_SECRET")
+    """The live stack's inter-service secret (positive control only).
+
+    Read from ``LIVE_PRIVATE_API_SECRET`` and never from ``PRIVATE_API_SECRET``:
+    the suite's root conftest seeds the latter with a hermetic throwaway before
+    any import, so keying on it would defeat this fixture's own skip and send a
+    wrong secret to the live stack instead.
+    """
+    secret = os.environ.get("LIVE_PRIVATE_API_SECRET")
     if not secret:
-        pytest.skip("PRIVATE_API_SECRET not set — internal positive control skipped")
+        pytest.skip(
+            "LIVE_PRIVATE_API_SECRET not set — internal positive control skipped"
+        )
     return secret
+
+
+@pytest.fixture(scope="session")
+def private_api_client_id() -> str | None:
+    """The consumer id this positive control authenticates as, if any.
+
+    ``fa-auth-m8`` >= 1.0.0 runs a per-consumer private API: the secret alone is
+    rejected 401 by design and the caller must also identify itself with
+    ``X-Internal-Client``. Leave ``LIVE_PRIVATE_API_CLIENT_ID`` unset for a
+    legacy single-secret stack.
+    """
+    return os.environ.get("LIVE_PRIVATE_API_CLIENT_ID") or None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -298,13 +320,19 @@ class TestInternalSecretGated:
         )
 
     def test_jti_status_reachable_with_token(
-        self, internal_entrypoint: str, private_api_secret: str
+        self,
+        internal_entrypoint: str,
+        private_api_secret: str,
+        private_api_client_id: "str | None",
     ) -> None:
-        """With the correct secret the route is reachable and authorized."""
+        """With the correct credential the route is reachable and authorized."""
+        headers = {"X-Internal-Token": private_api_secret}
+        if private_api_client_id:
+            headers["X-Internal-Client"] = private_api_client_id
         r = requests.post(
             f"{INTERNAL_BASE}{self._JTI}",
             json={"jti": uuid.uuid4().hex},
-            headers={"X-Internal-Token": private_api_secret},
+            headers=headers,
             timeout=TIMEOUT,
         )
         assert r.status_code not in (401, 403, 404), (
