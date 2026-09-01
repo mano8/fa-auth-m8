@@ -1,7 +1,7 @@
 fastapi>=0.141.1
 uvicorn>=0.52.1
 
-sqlmodel>=0.0.39
+sqlmodel>=0.0.42
 sqlalchemy>=2.0.50
 alembic>=1.18.4
 
