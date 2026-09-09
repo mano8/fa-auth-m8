@@ -441,66 +441,61 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
             self._access_public_key_old = path.read_text().strip()
         return self
 
-    @model_validator(mode="after")
-    def _validate_access_key_id_binding(self) -> "Settings":
-        """Fail closed when a configured kid does not name the key it labels.
+    def _reject_old_key_pair_under_symmetric(self, algo: str) -> None:
+        """Reject a rotation overlap pair configured on an HS256 deployment."""
+        if self.ACCESS_PUBLIC_KEY_OLD or self.ACCESS_KEY_ID_OLD:
+            raise ValueError(
+                "ACCESS_PUBLIC_KEY_OLD_FILE / ACCESS_KEY_ID_OLD are only "
+                f"meaningful for asymmetric algorithms, but "
+                f"ACCESS_TOKEN_ALGORITHM={algo} publishes no key set. Unset "
+                "them."
+            )
 
-        Covers both published keys: ``ACCESS_KEY_ID`` against
-        ``ACCESS_PUBLIC_KEY``, and — when a rotation overlap window is open —
-        ``ACCESS_KEY_ID_OLD`` against ``ACCESS_PUBLIC_KEY_OLD``.
+    def _reject_structural_old_key_errors(
+        self, algo: str, old_pem: Optional[str]
+    ) -> None:
+        """Reject rotation overlap pairs that could never publish a valid JWKS.
 
-        Runs after ``CommonSettings._load_pem_files`` (base-class model
-        validators are collected first) and after
-        :meth:`_load_old_public_key_file`, so both PEMs are already loaded.
-
-        Deliberately silent for three legitimate configurations:
-
-        - symmetric (HS256) deployments, which publish no key and carry no kid;
-        - any service holding no public key — a consumer that resolves keys over
-          ``JWKS_URI`` has nothing local to bind against;
-        - a kid left unset, where it *is* the derived fingerprint of the loaded
-          key and cannot drift from it.
-
-        Structural misconfigurations of the ``_OLD`` pair raise unconditionally:
-        they are new in ``2.1.0``, so no deployment can already hold one, and
-        the break-glass flag exists only to tolerate pre-existing drift.
+        These are new in ``2.1.0``, so no deployment can already be in one of
+        these states and the break-glass flag deliberately does not cover them.
         """
-        algo = self.ACCESS_TOKEN_ALGORITHM
-        old_pem = self.ACCESS_PUBLIC_KEY_OLD
-        if algo not in ASYMMETRIC_ALGORITHMS:
-            if old_pem or self.ACCESS_KEY_ID_OLD:
-                raise ValueError(
-                    "ACCESS_PUBLIC_KEY_OLD_FILE / ACCESS_KEY_ID_OLD are only "
-                    f"meaningful for asymmetric algorithms, but "
-                    f"ACCESS_TOKEN_ALGORITHM={algo} publishes no key set. Unset "
-                    "them."
-                )
-            return self
-
-        # Structural misconfigurations of the rotation overlap pair. These are
-        # new in 2.1.0, so no deployment can already be in this state and the
-        # break-glass flag deliberately does not cover them.
         if self.ACCESS_KEY_ID_OLD and not old_pem:
             raise ValueError(
                 "ACCESS_KEY_ID_OLD is set without ACCESS_PUBLIC_KEY_OLD_FILE, so "
                 "the kid it names is never published. Set both to open a "
                 "rotation overlap window, or neither to close it."
             )
-        if old_pem:
-            expected_kind = "EC" if algo.startswith("ES") else "RSA"
-            if public_key_kind(old_pem) != expected_kind:
-                raise ValueError(
-                    "ACCESS_PUBLIC_KEY_OLD_FILE holds a "
-                    f"{public_key_kind(old_pem)} key, but "
-                    f"ACCESS_TOKEN_ALGORITHM={algo} publishes {expected_kind} "
-                    "keys. A rotation overlap window cannot span key types — "
-                    "cut over to the new algorithm with a single key instead."
-                )
+        if not old_pem:
+            return
 
-        # Binding: every published kid must be the DER fingerprint of its own
-        # key. Both values in each message are public labels — a kid appears in
-        # JWKS and in every JWT header — so naming them discloses no key
-        # material.
+        expected_kind = "EC" if algo.startswith("ES") else "RSA"
+        old_kind = public_key_kind(old_pem)
+        if old_kind != expected_kind:
+            raise ValueError(
+                "ACCESS_PUBLIC_KEY_OLD_FILE holds a "
+                f"{old_kind} key, but "
+                f"ACCESS_TOKEN_ALGORITHM={algo} publishes {expected_kind} "
+                "keys. A rotation overlap window cannot span key types — "
+                "cut over to the new algorithm with a single key instead."
+            )
+
+        # A second JWK under the same kid is the very defect this release
+        # closes, so it can never be published — with or without break-glass.
+        public_pem = self.ACCESS_PUBLIC_KEY
+        if public_pem and derive_kid(public_pem) == derive_kid(old_pem):
+            raise ValueError(
+                "ACCESS_PUBLIC_KEY_OLD_FILE and ACCESS_PUBLIC_KEY_FILE hold the "
+                "same key, which would publish two JWKs under one kid. Point "
+                "ACCESS_PUBLIC_KEY_OLD_FILE at the *previous* key, or unset it "
+                "to close the rotation overlap window."
+            )
+
+    def _kid_binding_problems(self, old_pem: Optional[str]) -> list[str]:
+        """Describe every published kid that is not its own key's fingerprint.
+
+        Both values in each message are public labels — a kid appears in JWKS
+        and in every JWT header — so naming them discloses no key material.
+        """
         problems: list[str] = []
 
         public_pem = self.ACCESS_PUBLIC_KEY
@@ -532,16 +527,42 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
                     "and would not match the JWK published for it."
                 )
 
-        # A second JWK under the same kid is the very defect this release
-        # closes, so it can never be published — with or without break-glass.
-        if public_pem and old_pem and derive_kid(public_pem) == derive_kid(old_pem):
-            raise ValueError(
-                "ACCESS_PUBLIC_KEY_OLD_FILE and ACCESS_PUBLIC_KEY_FILE hold the "
-                "same key, which would publish two JWKs under one kid. Point "
-                "ACCESS_PUBLIC_KEY_OLD_FILE at the *previous* key, or unset it "
-                "to close the rotation overlap window."
-            )
+        return problems
 
+    @model_validator(mode="after")
+    def _validate_access_key_id_binding(self) -> "Settings":
+        """Fail closed when a configured kid does not name the key it labels.
+
+        Covers both published keys: ``ACCESS_KEY_ID`` against
+        ``ACCESS_PUBLIC_KEY``, and — when a rotation overlap window is open —
+        ``ACCESS_KEY_ID_OLD`` against ``ACCESS_PUBLIC_KEY_OLD``.
+
+        Runs after ``CommonSettings._load_pem_files`` (base-class model
+        validators are collected first) and after
+        :meth:`_load_old_public_key_file`, so both PEMs are already loaded.
+
+        Deliberately silent for three legitimate configurations:
+
+        - symmetric (HS256) deployments, which publish no key and carry no kid;
+        - any service holding no public key — a consumer that resolves keys over
+          ``JWKS_URI`` has nothing local to bind against;
+        - a kid left unset, where it *is* the derived fingerprint of the loaded
+          key and cannot drift from it.
+
+        Structural misconfigurations of the ``_OLD`` pair raise unconditionally
+        (:meth:`_reject_structural_old_key_errors`); a kid that has merely
+        drifted from its key (:meth:`_kid_binding_problems`) is the only failure
+        the break-glass flag can downgrade.
+        """
+        algo = self.ACCESS_TOKEN_ALGORITHM
+        old_pem = self.ACCESS_PUBLIC_KEY_OLD
+        if algo not in ASYMMETRIC_ALGORITHMS:
+            self._reject_old_key_pair_under_symmetric(algo)
+            return self
+
+        self._reject_structural_old_key_errors(algo, old_pem)
+
+        problems = self._kid_binding_problems(old_pem)
         if not problems:
             return self
 
