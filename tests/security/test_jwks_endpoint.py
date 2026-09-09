@@ -98,6 +98,9 @@ def test_jwks_endpoint_rs256_returns_valid_keyset():
     ):
         mock_settings.ACCESS_TOKEN_ALGORITHM = "RS256"
         mock_settings.ACCESS_PUBLIC_KEY = _RSA_PUBLIC_PEM
+        # No rotation overlap window open — see test_jwks_rotation_overlap.py.
+        mock_settings.ACCESS_PUBLIC_KEY_OLD = None
+        mock_settings.ACCESS_KEY_ID_OLD = None
 
         result = jwks_endpoint()
 

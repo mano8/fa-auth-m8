@@ -23,6 +23,7 @@ Equivalent shell pipeline (what ``init-keys.sh`` runs)::
 
 import hashlib
 
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
     PublicFormat,
@@ -34,7 +35,40 @@ from cryptography.hazmat.primitives.serialization import (
 # stay readable in a JWT header and an ``auth.env`` line.
 KID_HEX_LENGTH = 16
 
-__all__ = ["KID_HEX_LENGTH", "derive_kid"]
+__all__ = ["KID_HEX_LENGTH", "derive_kid", "public_key_kind"]
+
+
+def _load_public_key(public_pem: str, what: str):
+    """Parse a PEM public key, or raise a config error that names no material."""
+    pem = (public_pem or "").strip()
+    if not pem:
+        raise ValueError(f"Cannot {what} from an empty public key")
+    try:
+        return load_pem_public_key(pem.encode())
+    except Exception as exc:  # narrow to a config error; never echo the key
+        raise ValueError(
+            f"Cannot {what}: the configured public key is not a parsable PEM public key"
+        ) from exc
+
+
+def public_key_kind(public_pem: str) -> str:
+    """Return ``"RSA"``, ``"EC"`` or ``"unsupported"`` for a PEM public key.
+
+    Used to keep a rotation's ``_OLD`` key in the same family as the active
+    algorithm: ``_build_jwk`` selects its JWK algorithm class from
+    ``ACCESS_TOKEN_ALGORITHM``, so an RSA key published on an ES256 stack (or
+    the reverse) would serialize into a malformed JWK at request time. Catching
+    it at startup keeps that a boot failure rather than a broken endpoint.
+
+    Raises:
+        ValueError: The argument is not a parsable PEM public key.
+    """
+    key = _load_public_key(public_pem, "determine the key type")
+    if isinstance(key, rsa.RSAPublicKey):
+        return "RSA"
+    if isinstance(key, ec.EllipticCurvePublicKey):
+        return "EC"
+    return "unsupported"
 
 
 def derive_kid(public_pem: str) -> str:
@@ -53,16 +87,7 @@ def derive_kid(public_pem: str) -> str:
         ValueError: The argument is empty or is not a parsable PEM public key.
             The message never contains key material.
     """
-    pem = (public_pem or "").strip()
-    if not pem:
-        raise ValueError("Cannot derive a kid from an empty public key")
-    try:
-        key = load_pem_public_key(pem.encode())
-    except Exception as exc:  # narrow to a config error; never echo the key
-        raise ValueError(
-            "Cannot derive a kid: the configured public key is not a parsable "
-            "PEM public key"
-        ) from exc
+    key = _load_public_key(public_pem, "derive a kid")
     der = key.public_bytes(
         encoding=Encoding.DER,
         format=PublicFormat.SubjectPublicKeyInfo,
