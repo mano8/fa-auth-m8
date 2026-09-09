@@ -316,7 +316,7 @@ steps are the same minus the wipe/audit — that playbook is cross-referenced ra
 
 | Secret | Env var | No-downtime path | Mechanism | Forced re-auth |
 | --- | --- | --- | --- | --- |
-| RS256/ES256 signing keypair | `ACCESS_PRIVATE_KEY_FILE` (+ `ACCESS_KEY_ID`) | Partial (≤ JWKS cache TTL) | Single active JWK; consumers re-fetch JWKS | Access tokens only (refresh survives) |
+| RS256/ES256 signing keypair | `ACCESS_PRIVATE_KEY_FILE` (+ `ACCESS_KEY_ID`, `_OLD` pair) | **Yes** (dual-key, since `2.1.0`) | Both JWKs published during the window; old key verification-only | None during window |
 | Access signing key (HS256) | `ACCESS_SECRET_KEY` | No (fleet cutover) | Shared symmetric secret | Access tokens only (refresh survives) |
 | Refresh signing key | `REFRESH_SECRET_KEY` (+ `_OLD`) | **Yes** (dual-key) | `REFRESH_SECRET_KEY_OLD` fallback | None during window |
 | Session middleware key | `SESSION_SECRET` | No (≤1h window) | Single `secret_key`; `max_age=3600` bounds it | Mid-session cookies only |
@@ -333,39 +333,59 @@ steps are the same minus the wipe/audit — that playbook is cross-referenced ra
 ### Rotation order (which secrets must move together)
 
 - **Independent (rotate one at a time, no coordination):** `REFRESH_SECRET_KEY` (dual-key),
-  `TOKENS_ENCRYPTION_KEY` (dual-key), `SESSION_SECRET`, a single `PRIVATE_API_CONSUMERS` entry,
+  `TOKENS_ENCRYPTION_KEY` (dual-key), the RS256/ES256 keypair + `ACCESS_KEY_ID` (dual-key since
+  `2.1.0`), `SESSION_SECRET`, a single `PRIVATE_API_CONSUMERS` entry,
   `METRICS_SCRAPE_CREDENTIAL`, `HEALTH_DETAIL_CREDENTIAL`, `GOOGLE_CLIENT_SECRET`, `DB_PASSWORD`, `REDIS_PASSWORD`.
-- **Auth-first, consumers follow within the cache TTL:** the RS256/ES256 keypair + `ACCESS_KEY_ID`
-  — the issuer cuts over, consumers re-fetch JWKS within `JWKS_CACHE_TTL_SECONDS` (default 300 s).
+- **Auth-first, consumers follow within the cache TTL:** nothing any more — the RS256/ES256 keypair
+  moved to the independent list above when the JWKS overlap window landed in `2.1.0`.
 - **Fleet-coordinated (rotate the auth service and every holder in one window):** `ACCESS_SECRET_KEY`
   (HS256 — every consumer holds it to validate), the shared `PRIVATE_API_SECRET`, and
   `EVENT_SIGNING_KEY`.
 
 ### RS256/ES256 signing keypair + `ACCESS_KEY_ID`
 
-**No-downtime path (partial).** fa-auth publishes exactly **one** active public key in JWKS
-(`/.well-known/jwks.json` returns a single JWK keyed by `ACCESS_KEY_ID`); it does **not** serve two
-keys simultaneously, so there is no JWKS overlap window. A planned rotation is therefore a cutover
-with a cache-bounded propagation window:
+**`ACCESS_KEY_ID` is bound to its key (since `2.1.0`).** The `kid` must be the SHA-256 digest of the
+public key's SPKI DER bytes, first 16 hex characters — the value `init-keys.sh` computes and writes.
+A mismatch is a **startup failure**, not a warning: before `2.1.0` the `kid` was free text, so
+regenerating a keypair without rewriting the label served a *different* public key under an
+*unchanged* `kid` and consumers kept verifying against the stale one until their cache expired.
+`ACCESS_KEY_ID_ALLOW_UNBOUND=true` downgrades that failure to a warning; it is emergency-only, exists
+so an already-unbound deployment can be brought up while it is re-provisioned, and is removed in
+`3.0.0`.
 
-1. Generate a new keypair and a **new** `ACCESS_KEY_ID` (a fresh `kid` lets consumers distinguish the
-   keys): `openssl genrsa -out private.pem 2048 && openssl rsa -in private.pem -pubout -out public.pem`.
-2. Update `ACCESS_PRIVATE_KEY_FILE` / `ACCESS_PUBLIC_KEY_FILE` mounts and `ACCESS_KEY_ID` in
-   `auth.env`; redeploy the auth service. New access tokens are now signed by the new key and JWKS
-   serves the new `kid`.
-3. Consumers re-fetch JWKS within `JWKS_CACHE_TTL_SECONDS` (default 300 s). To eliminate the window,
-   restart consumers immediately after the deploy to force an instant JWKS re-fetch.
+**No-downtime path (dual-key, since `2.1.0`).** fa-auth publishes **both** the current and the
+previous public key while `ACCESS_PUBLIC_KEY_OLD_FILE` is set, each under its own `kid`. Signing
+always uses the current private key — the old key is **verification-only**, and there is deliberately
+no `ACCESS_PRIVATE_KEY_OLD`. A planned rotation therefore completes with **no consumer restart and no
+verification gap**:
 
-**Blast radius.** Access tokens already issued under the old `kid` are rejected once consumers load
-the new JWKS (old key no longer served). Refresh tokens use `REFRESH_SECRET_KEY` and are unaffected,
-so clients transparently mint a fresh access token on their next refresh — user impact is bounded by
-`ACCESS_TOKEN_EXPIRE_MINUTES`, not a full re-login.
+1. `bash init.sh --rotate-keys` — retains the current public key as `keys/public_old.pem`,
+   generates a new keypair, and writes both `ACCESS_KEY_ID` and `ACCESS_KEY_ID_OLD` into `auth.env`.
+   The keypair and its `kid` can only be written together, which is what makes the binding above hold.
+2. Mount the old public key and redeploy the auth service only:
+   `ACCESS_PUBLIC_KEY_OLD_FILE=/opt/keys/public_old.pem`. New access tokens are signed by the new key
+   and carry the new `kid`; JWKS now serves two JWKs.
+3. Wait out `ACCESS_TOKEN_EXPIRE_MINUTES` (default 30) plus the consumers' `JWKS_CACHE_TTL_SECONDS`
+   (default 300 s), so every token signed under the old key has expired.
+4. Close the window: unset `ACCESS_PUBLIC_KEY_OLD_FILE` and `ACCESS_KEY_ID_OLD`, redeploy auth, and
+   delete `keys/public_old.pem`. JWKS returns to a single key.
 
-**Expected invalidation.** All outstanding access tokens signed by the previous key.
-**Verification.** `GET /.well-known/jwks.json` shows the new `kid`; a freshly issued token validates
-at a consumer; a token carrying the old `kid` returns `401`.
-**Rollback.** Restore the previous keypair + `ACCESS_KEY_ID` and redeploy; consumers re-fetch within
-the cache TTL.
+Leaving the window open indefinitely is not harmful to token integrity — the old key cannot sign —
+but it keeps a retired key published, so close it once step 3's horizon has passed.
+
+**Blast radius.** None while the window is open: tokens under either `kid` verify. Skipping the
+`_OLD` pair turns the rotation back into a hard cutover in which access tokens issued under the old
+`kid` are rejected as soon as consumers reload JWKS. Refresh tokens use `REFRESH_SECRET_KEY` and are
+unaffected either way, so clients transparently mint a fresh access token on their next refresh.
+
+**Expected invalidation.** None during the window; after step 4, any access token still signed by the
+previous key (there should be none if step 3's horizon was respected).
+**Verification.** `GET /.well-known/jwks.json` shows two `kid`s, the current one first; a freshly
+issued token carries the new `kid`; a token issued before the rotation still validates at a consumer
+**without restarting it**; after step 4 the old `kid` is gone from the key set.
+**Rollback.** Before step 4, swap the two key files back and redeploy; the window covers both
+directions. After step 4, restore the previous keypair + `ACCESS_KEY_ID`, republish it as the current
+key, and redeploy.
 
 ### Access signing key — HS256 (`ACCESS_SECRET_KEY`)
 

@@ -241,16 +241,28 @@ In `hybrid` mode, access tokens remain valid for their full lifetime after logou
 ## Key rotation
 
 ```sh
-# 1. Regenerate the RSA key pair and update ACCESS_KEY_ID in auth.env
+# 1. Regenerate the RSA key pair. The previous public key is retained as
+#    keys/public_old.pem and ACCESS_KEY_ID / ACCESS_KEY_ID_OLD are both written
+#    into auth.env, so neither kid can drift from the key it labels.
 bash init.sh --rotate-keys
 
 # 2. Restart the auth service (picks up new private key + kid)
 docker compose up -d --build auth_user_service
 
 # 3. Consumers self-update — no restart needed
+
+# 4. Once every old-key access token has expired, close the overlap window:
+#    unset ACCESS_PUBLIC_KEY_OLD_FILE + ACCESS_KEY_ID_OLD in auth.env, redeploy
+#    auth, and delete keys/public_old.pem
 ```
 
-Old tokens remain valid until they expire. After `JWKS_CACHE_TTL_SECONDS` the consumer cache refreshes; tokens with the old `kid` will then fail verification.
+JWKS now publishes **both** keys, so access tokens issued before the rotation keep verifying with no
+consumer restart and no gap. Close the overlap window once every old-key token has expired
+(`ACCESS_TOKEN_EXPIRE_MINUTES` + the consumers' `JWKS_CACHE_TTL_SECONDS`): unset
+`ACCESS_PUBLIC_KEY_OLD_FILE` and `ACCESS_KEY_ID_OLD`, redeploy auth, and delete `keys/public_old.pem`.
+
+Since `2.1.0` an `ACCESS_KEY_ID` that is not the DER fingerprint of the key it labels is a **startup
+failure** — see [SECURITY.md](../SECURITY.md#rs256es256-signing-keypair--access_key_id).
 
 ---
 

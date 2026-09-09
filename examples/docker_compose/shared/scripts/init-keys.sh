@@ -13,6 +13,34 @@ done
 AUTH_ENV="./auth.env"
 KEYS_DIR="./keys"
 
+# Write KEY=VALUE into auth.env, replacing an existing line (commented or not)
+# or appending when the key is absent. Same temp-file approach as below: no
+# sed -i, which differs between macOS and GNU.
+set_env_var() {
+    local key="$1" value="$2" tmp
+    tmp=$(mktemp)
+    if grep -qE "^#? *${key}=" "$AUTH_ENV"; then
+        sed "s|^#\? *${key}=.*|${key}=${value}|" "$AUTH_ENV" > "$tmp"
+    else
+        cat "$AUTH_ENV" > "$tmp"
+        printf '%s=%s\n' "$key" "$value" >> "$tmp"
+    fi
+    mv "$tmp" "$AUTH_ENV"
+    echo "    set ${key}=${value} in ${AUTH_ENV}"
+}
+
+# KID: SHA256 of canonical DER bytes — stable across PEM formatting differences.
+# Pure openssl pipeline — no Python dependency (avoids Windows Store stub issue).
+# awk '{print $NF}' extracts the hex digest regardless of OpenSSL version prefix format.
+# The service derives the same value (auth_user_service/core/key_ids.py) and
+# refuses to boot if ACCESS_KEY_ID does not match it.
+derive_kid() {
+    openssl pkey -pubin -in "$1" -pubout -outform DER 2>/dev/null \
+      | openssl dgst -sha256 2>/dev/null \
+      | awk '{print $NF}' \
+      | cut -c1-16
+}
+
 [[ -f "$AUTH_ENV" ]] || { echo "ERROR: ${AUTH_ENV} not found — run from example directory"; exit 1; }
 
 # awk: single process, returns 0 on no-match — safe under pipefail unlike grep|cut|tr
@@ -26,10 +54,32 @@ fi
 mkdir -p "$KEYS_DIR"
 PRIV="${KEYS_DIR}/private.pem"
 PUB="${KEYS_DIR}/public.pem"
+PUB_OLD="${KEYS_DIR}/public_old.pem"
 
 # SC2091: string comparison, not command execution
 if [[ -f "$PRIV" ]] && [[ "$ROTATE" != "true" ]]; then
     echo "==> init-keys: keys exist, skipping (--rotate to regenerate)"; exit 0
+fi
+
+# Rotation overlap window: retain the outgoing PUBLIC key so JWKS keeps serving
+# it while access tokens signed under it are still alive, and consumers need no
+# restart. The outgoing PRIVATE key is deliberately not retained — it has no
+# remaining job and must not stay mounted.
+if [[ "$ROTATE" == "true" ]] && [[ -f "$PUB" ]]; then
+    cp "$PUB" "$PUB_OLD"
+    chmod 644 "$PUB_OLD"
+    old_kid=$(derive_kid "$PUB_OLD")
+    [[ -n "$old_kid" ]] || { echo "ERROR: failed to compute KID from ${PUB_OLD}" >&2; exit 1; }
+    echo "==> Retaining previous public key for the JWKS overlap window"
+    # Mirror whatever container path this stack mounts the key set at, rather
+    # than assuming /opt/keys — the script is vendored into other stacks.
+    pub_mount="$(awk -F= '/^ACCESS_PUBLIC_KEY_FILE=/{gsub(/["'"'"'[:space:]]/, "", $2); print $2}' "$AUTH_ENV")"
+    [[ -n "$pub_mount" ]] || pub_mount="/opt/keys/public.pem"
+    set_env_var "ACCESS_PUBLIC_KEY_OLD_FILE" "${pub_mount%/*}/public_old.pem"
+    set_env_var "ACCESS_KEY_ID_OLD" "$old_kid"
+    echo "    close the window once ACCESS_TOKEN_EXPIRE_MINUTES + the consumers'"
+    echo "    JWKS_CACHE_TTL_SECONDS have passed: unset both vars above, redeploy,"
+    echo "    and delete ${PUB_OLD}"
 fi
 
 echo "==> Generating keys for ${ACCESS_ALGO}"
@@ -62,24 +112,12 @@ openssl pkey -pubin -in "$PUB" -pubout -outform DER >/dev/null 2>&1 || {
     exit 1
 }
 
-# KID: SHA256 of canonical DER bytes — stable across PEM formatting differences.
-# Pure openssl pipeline — no Python dependency (avoids Windows Store stub issue).
-# awk '{print $NF}' extracts the hex digest regardless of OpenSSL version prefix format.
-kid=$(openssl pkey -pubin -in "$PUB" -pubout -outform DER 2>/dev/null \
-      | openssl dgst -sha256 2>/dev/null \
-      | awk '{print $NF}' \
-      | cut -c1-16)
+kid=$(derive_kid "$PUB")
 
 [[ -n "$kid" ]] || { echo "ERROR: failed to compute KID from ${PUB}" >&2; exit 1; }
 
-# Update ACCESS_KEY_ID in auth.env.
-# Uses a temp file instead of sed -i to avoid macOS/GNU sed portability differences.
-if grep -q "^ACCESS_KEY_ID=" "$AUTH_ENV"; then
-    tmp=$(mktemp)
-    sed "s/^ACCESS_KEY_ID=.*/ACCESS_KEY_ID=${kid}/" "$AUTH_ENV" > "$tmp" && mv "$tmp" "$AUTH_ENV"
-    echo "    updated ACCESS_KEY_ID=${kid} in ${AUTH_ENV}"
-else
-    echo "    WARNING: ACCESS_KEY_ID not found in ${AUTH_ENV}"
-fi
+# The keypair and the kid that labels it are written in the same step — the one
+# guarantee that keeps them bound. The service validates the binding at startup.
+set_env_var "ACCESS_KEY_ID" "$kid"
 
 echo "==> init-keys done: ${PRIV}, ${PUB}"

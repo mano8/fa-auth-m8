@@ -19,6 +19,7 @@ from auth_user_service.services.users import UserController
 from auth_user_service.db_models.users import User
 from auth_user_service.db_models.sessions import ClientSessionCreate, ClientSession
 from auth_user_service.core.config import settings
+from auth_user_service.core.key_ids import derive_kid
 from auth_user_service.core.security import SecurityHelper
 
 from fastapi import HTTPException
@@ -54,10 +55,13 @@ def _resolve_access_secret(algo: str) -> TokenSecret:
 def _resolve_kid(algo: str) -> Optional[str]:
     """Return the key ID to embed in the JWT ``kid`` header.
 
-    Uses ``ACCESS_KEY_ID`` from settings when explicitly configured.
-    For asymmetric algorithms, falls back to a stable 16-char SHA-256
-    fingerprint of the public key so consumers can match keys via JWKS
-    without requiring a configured key ID.
+    Uses ``ACCESS_KEY_ID`` from settings when explicitly configured — which
+    :meth:`Settings._validate_access_key_id_binding` has already proven equal
+    to :func:`derive_kid` of the loaded public key, so an explicit value and
+    the fallback below now always agree.
+    For asymmetric algorithms with no configured key ID, falls back to the
+    canonical DER fingerprint of the public key so consumers can match keys
+    via JWKS without requiring a configured key ID.
     Returns ``None`` for symmetric (HS256) algorithms — the secret must
     not be published.
     """
@@ -66,8 +70,7 @@ def _resolve_kid(algo: str) -> Optional[str]:
     explicit: Optional[str] = getattr(settings, "ACCESS_KEY_ID", None) or None
     if explicit:
         return explicit
-    pub = settings.ACCESS_PUBLIC_KEY or ""
-    return hashlib.sha256(pub.strip().encode()).hexdigest()[:16]
+    return derive_kid(settings.ACCESS_PUBLIC_KEY or "")
 
 
 class AuthController:

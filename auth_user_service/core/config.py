@@ -3,6 +3,7 @@ Configuration settings for the FastAPI application.
 This module loads environment settings securely and applies best practices.
 """
 
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -11,6 +12,7 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
+    PrivateAttr,
     SecretStr,
     field_validator,
     model_validator,
@@ -19,7 +21,11 @@ from pydantic_settings import SettingsConfigDict
 from auth_sdk_m8.utils.paths import find_dotenv
 from auth_sdk_m8.core.config import CommonSettings
 from auth_sdk_m8.observability.settings import ObservabilitySettingsMixin
+from auth_sdk_m8.schemas.auth import ASYMMETRIC_ALGORITHMS
+from auth_user_service.core.key_ids import derive_kid, public_key_kind
 # pylint: disable=invalid-name, import-outside-toplevel
+
+_logger = logging.getLogger(__name__)
 
 
 class ConsumerCredentialConfig(BaseModel):
@@ -365,6 +371,210 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     # fallback while new writes use TOKENS_ENCRYPTION_KEY. Remove it once every
     # stored token has been re-encrypted under (or has expired past) the new key.
     TOKENS_ENCRYPTION_KEY_OLD: Optional[SecretStr] = None
+
+    # ── JWKS key binding (2.1.0, audit J1) ───────────────────────────────────
+    # BREAKING: an ``ACCESS_KEY_ID`` that is not the DER fingerprint of the key
+    # it labels now refuses to boot. Before 2.1.0 it was free text with no
+    # cryptographic relationship to the mounted key, so regenerating the keypair
+    # without rewriting the label served a *different* public key under the
+    # *same* kid — which is exactly the symptom that opened this audit. Nothing
+    # detected it: no validator, no warning, no health assertion.
+    #
+    # Emergency break-glass only: downgrade that startup failure to a warning so
+    # a deployment that is already unbound can still be brought up while it is
+    # re-provisioned. It leaves consumers caching a key under a kid that does not
+    # identify it. Scheduled for removal in 3.0.0 — do not build on it.
+    ACCESS_KEY_ID_ALLOW_UNBOUND: bool = False
+
+    # ── Dual-key JWKS overlap window (2.1.0, audit J3) ───────────────────────
+    # The previous public key, kept published for verification while tokens
+    # signed under it are still alive. Set during a no-downtime keypair
+    # rotation and removed once the last old-key access token has expired.
+    #
+    # Same dual-key idiom as REFRESH_SECRET_KEY_OLD and TOKENS_ENCRYPTION_KEY_OLD,
+    # with one asymmetry: this key is **verification-only**. Signing always uses
+    # ACCESS_PRIVATE_KEY, and there is deliberately no ACCESS_PRIVATE_KEY_OLD —
+    # the old private key has no remaining job and must not stay mounted.
+    #
+    # Before 2.1.0 the endpoint published exactly one JWK, so every rotation was
+    # a hard cutover bounded by the consumer's JWKS cache TTL.
+    ACCESS_PUBLIC_KEY_OLD_FILE: Optional[str] = None
+    # Kid for the old key. Optional — derived from the old key when unset, which
+    # is the safe default; when set it is validated against that key exactly as
+    # ACCESS_KEY_ID is validated against the current one.
+    ACCESS_KEY_ID_OLD: Optional[str] = None
+
+    # Internal — populated by _load_old_public_key_file from the path above,
+    # mirroring CommonSettings._load_pem_files. Not settable via environment.
+    _access_public_key_old: Optional[str] = PrivateAttr(default=None)
+
+    # Set by _validate_access_key_id_binding when the break-glass flag suppressed
+    # a real binding failure, so main.py's _startup_checks can re-log it once
+    # application logging is configured (a validator warning is emitted at import
+    # time and is easy to miss).
+    _access_key_id_binding_warning: Optional[str] = PrivateAttr(default=None)
+
+    @property
+    def ACCESS_PUBLIC_KEY_OLD(self) -> Optional[str]:
+        """Previous RSA/EC public key loaded from ACCESS_PUBLIC_KEY_OLD_FILE."""
+        return self._access_public_key_old
+
+    @property
+    def access_key_id_binding_warning(self) -> Optional[str]:
+        """Message describing a break-glass-suppressed kid binding failure."""
+        return self._access_key_id_binding_warning
+
+    @model_validator(mode="after")
+    def _load_old_public_key_file(self) -> "Settings":
+        """Load the previous public key PEM, mirroring ``_load_pem_files``.
+
+        Defined before :meth:`_validate_access_key_id_binding` so the loaded PEM
+        is available to it — model validators run in definition order.
+        """
+        if self.ACCESS_PUBLIC_KEY_OLD_FILE:
+            path = Path(self.ACCESS_PUBLIC_KEY_OLD_FILE)
+            if not path.is_file():
+                raise ValueError(
+                    f"ACCESS_PUBLIC_KEY_OLD_FILE not found: {path}. Unset it to "
+                    "close the rotation overlap window."
+                )
+            self._access_public_key_old = path.read_text().strip()
+        return self
+
+    def _reject_old_key_pair_under_symmetric(self, algo: str) -> None:
+        """Reject a rotation overlap pair configured on an HS256 deployment."""
+        if self.ACCESS_PUBLIC_KEY_OLD or self.ACCESS_KEY_ID_OLD:
+            raise ValueError(
+                "ACCESS_PUBLIC_KEY_OLD_FILE / ACCESS_KEY_ID_OLD are only "
+                f"meaningful for asymmetric algorithms, but "
+                f"ACCESS_TOKEN_ALGORITHM={algo} publishes no key set. Unset "
+                "them."
+            )
+
+    def _reject_structural_old_key_errors(
+        self, algo: str, old_pem: Optional[str]
+    ) -> None:
+        """Reject rotation overlap pairs that could never publish a valid JWKS.
+
+        These are new in ``2.1.0``, so no deployment can already be in one of
+        these states and the break-glass flag deliberately does not cover them.
+        """
+        if self.ACCESS_KEY_ID_OLD and not old_pem:
+            raise ValueError(
+                "ACCESS_KEY_ID_OLD is set without ACCESS_PUBLIC_KEY_OLD_FILE, so "
+                "the kid it names is never published. Set both to open a "
+                "rotation overlap window, or neither to close it."
+            )
+        if not old_pem:
+            return
+
+        expected_kind = "EC" if algo.startswith("ES") else "RSA"
+        old_kind = public_key_kind(old_pem)
+        if old_kind != expected_kind:
+            raise ValueError(
+                "ACCESS_PUBLIC_KEY_OLD_FILE holds a "
+                f"{old_kind} key, but "
+                f"ACCESS_TOKEN_ALGORITHM={algo} publishes {expected_kind} "
+                "keys. A rotation overlap window cannot span key types — "
+                "cut over to the new algorithm with a single key instead."
+            )
+
+        # A second JWK under the same kid is the very defect this release
+        # closes, so it can never be published — with or without break-glass.
+        public_pem = self.ACCESS_PUBLIC_KEY
+        if public_pem and derive_kid(public_pem) == derive_kid(old_pem):
+            raise ValueError(
+                "ACCESS_PUBLIC_KEY_OLD_FILE and ACCESS_PUBLIC_KEY_FILE hold the "
+                "same key, which would publish two JWKs under one kid. Point "
+                "ACCESS_PUBLIC_KEY_OLD_FILE at the *previous* key, or unset it "
+                "to close the rotation overlap window."
+            )
+
+    def _kid_binding_problems(self, old_pem: Optional[str]) -> list[str]:
+        """Describe every published kid that is not its own key's fingerprint.
+
+        Both values in each message are public labels — a kid appears in JWKS
+        and in every JWT header — so naming them discloses no key material.
+        """
+        problems: list[str] = []
+
+        public_pem = self.ACCESS_PUBLIC_KEY
+        configured = (self.ACCESS_KEY_ID or "").strip()
+        if public_pem and configured:
+            expected = derive_kid(public_pem)
+            if configured != expected:
+                problems.append(
+                    f"ACCESS_KEY_ID={configured} is not bound to the configured "
+                    "signing key: it must be that key's DER fingerprint, which "
+                    f"is {expected}. A kid that does not identify the key it "
+                    "labels lets a keypair regeneration serve a different public "
+                    "key under an unchanged kid, and consumers cache the stale "
+                    "one until their JWKS TTL expires. Re-provision with "
+                    "examples/docker_compose/shared/scripts/init-keys.sh, which "
+                    "writes the keypair and ACCESS_KEY_ID together, or set "
+                    f"ACCESS_KEY_ID={expected}."
+                )
+
+        configured_old = (self.ACCESS_KEY_ID_OLD or "").strip()
+        if old_pem and configured_old:
+            expected_old = derive_kid(old_pem)
+            if configured_old != expected_old:
+                problems.append(
+                    f"ACCESS_KEY_ID_OLD={configured_old} is not bound to "
+                    "ACCESS_PUBLIC_KEY_OLD_FILE: it must be that key's DER "
+                    f"fingerprint, which is {expected_old}. Tokens signed under "
+                    "the previous key carry the fingerprint in their kid header "
+                    "and would not match the JWK published for it."
+                )
+
+        return problems
+
+    @model_validator(mode="after")
+    def _validate_access_key_id_binding(self) -> "Settings":
+        """Fail closed when a configured kid does not name the key it labels.
+
+        Covers both published keys: ``ACCESS_KEY_ID`` against
+        ``ACCESS_PUBLIC_KEY``, and — when a rotation overlap window is open —
+        ``ACCESS_KEY_ID_OLD`` against ``ACCESS_PUBLIC_KEY_OLD``.
+
+        Runs after ``CommonSettings._load_pem_files`` (base-class model
+        validators are collected first) and after
+        :meth:`_load_old_public_key_file`, so both PEMs are already loaded.
+
+        Deliberately silent for three legitimate configurations:
+
+        - symmetric (HS256) deployments, which publish no key and carry no kid;
+        - any service holding no public key — a consumer that resolves keys over
+          ``JWKS_URI`` has nothing local to bind against;
+        - a kid left unset, where it *is* the derived fingerprint of the loaded
+          key and cannot drift from it.
+
+        Structural misconfigurations of the ``_OLD`` pair raise unconditionally
+        (:meth:`_reject_structural_old_key_errors`); a kid that has merely
+        drifted from its key (:meth:`_kid_binding_problems`) is the only failure
+        the break-glass flag can downgrade.
+        """
+        algo = self.ACCESS_TOKEN_ALGORITHM
+        old_pem = self.ACCESS_PUBLIC_KEY_OLD
+        if algo not in ASYMMETRIC_ALGORITHMS:
+            self._reject_old_key_pair_under_symmetric(algo)
+            return self
+
+        self._reject_structural_old_key_errors(algo, old_pem)
+
+        problems = self._kid_binding_problems(old_pem)
+        if not problems:
+            return self
+
+        message = " ".join(problems) + (
+            " Emergency only: ACCESS_KEY_ID_ALLOW_UNBOUND=true downgrades this "
+            "to a warning (removed in 3.0.0)."
+        )
+        if self.ACCESS_KEY_ID_ALLOW_UNBOUND:
+            self._access_key_id_binding_warning = message
+            _logger.warning("ACCESS_KEY_ID_ALLOW_UNBOUND=true — %s", message)
+            return self
+        raise ValueError(message)
 
 
 try:
