@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import jwt
 
+from auth_user_service.core.key_ids import derive_kid
 from auth_user_service.routes.jwks import _build_jwk
 from auth_user_service.services.auth import _resolve_kid
 
@@ -57,9 +58,14 @@ ZtJUy2pbhysV/Th9gu8sxnKN2mNzTgSeGVaE+Yk5hpi+UTqfWQCK594KTowJa0LT
 MwIDAQAB
 -----END PUBLIC KEY-----"""
 
-_EXPECTED_KID_FINGERPRINT = hashlib.sha256(
-    _RSA_PUBLIC_PEM.strip().encode()
-).hexdigest()[:16]
+# Canonical kid for the key above: SHA-256 of its SPKI DER bytes, first 16 hex
+# (W1.1 / audit J2). Pinned as a literal as well as derived, so a change to
+# `derive_kid` cannot silently move every expectation in this file with it.
+_EXPECTED_KID_FINGERPRINT = derive_kid(_RSA_PUBLIC_PEM)
+_GOLDEN_DER_KID = "1462c7d9bb33ccbd"
+# What the pre-2.1.0 service published for the same key — kept only to assert
+# the service no longer produces it.
+_LEGACY_PEM_TEXT_KID = hashlib.sha256(_RSA_PUBLIC_PEM.strip().encode()).hexdigest()[:16]
 
 
 # ── _build_jwk ────────────────────────────────────────────────────────────────
@@ -159,8 +165,24 @@ def test_resolve_kid_derives_fingerprint_when_no_access_key_id():
 
         result = _resolve_kid("RS256")
 
-    assert result == _EXPECTED_KID_FINGERPRINT
+    assert result == _EXPECTED_KID_FINGERPRINT == _GOLDEN_DER_KID
     assert len(result) == 16
+
+
+def test_resolve_kid_fallback_is_the_der_fingerprint_not_the_pem_digest():
+    """W1.1 / J2: the fallback moved from the PEM text digest to the DER digest.
+
+    Before 2.1.0 an operator who provisioned with ``init-keys.sh`` and then
+    cleared ``ACCESS_KEY_ID`` to "let it auto-derive" silently got a different
+    ``kid`` for an unchanged key.
+    """
+    with patch("auth_user_service.services.auth.settings") as mock_settings:
+        mock_settings.ACCESS_KEY_ID = None
+        mock_settings.ACCESS_PUBLIC_KEY = _RSA_PUBLIC_PEM
+
+        result = _resolve_kid("RS256")
+
+    assert result != _LEGACY_PEM_TEXT_KID
 
 
 def test_resolve_kid_fingerprint_is_stable():
