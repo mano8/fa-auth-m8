@@ -20,7 +20,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
     NoEncryption,
@@ -29,7 +29,11 @@ from cryptography.hazmat.primitives.serialization import (
     load_pem_public_key,
 )
 
-from auth_user_service.core.key_ids import KID_HEX_LENGTH, derive_kid
+from auth_user_service.core.key_ids import (
+    KID_HEX_LENGTH,
+    derive_kid,
+    public_key_kind,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INIT_KEYS = (
@@ -147,6 +151,42 @@ def test_derive_kid_is_deterministic() -> None:
 @pytest.mark.security
 def test_derive_kid_separates_distinct_keys() -> None:
     assert derive_kid(_rsa_public_pem()) != derive_kid(_rsa_public_pem())
+
+
+# ── key type classification ──────────────────────────────────────────────────
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("pem_factory", "expected"),
+    [(_rsa_public_pem, "RSA"), (_ec_public_pem, "EC")],
+)
+def test_public_key_kind_names_the_supported_families(pem_factory, expected) -> None:
+    assert public_key_kind(pem_factory()) == expected
+
+
+@pytest.mark.security
+def test_public_key_kind_reports_an_unsupported_family() -> None:
+    """A parsable key that is neither RSA nor EC classifies as unsupported.
+
+    ``_build_jwk`` can only serialize RSA and EC keys — it picks its algorithm
+    class from ``ACCESS_TOKEN_ALGORITHM`` and has no third branch. An Ed25519
+    key is a valid PEM public key, so parsing succeeds and the type check is
+    the only thing standing between it and a malformed JWK at request time.
+    """
+    pem = (
+        ed25519.Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    assert public_key_kind(pem) == "unsupported"
+
+
+@pytest.mark.security
+def test_public_key_kind_rejects_unparsable_input() -> None:
+    with pytest.raises(ValueError, match="determine the key type"):
+        public_key_kind("not-a-pem")
 
 
 # ── invalid input fails closed, without echoing key material ─────────────────
