@@ -14,6 +14,99 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.1.0] - 2026-09-09
+
+JWKS `kid` / key-material binding. Closes findings `J1`–`J4` of the
+2026-09-08 audit, which was opened by a report that one fa-auth instance
+served two different RSA public keys under a single `kid`. That framing did
+not reproduce — the endpoint is byte-for-byte deterministic under concurrent
+load — but the mechanism that produces the same symptom *across time* was
+real, and this release closes it.
+
+### BREAKING
+
+- **An asymmetric deployment whose `ACCESS_KEY_ID` is not the DER fingerprint
+  of the public key it serves now refuses to boot** (`J1`). Previously the
+  value was free text used verbatim as both the JWT `kid` header and the JWK
+  `kid`, with nothing checking it against the loaded key — no validator, no
+  warning, no health assertion. Under that configuration, regenerating the
+  keypair serves a *different* public key under an *unchanged* `kid`, and
+  consumers keep verifying against the stale one until their JWKS cache
+  expires. A stack measured during the audit was in exactly that state.
+
+  The startup error names the expected `kid` and points at `init-keys.sh`.
+  Re-provision with `bash init.sh --rotate-keys`, or set `ACCESS_KEY_ID` to the
+  value the error reports. Deployments that leave `ACCESS_KEY_ID` unset, run
+  HS256, or hold no local public key (consumers resolving over `JWKS_URI`) are
+  unaffected.
+
+  **Emergency opt-out:** `ACCESS_KEY_ID_ALLOW_UNBOUND=true` downgrades the
+  failure to a warning, re-logged at `CRITICAL` on every startup for as long as
+  the gap holds. It exists so an already-unbound deployment can be brought up
+  while it is re-provisioned. **It is removed in `3.0.0`.**
+
+- **The `kid` derived when `ACCESS_KEY_ID` is unset changed value** (`J2`).
+  Tokens and JWKS from an upgraded deployment that relies on the fallback carry
+  a different `kid` than before. Consumers recover on their next JWKS refresh
+  (the `kid` is new, which is precisely the case `JwksKeyResolver`'s
+  unknown-`kid` recovery handles); to avoid even that window, open a rotation
+  overlap window or restart consumers after the upgrade.
+
+### Added
+
+- **Dual-key JWKS overlap window** (`J3`, issuer half) —
+  `ACCESS_PUBLIC_KEY_OLD_FILE` + `ACCESS_KEY_ID_OLD` publish the previous public
+  key alongside the current one, each under its own `kid`, so a keypair
+  rotation completes with **no consumer restart and no verification gap**. The
+  current key is always published first. The old key is **verification-only**:
+  signing always uses `ACCESS_PRIVATE_KEY`, and there is deliberately no
+  `ACCESS_PRIVATE_KEY_OLD` — the retired private key has no remaining job and
+  must not stay mounted. Same dual-key idiom as `REFRESH_SECRET_KEY_OLD` and
+  `TOKENS_ENCRYPTION_KEY_OLD`.
+- **`Cache-Control` and a strong `ETag` on the JWKS response** (`J4`), with
+  `If-None-Match` answered by `304`. `max-age` follows
+  `JWKS_CACHE_TTL_SECONDS`; the `ETag` moves exactly when the key set does,
+  including when an overlap window opens or closes. Comparison is weak per
+  RFC 9110 §13.1.2. Previously the response carried no freshness metadata at
+  all, leaving every intermediary to invent its own policy.
+- `auth_user_service/core/key_ids.py` — the single `kid` derivation for the
+  product, with `tests/security/test_kid_derivation.py` executing the real
+  `init-keys.sh` (RS256 and ES256) and asserting it agrees.
+
+### Changed
+
+- **`init-keys.sh --rotate` now opens the overlap window**: it retains the
+  outgoing *public* key as `keys/public_old.pem` and writes `ACCESS_KEY_ID_OLD`
+  and `ACCESS_PUBLIC_KEY_OLD_FILE` alongside the new `ACCESS_KEY_ID`, so a
+  rotation stays one command and no `kid` can drift from its key. The old-key
+  mount path follows the stack's own `ACCESS_PUBLIC_KEY_FILE` rather than
+  assuming `/opt/keys`. It also appends `ACCESS_KEY_ID` when the line is absent
+  instead of warning and moving on.
+- `examples/docker_compose/SECURITY.md` — the claim that fa-auth "does not
+  serve two keys simultaneously, so there is no JWKS overlap window" is
+  replaced by the real four-step rotation procedure; the rotation matrix row
+  for the RS256/ES256 keypair moves from *Partial (≤ JWKS cache TTL)* to
+  dual-key with no forced re-auth.
+- Every `auth.env*.example` — the line advertising the `kid` as
+  "auto-derived from key fingerprint if unset" was false after `J2` (the
+  fallback and `init-keys.sh` produced different values); it now documents the
+  DER fingerprint as the binding requirement, with the `_OLD` pair and the
+  break-glass flag alongside it.
+- Example compose stacks repinned to `tepochtli/fa-auth-m8:2.1.0`;
+  `examples/fastapi_minimal` and `examples/fastapi_full` moved to `2.1.0` per
+  this repository's example version-alignment convention.
+
+### Fixed
+
+- **`_resolve_kid` digested the PEM *text*; `init-keys.sh` digested the SPKI
+  *DER* bytes** (`J2`) — the same key produced two different `kid`s depending
+  on which path wrote it, and the operator-facing documentation advertised them
+  as equivalent. Both now route through `derive_kid`, which is the DER form:
+  stable across PEM line endings and whitespace, and already the operator
+  contract.
+
+---
+
 ## [2.0.3] - 2026-08-15
 
 ### Added

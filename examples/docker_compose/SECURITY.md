@@ -359,7 +359,7 @@ always uses the current private key — the old key is **verification-only**, an
 no `ACCESS_PRIVATE_KEY_OLD`. A planned rotation therefore completes with **no consumer restart and no
 verification gap**:
 
-1. `./shared/scripts/init-keys.sh --rotate` — moves the current public key to `keys/public_old.pem`,
+1. `bash init.sh --rotate-keys` — retains the current public key as `keys/public_old.pem`,
    generates a new keypair, and writes both `ACCESS_KEY_ID` and `ACCESS_KEY_ID_OLD` into `auth.env`.
    The keypair and its `kid` can only be written together, which is what makes the binding above hold.
 2. Mount the old public key and redeploy the auth service only:

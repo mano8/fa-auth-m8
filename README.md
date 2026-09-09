@@ -239,6 +239,9 @@ Firefox CA import walkthrough.
 ```bash
 bash init.sh
 # RS256/ES256 stacks: also generates the key pair and writes ACCESS_KEY_ID
+# Rotating later: bash init.sh --rotate-keys — new keypair, previous public
+# key retained as keys/public_old.pem, and both kids written together. The
+# service refuses to boot if a kid does not match the key it labels.
 ```
 
 > **Windows:** use **Git Bash** (included with Git for Windows) or **WSL**.
@@ -440,7 +443,10 @@ mismatch** — a deployment never runs half-configured.
 | `TOKEN_ISSUER` | if strict | — | `iss` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
 | `TOKEN_AUDIENCE` | if strict | — | `aud` claim embedded in issued tokens; validators require an exact match. **Required at boot when `TOKEN_STRICT_VALIDATION=true` (the default).** |
 | `TOKEN_STRICT_VALIDATION` | no | `true` | Secure-by-default strict profile (`auth-sdk-m8 ≥ 1.0.0`): enforces `iss`/`aud` binding and pins the configured algorithm; the service fails closed at boot unless `TOKEN_ISSUER`/`TOKEN_AUDIENCE` are set. Set `false` to opt out (legacy/local), enforcing `iss`/`aud` only when configured. |
-| `ACCESS_KEY_ID` | no | — | Explicit `kid` in JWT headers and JWKS; auto-derived from key fingerprint when unset |
+| `ACCESS_KEY_ID` | no | — | `kid` in JWT headers and JWKS. **Must be the public key's DER fingerprint** — `SHA-256(SPKI DER)`, first 16 hex, the value `init-keys.sh` writes. A mismatch is a startup failure (`2.1.0`); the same value is derived when unset. |
+| `ACCESS_KEY_ID_ALLOW_UNBOUND` | no | `false` | Emergency break-glass: downgrade the `ACCESS_KEY_ID` binding failure to a warning so an already-unbound deployment can boot while it is re-provisioned. **Removed in `3.0.0`.** |
+| `ACCESS_PUBLIC_KEY_OLD_FILE` | no | — | Previous public key, kept published during a keypair rotation so tokens signed under it keep verifying with no consumer restart. Verification-only — signing always uses `ACCESS_PRIVATE_KEY_FILE`, and there is deliberately no `ACCESS_PRIVATE_KEY_OLD`. Written by `init-keys.sh --rotate`; unset once every old-key access token has expired. |
+| `ACCESS_KEY_ID_OLD` | no | — | `kid` for `ACCESS_PUBLIC_KEY_OLD_FILE`, validated against it exactly as `ACCESS_KEY_ID` is. Derived from that key when unset. |
 | `AUTH_SERVICE_ROLE` | no | `issuer` | `issuer` (auth service) or `consumer` (downstream services) |
 | `JWKS_URI` | no | — | Consumer services: JWKS endpoint URL; enables automatic `JwksKeyResolver` wiring |
 | `JWKS_CACHE_TTL_SECONDS` | no | `300` | JWKS key cache TTL in seconds |
