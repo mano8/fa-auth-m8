@@ -90,7 +90,7 @@ def test_build_jwk_kid_is_injected():
 
 
 def test_jwks_endpoint_rs256_returns_valid_keyset():
-    from auth_user_service.routes.jwks import jwks_endpoint
+    from auth_user_service.routes.jwks import build_key_set
 
     with (
         patch("auth_user_service.routes.jwks.settings") as mock_settings,
@@ -102,7 +102,7 @@ def test_jwks_endpoint_rs256_returns_valid_keyset():
         mock_settings.ACCESS_PUBLIC_KEY_OLD = None
         mock_settings.ACCESS_KEY_ID_OLD = None
 
-        result = jwks_endpoint()
+        result = build_key_set()
 
     assert "keys" in result
     assert len(result["keys"]) == 1
@@ -117,26 +117,26 @@ def test_jwks_endpoint_rs256_returns_valid_keyset():
 
 def test_jwks_endpoint_hs256_returns_empty_keyset():
     """Symmetric secrets must never be published via JWKS."""
-    from auth_user_service.routes.jwks import jwks_endpoint
+    from auth_user_service.routes.jwks import build_key_set
 
     with patch("auth_user_service.routes.jwks.settings") as mock_settings:
         mock_settings.ACCESS_TOKEN_ALGORITHM = "HS256"
         mock_settings.ACCESS_PUBLIC_KEY = None
 
-        result = jwks_endpoint()
+        result = build_key_set()
 
     assert result == {"keys": []}
 
 
 def test_jwks_endpoint_no_public_key_returns_empty_keyset():
     """RS256 with missing public key returns an empty key set, not a crash."""
-    from auth_user_service.routes.jwks import jwks_endpoint
+    from auth_user_service.routes.jwks import build_key_set
 
     with patch("auth_user_service.routes.jwks.settings") as mock_settings:
         mock_settings.ACCESS_TOKEN_ALGORITHM = "RS256"
         mock_settings.ACCESS_PUBLIC_KEY = None
 
-        result = jwks_endpoint()
+        result = build_key_set()
 
     assert result == {"keys": []}
 
