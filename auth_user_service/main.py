@@ -196,6 +196,15 @@ def _startup_checks() -> None:
             "inter-service calls."
         )
 
+    # Re-log the break-glass kid binding warning here: Settings emits it while
+    # the module is imported, before application logging is configured, so it is
+    # easy to lose. The unbound state is a live security gap (audit J1) and must
+    # be visible in the running service's log for as long as it holds.
+    if settings.access_key_id_binding_warning:
+        _logger.critical(  # nosec B106
+            "STARTUP: %s", settings.access_key_id_binding_warning
+        )
+
     if settings.requires_redis:
         redis = get_redis_client()
         if redis is None:

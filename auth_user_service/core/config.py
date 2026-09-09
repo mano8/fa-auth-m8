@@ -3,6 +3,7 @@ Configuration settings for the FastAPI application.
 This module loads environment settings securely and applies best practices.
 """
 
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -11,6 +12,7 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
+    PrivateAttr,
     SecretStr,
     field_validator,
     model_validator,
@@ -19,7 +21,11 @@ from pydantic_settings import SettingsConfigDict
 from auth_sdk_m8.utils.paths import find_dotenv
 from auth_sdk_m8.core.config import CommonSettings
 from auth_sdk_m8.observability.settings import ObservabilitySettingsMixin
+from auth_sdk_m8.schemas.auth import ASYMMETRIC_ALGORITHMS
+from auth_user_service.core.key_ids import derive_kid
 # pylint: disable=invalid-name, import-outside-toplevel
+
+_logger = logging.getLogger(__name__)
 
 
 class ConsumerCredentialConfig(BaseModel):
@@ -365,6 +371,80 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     # fallback while new writes use TOKENS_ENCRYPTION_KEY. Remove it once every
     # stored token has been re-encrypted under (or has expired past) the new key.
     TOKENS_ENCRYPTION_KEY_OLD: Optional[SecretStr] = None
+
+    # ── JWKS key binding (2.1.0, audit J1) ───────────────────────────────────
+    # BREAKING: an ``ACCESS_KEY_ID`` that is not the DER fingerprint of the key
+    # it labels now refuses to boot. Before 2.1.0 it was free text with no
+    # cryptographic relationship to the mounted key, so regenerating the keypair
+    # without rewriting the label served a *different* public key under the
+    # *same* kid — which is exactly the symptom that opened this audit. Nothing
+    # detected it: no validator, no warning, no health assertion.
+    #
+    # Emergency break-glass only: downgrade that startup failure to a warning so
+    # a deployment that is already unbound can still be brought up while it is
+    # re-provisioned. It leaves consumers caching a key under a kid that does not
+    # identify it. Scheduled for removal in 3.0.0 — do not build on it.
+    ACCESS_KEY_ID_ALLOW_UNBOUND: bool = False
+
+    # Set by _validate_access_key_id_binding when the break-glass flag suppressed
+    # a real binding failure, so main.py's _startup_checks can re-log it once
+    # application logging is configured (a validator warning is emitted at import
+    # time and is easy to miss).
+    _access_key_id_binding_warning: Optional[str] = PrivateAttr(default=None)
+
+    @property
+    def access_key_id_binding_warning(self) -> Optional[str]:
+        """Message describing a break-glass-suppressed kid binding failure."""
+        return self._access_key_id_binding_warning
+
+    @model_validator(mode="after")
+    def _validate_access_key_id_binding(self) -> "Settings":
+        """Fail closed when ``ACCESS_KEY_ID`` does not name the key it labels.
+
+        Runs after ``CommonSettings._load_pem_files`` — base-class model
+        validators are collected first, so ``ACCESS_PUBLIC_KEY`` is already
+        populated from ``ACCESS_PUBLIC_KEY_FILE`` by the time this executes.
+
+        Deliberately silent for three legitimate configurations:
+
+        - symmetric (HS256) deployments, which publish no key and carry no kid;
+        - any service holding no public key — a consumer that resolves keys over
+          ``JWKS_URI`` has nothing local to bind against;
+        - ``ACCESS_KEY_ID`` unset, where the kid *is* the derived fingerprint of
+          the loaded key and cannot drift from it.
+        """
+        if self.ACCESS_TOKEN_ALGORITHM not in ASYMMETRIC_ALGORITHMS:
+            return self
+        public_pem = self.ACCESS_PUBLIC_KEY
+        if not public_pem:
+            return self
+        configured = (self.ACCESS_KEY_ID or "").strip()
+        if not configured:
+            return self
+
+        expected = derive_kid(public_pem)
+        if configured == expected:
+            return self
+
+        # Both values are public labels — the kid is published in JWKS and in
+        # every JWT header — so naming them here discloses no key material.
+        message = (
+            f"ACCESS_KEY_ID={configured} is not bound to the configured signing "
+            f"key: it must be that key's DER fingerprint, which is {expected}. "
+            "A kid that does not identify the key it labels lets a keypair "
+            "regeneration serve a different public key under an unchanged kid, "
+            "and consumers cache the stale one until their JWKS TTL expires. "
+            "Re-provision with examples/docker_compose/shared/scripts/"
+            "init-keys.sh, which writes the keypair and ACCESS_KEY_ID together, "
+            f"or set ACCESS_KEY_ID={expected}. Emergency only: "
+            "ACCESS_KEY_ID_ALLOW_UNBOUND=true downgrades this to a warning "
+            "(removed in 3.0.0)."
+        )
+        if self.ACCESS_KEY_ID_ALLOW_UNBOUND:
+            self._access_key_id_binding_warning = message
+            _logger.warning("ACCESS_KEY_ID_ALLOW_UNBOUND=true — %s", message)
+            return self
+        raise ValueError(message)
 
 
 try:
