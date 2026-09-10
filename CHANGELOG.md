@@ -14,6 +14,53 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.2.0] - 2026-09-10
+
+Dependency realignment onto the published `J3` consumer half. No service
+behaviour changes: `2.1.0` shipped the issuer half of the JWKS `kid` fix
+(`J1`–`J4`) while `auth-sdk-m8 3.2.0` and `fastapi-m8 4.5.0` were still
+unreleased, so the floors it declared could not name them. Both are now on
+PyPI and this release moves onto them.
+
+### Changed
+
+- **`auth-sdk-m8` floor raised to `>=3.2.0,<4.0.0`** (was `>=3.1.3`) in
+  `auth_user_service/requirements_base.txt`. `auth-sdk-m8 3.2.0` is the
+  consumer half of `J3`: its `JwksKeyResolver` detects key material changing
+  under an unchanged `kid` and recovers within one throttled refresh instead of
+  one full JWKS cache TTL, and it pins down that a multi-key JWKS — exactly the
+  key set `2.1.0`'s overlap window publishes — populates one cache entry per
+  `kid`. `2.1.0` shipped the issuer half against an SDK floor that predated the
+  matching consumer fix; this closes that gap. `requirements_prod.lock`
+  regenerated with `pip-compile --generate-hashes`, moving `auth-sdk-m8` from
+  `3.1.3` to `3.2.0`.
+- **Example consumers raised to `fastapi-m8>=4.5.0,<5.0.0`** (was `>=4.4.0`) in
+  `examples/fastapi_full/requirements_base.txt` and
+  `examples/fastapi_minimal/requirements.txt`. `fastapi-m8 4.5.0` is the only
+  route by which `auth-sdk-m8 3.2.0` reaches a consumer service — a consumer
+  may not declare the SDK directly — and its `COMPAT_MATRIX` `"4.5"` row makes
+  the SDK floor a **boot-time** requirement rather than an optional resolution.
+  The examples are reference integrations, so they carry the floor the fleet is
+  expected to adopt.
+- Example compose stacks repinned to `tepochtli/fa-auth-m8:2.2.0`;
+  `examples/fastapi_minimal` and `examples/fastapi_full` moved to `2.2.0` per
+  this repository's example version-alignment convention.
+- `README.md`'s example-integration paragraph corrected: it advertised a
+  `fastapi-m8 >=4.2.0,<5.0.0` floor the example requirement files had already
+  left behind.
+
+### Fixed
+
+- **`requirements_prod.lock` had drifted below its own declared floors.**
+  Dependabot raised `sqlmodel` to `>=0.0.42` and `alembic` to `>=1.19.1` in
+  `requirements_base.txt` after the lock was last generated, so the hash-locked
+  release set still pinned `sqlmodel==0.0.39` and `alembic==1.18.5` — the
+  release image installed versions its own requirements forbade. The `3.2.0`
+  regeneration closes both (`0.0.42`, `1.19.2`). Found while regenerating for
+  the SDK floor, not introduced by it.
+
+---
+
 ## [2.1.0] - 2026-09-09
 
 JWKS `kid` / key-material binding. Closes findings `J1`–`J4` of the

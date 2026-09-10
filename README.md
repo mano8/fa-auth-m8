@@ -1228,7 +1228,7 @@ planned (Phase 9, P9-9).
 
 ## Consumer Service Integration
 
-`examples/fastapi_full` and `examples/fastapi_minimal` are reference implementations showing how a downstream microservice integrates with `auth_user_service` using [fastapi-m8](https://github.com/mano8/fastapi-m8) `>=4.2.0,<5.0.0` and [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8). `fastapi_full` demonstrates DB session, health checks, auth deps, and lifespan teardown; `fastapi_minimal` is the minimal three-step setup. The `4.2.0` floor is what supplies the centralized reader-tier guard (`get_current_active_reader`) the full example's category surface is gated on.
+`examples/fastapi_full` and `examples/fastapi_minimal` are reference implementations showing how a downstream microservice integrates with `auth_user_service` using [fastapi-m8](https://github.com/mano8/fastapi-m8) `>=4.5.0,<5.0.0` and [auth-sdk-m8](https://github.com/mano8/auth-sdk-m8). `fastapi_full` demonstrates DB session, health checks, auth deps, and lifespan teardown; `fastapi_minimal` is the minimal three-step setup. The `4.2.0` floor supplied the centralized reader-tier guard (`get_current_active_reader`) the full example's category surface is gated on; the floor now sits at `4.5.0`, which is what carries `auth-sdk-m8 >= 3.2.0` — the consumer half of the JWKS `kid` fix — into a consumer service transitively.
 
 Both examples wire every JWT guard straight from the single `build_auth_deps` call — no route re-implements a role or `is_superuser` check:
 
