@@ -61,6 +61,13 @@ PyPI and this release moves onto them.
   `pip install "fastapi-m8>=3.3.0,<4.0.0"` — an entire major behind the `4.x`
   line every example in this repository has carried since `2.0.3`. This is the
   Docker Hub overview page, so it is the first thing a new consumer reads.
+- **Four more stale image references corrected**, found by sweeping for the
+  same defect after `DOCKERHUB.md`: `examples/docker_compose/hardened_m8/README.md`
+  (intro line and service table) and `examples/docker_compose/vault_dev_m8/README.md`
+  (service table) advertised `2.0.2`, and `README.md`'s compose-override snippet
+  advertised `2.0.0` — while the compose files in those very stacks have carried
+  `2.2.0` since this release's own repin. Every prose reference to the image
+  now agrees with the YAML beside it.
 - Example compose stacks repinned to `tepochtli/fa-auth-m8:2.2.0`;
   `examples/fastapi_minimal` and `examples/fastapi_full` moved to `2.2.0` per
   this repository's example version-alignment convention.
