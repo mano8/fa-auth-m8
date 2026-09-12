@@ -14,7 +14,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [2.2.0] - 2026-09-10
+## [2.2.0] - 2026-09-12
 
 Dependency realignment onto the published `J3` consumer half. No service
 behaviour changes: `2.1.0` shipped the issuer half of the JWKS `kid` fix
@@ -34,14 +34,33 @@ PyPI and this release moves onto them.
   matching consumer fix; this closes that gap. `requirements_prod.lock`
   regenerated with `pip-compile --generate-hashes`, moving `auth-sdk-m8` from
   `3.1.3` to `3.2.0`.
-- **Example consumers raised to `fastapi-m8>=4.5.0,<5.0.0`** (was `>=4.4.0`) in
+- **Example consumers raised to `fastapi-m8>=4.5.1,<5.0.0`** (was `>=4.4.0`) in
   `examples/fastapi_full/requirements_base.txt` and
-  `examples/fastapi_minimal/requirements.txt`. `fastapi-m8 4.5.0` is the only
+  `examples/fastapi_minimal/requirements.txt`. The `4.5` line is the only
   route by which `auth-sdk-m8 3.2.0` reaches a consumer service — a consumer
   may not declare the SDK directly — and its `COMPAT_MATRIX` `"4.5"` row makes
   the SDK floor a **boot-time** requirement rather than an optional resolution.
   The examples are reference integrations, so they carry the floor the fleet is
-  expected to adopt.
+  expected to adopt. The floor names `4.5.1` rather than `4.5.0` per the
+  workspace's explicit-pin policy (a floor moves to the newest *published*
+  version): `4.5.1` published 2026-09-12 and is the release in which
+  `fastapi-m8`'s own compiled `constraints.txt` / `constraints-all.txt` stop
+  pinning `auth-sdk-m8==3.1.3` — `4.5.0` declared the `>=3.2.0` floor while its
+  lockfiles still contradicted it. Nothing a consumer executes differs between
+  the two.
+- **The Layer B database-integration matrix installs the same floor.**
+  `.github/workflows/database-integration.yaml` installed
+  `fastapi-m8[db,mysql,postgres]>=4.2.0,<5.0.0`, three minors behind the
+  examples it exercises, so the matrix could certify the example chain against
+  a framework release predating both halves of `J3`. Raised to `>=4.5.1,<5.0.0`
+  to match `examples/fastapi_full/requirements_base.txt`.
+- **`DOCKERHUB.md` corrected — it was the staler half of the published
+  documentation.** The image-tag section advertised `tepochtli/fa-auth-m8:2.0.0`
+  in both the `docker pull` example and the compose snippet (now `2.2.0`), and
+  the FastAPI integration section told readers to
+  `pip install "fastapi-m8>=3.3.0,<4.0.0"` — an entire major behind the `4.x`
+  line every example in this repository has carried since `2.0.3`. This is the
+  Docker Hub overview page, so it is the first thing a new consumer reads.
 - Example compose stacks repinned to `tepochtli/fa-auth-m8:2.2.0`;
   `examples/fastapi_minimal` and `examples/fastapi_full` moved to `2.2.0` per
   this repository's example version-alignment convention.
