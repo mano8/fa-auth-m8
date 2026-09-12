@@ -84,6 +84,13 @@ PyPI and this release moves onto them.
   release image installed versions its own requirements forbade. The `3.2.0`
   regeneration closes both (`0.0.42`, `1.19.2`). Found while regenerating for
   the SDK floor, not introduced by it.
+- **`curl` apt pin raised to `8.14.1-2+deb13u5`** (was `+deb13u4`) in
+  `auth_user_service/Dockerfile`, `auth_user_service/Dockerfile.local` and
+  `examples/fastapi_full/Dockerfile`. Debian trixie superseded `+deb13u4` and
+  dropped it from the archive, so the exact pin no longer resolved and the
+  first `v2.2.0` Docker publish failed at `apt-get install` before any image
+  was pushed. The release was re-cut at this commit; no image carried the
+  stale pin.
 
 ---
 
