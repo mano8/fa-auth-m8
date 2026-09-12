@@ -165,11 +165,11 @@ mode.
 ## Image Tags
 
 ```sh
-docker pull tepochtli/fa-auth-m8:2.0.0
+docker pull tepochtli/fa-auth-m8:2.2.0
 docker pull tepochtli/fa-auth-m8:latest
 ```
 
-Use a pinned semver tag such as `2.0.0` for production. Avoid `latest` in
+Use a pinned semver tag such as `2.2.0` for production. Avoid `latest` in
 long-lived deployments.
 
 To use the published image in your own compose stack:
@@ -177,7 +177,7 @@ To use the published image in your own compose stack:
 ```yaml
 services:
   auth_user_service:
-    image: tepochtli/fa-auth-m8:2.0.0
+    image: tepochtli/fa-auth-m8:2.2.0
 ```
 
 ---
@@ -187,7 +187,7 @@ services:
 Install the consumer helper package:
 
 ```sh
-pip install "fastapi-m8>=3.3.0,<4.0.0"
+pip install "fastapi-m8>=4.5.1,<5.0.0"
 ```
 
 Minimal auth dependency setup:
