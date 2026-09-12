@@ -57,8 +57,35 @@ PUB="${KEYS_DIR}/public.pem"
 PUB_OLD="${KEYS_DIR}/public_old.pem"
 
 # SC2091: string comparison, not command execution
+#
+# Keys already exist and no rotation was requested — but "skipping" must not
+# mean "not looking". Re-derive the kid from the mounted public key and
+# compare it against the configured ACCESS_KEY_ID: an unbound or stale value
+# here is exactly the J1 defect this script exists to prevent, and it must
+# not survive a second `bash init.sh` silently. Absent -> write it. Mismatch
+# -> re-bind and say so loudly. Match -> confirm and move on. This is a
+# correction, not a rotation: the _OLD pair (if any) is left untouched.
 if [[ -f "$PRIV" ]] && [[ "$ROTATE" != "true" ]]; then
-    echo "==> init-keys: keys exist, skipping (--rotate to regenerate)"; exit 0
+    if [[ ! -f "$PUB" ]]; then
+        echo "==> init-keys: keys exist, skipping (${PUB} missing — cannot verify binding, run --rotate)"
+        exit 0
+    fi
+    existing_kid="$(derive_kid "$PUB")"
+    if [[ -z "$existing_kid" ]]; then
+        echo "==> init-keys: keys exist, skipping (${PUB} unreadable — cannot verify binding)"
+        exit 0
+    fi
+    configured_kid="$(awk -F= '/^ACCESS_KEY_ID=/{gsub(/["'"'"'[:space:]]/, "", $2); print $2}' "$AUTH_ENV")"
+    if [[ -z "$configured_kid" ]]; then
+        echo "==> init-keys: keys exist, ACCESS_KEY_ID unset — binding to ${existing_kid}"
+        set_env_var "ACCESS_KEY_ID" "$existing_kid"
+    elif [[ "$configured_kid" == "$existing_kid" ]]; then
+        echo "==> init-keys: keys exist, ACCESS_KEY_ID=${existing_kid} already bound"
+    else
+        echo "NOTE: ACCESS_KEY_ID=${configured_kid} does not match the mounted key (expected ${existing_kid}) — re-binding"
+        set_env_var "ACCESS_KEY_ID" "$existing_kid"
+    fi
+    exit 0
 fi
 
 # Rotation overlap window: retain the outgoing PUBLIC key so JWKS keeps serving

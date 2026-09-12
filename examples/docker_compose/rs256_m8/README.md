@@ -116,6 +116,10 @@ Leave `ACCESS_KEY_ID=changethis_hex_kid` as-is — `init.sh` derives it automati
 bash init.sh
 ```
 
+Re-running this on a stack that already has a keypair does not regenerate it,
+but it does re-check `ACCESS_KEY_ID` against the mounted key and re-binds it
+(with a `NOTE:`) if the two have drifted apart, instead of skipping silently.
+
 > **Windows:** use **Git Bash** or **WSL**.
 
 This generates `keys/private.pem` and `keys/public.pem`, derives a stable `kid` from the DER fingerprint, writes `ACCESS_KEY_ID` into `auth.env`, and generates the self-signed TLS certificate for Traefik. Keep `keys/private.pem` out of version control (it is already in `.gitignore`).

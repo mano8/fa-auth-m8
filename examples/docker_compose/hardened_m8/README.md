@@ -169,6 +169,12 @@ bash init.sh
 
 > **Windows:** use **Git Bash** or **WSL**.
 
+Re-running `bash init.sh` on a stack that already has a keypair does not
+regenerate it — but it does re-derive `kid` from the mounted `keys/public.pem`
+and compares it against `ACCESS_KEY_ID`. A match is confirmed and left alone;
+an unset or stale value is re-bound with a `NOTE:` naming the correction. Use
+`--rotate-keys` (below) to actually generate a new keypair.
+
 ### 3. Start
 
 ```sh
