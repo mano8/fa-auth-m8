@@ -292,3 +292,99 @@ def test_init_keys_script_and_service_derive_the_same_kid(
         "init-keys.sh and derive_kid disagree on the kid for the same key — "
         "the J2 split has reopened"
     )
+
+
+@pytest.mark.security
+def test_init_keys_script_rebinds_a_stale_access_key_id_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """``W3.1``: the keys-exist branch verifies, it does not just skip.
+
+    A second ``bash init.sh`` on a stack whose keypair already exists must not
+    print "keys exist, skipping" over a stale ``ACCESS_KEY_ID`` — that silent
+    skip is exactly how the ``J1`` unbound state (audit) went undetected. Run
+    the script twice: once to generate the keypair, once more after hand-
+    editing ``ACCESS_KEY_ID`` to a value that matches no key, and assert the
+    second run re-binds it to the real kid and says so.
+    """
+    bash = _working_bash()
+    if bash is None or shutil.which("openssl") is None:
+        pytest.skip("bash and openssl are required to execute init-keys.sh")
+
+    (tmp_path / "auth.env").write_text(
+        "ACCESS_TOKEN_ALGORITHM=RS256\n", encoding="utf-8"
+    )
+
+    first = subprocess.run(  # nosec B603 B607 - fixed repo script, no user input
+        [bash, str(INIT_KEYS)],
+        cwd=str(tmp_path),
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert first.returncode == 0, first.stdout
+
+    public_pem = (tmp_path / "keys" / "public.pem").read_text(encoding="utf-8")
+    real_kid = derive_kid(public_pem)
+
+    auth_env = tmp_path / "auth.env"
+    stale = "0000000000000000"
+    assert stale != real_kid
+    lines = [
+        line if not line.startswith("ACCESS_KEY_ID=") else f"ACCESS_KEY_ID={stale}"
+        for line in auth_env.read_text(encoding="utf-8").splitlines()
+    ]
+    auth_env.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    second = subprocess.run(  # nosec B603 B607 - fixed repo script, no user input
+        [bash, str(INIT_KEYS)],
+        cwd=str(tmp_path),
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert second.returncode == 0, second.stdout
+    assert "skipping" not in second.stdout, (
+        "the keys-exist branch must verify the binding, not silently skip "
+        f"over a stale ACCESS_KEY_ID:\n{second.stdout}"
+    )
+    assert "NOTE:" in second.stdout and real_kid in second.stdout, second.stdout
+
+    written = [
+        line.split("=", 1)[1].strip()
+        for line in auth_env.read_text(encoding="utf-8").splitlines()
+        if line.startswith("ACCESS_KEY_ID=")
+    ]
+    assert written == [real_kid], (
+        "the second run must re-bind ACCESS_KEY_ID to the mounted key, "
+        f"not leave the stale value in place:\n{second.stdout}"
+    )
+
+
+@pytest.mark.security
+def test_init_keys_script_confirms_an_already_bound_kid_on_rerun(
+    tmp_path: Path,
+) -> None:
+    """The match case: a second run on an already-bound stack is a no-op."""
+    bash = _working_bash()
+    if bash is None or shutil.which("openssl") is None:
+        pytest.skip("bash and openssl are required to execute init-keys.sh")
+
+    (tmp_path / "auth.env").write_text(
+        "ACCESS_TOKEN_ALGORITHM=RS256\n", encoding="utf-8"
+    )
+    for _ in range(2):
+        result = subprocess.run(  # nosec B603 B607 - fixed repo script
+            [bash, str(INIT_KEYS)],
+            cwd=str(tmp_path),
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        assert result.returncode == 0, result.stdout
+
+    assert "already bound" in result.stdout, result.stdout
+    assert "NOTE:" not in result.stdout, result.stdout
