@@ -14,6 +14,42 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.2.1] - 2026-09-13
+
+Example-tooling fix on the `J1` line. No service behaviour, API, or dependency
+floor changes: `auth-sdk-m8>=3.2.0,<4.0.0` and the example consumers'
+`fastapi-m8>=4.5.1,<5.0.0` floors are exactly as `2.2.0` declared them, so
+nothing in `fastapi-m8`'s `COMPAT_MATRIX` moves for this release.
+
+### Fixed
+
+- **`init-keys.sh` verifies the `kid` binding on a keys-exist rerun instead
+  of skipping it** (`W3.1`). The keys-exist branch of
+  `examples/docker_compose/shared/scripts/init-keys.sh` exited on
+  `keys exist, skipping` without ever reading `ACCESS_KEY_ID` — exactly the
+  branch that let the `J1` unbound-`kid` state (measured on `hardened_media_m8`)
+  survive repeat `bash init.sh` runs undetected, while the service it
+  provisions has refused to boot in that state since `2.1.0`. The script now
+  re-derives the `kid` from the mounted `keys/public.pem` on every rerun: an
+  absent `ACCESS_KEY_ID` is written, a matching one is confirmed, and a stale
+  one is re-bound with a `NOTE:` naming both the configured and the expected
+  value. This is a correction, not a rotation — the `_OLD` pair, if any, is
+  left untouched, and `--rotate-keys` remains the only path that generates a
+  new keypair. A missing or unreadable `public.pem` still skips, saying why.
+  Both branches are covered by new cases in
+  `tests/security/test_kid_derivation.py`; the `hardened_m8` and `rs256_m8`
+  example READMEs document the rerun behaviour.
+
+### Changed
+
+- Example compose stacks repinned to `tepochtli/fa-auth-m8:2.2.1`
+  (`hardened_m8`, `vault_dev_m8`) together with the prose references beside
+  them (`DOCKERHUB.md`, `README.md`, both stack READMEs);
+  `examples/fastapi_minimal` and `examples/fastapi_full` moved to `2.2.1` per
+  this repository's example version-alignment convention.
+
+---
+
 ## [2.2.0] - 2026-09-12
 
 Dependency realignment onto the published `J3` consumer half. No service
