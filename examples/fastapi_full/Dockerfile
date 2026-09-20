@@ -1,5 +1,5 @@
 # ---------- BUILD STAGE ----------
-FROM python:3.14-slim@sha256:c845af9399020c7e562969a13689e929074a10fd057acd1b1fad06a2fb068e97 AS builder
+FROM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2 AS builder
 
 WORKDIR /install
 
@@ -20,14 +20,23 @@ RUN pip install --upgrade "pip==26.1.1" && \
 
 
 # ---------- RUNTIME STAGE ----------
-FROM python:3.14-slim@sha256:c845af9399020c7e562969a13689e929074a10fd057acd1b1fad06a2fb068e97
+FROM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PATH="/home/appuser/.local/bin:$PATH"
 ENV PYTHONPATH=/opt/fastapi_full
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl=8.14.1-2+deb13u5 \
+# Debian patch layer — the one fleet form; owner: the workspace's
+# `.workspace/context/debian-patch-layer.md`. Every Debian package self-heals
+# on each build through `apt-get upgrade -y`; nothing is exact-pinned and
+# nothing is installed that the base does not already ship. The base digest
+# above moves in lock-step with the other service images, never alone. If a
+# package must ever lead the pinned base, the recorded form is an unpinned
+# install plus a `dpkg --compare-versions … ge <floor>` assertion in this same
+# RUN — never an exact `=` pin, which freezes the image on the next advisory.
+RUN apt-get update \
+    && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid 1000 appuser && \
