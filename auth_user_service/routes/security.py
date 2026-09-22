@@ -52,6 +52,7 @@ from auth_user_service.core.deps import (
 )
 from auth_user_service.db_models.privileged_action_audit import (
     PrivilegedActionAudit,
+    PrivilegedActionAuditPublic,
     PrivilegedActionAuditsPublic,
 )
 from auth_user_service.services.api_keys import (
@@ -173,7 +174,10 @@ def read_audit_log(
     statement = statement.order_by(col(PrivilegedActionAudit.created_at).desc())
     rows = session.exec(statement.offset(skip).limit(limit)).all()
 
-    return PrivilegedActionAuditsPublic(data=rows, count=count)
+    return PrivilegedActionAuditsPublic(
+        data=[PrivilegedActionAuditPublic.model_validate(row) for row in rows],
+        count=count,
+    )
 
 
 class AuditPurgeRequest(SQLModel):

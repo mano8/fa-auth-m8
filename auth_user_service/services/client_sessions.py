@@ -226,7 +226,11 @@ class SessionController:
         Returns:
             Number of sessions deleted.
         """
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        # ``refresh_expires_at`` is an aware UTC column (see its description
+        # on ``ClientSessionBase``), so the bound it is compared against must
+        # be aware too; stripping the tzinfo here dated from when the column
+        # stored naive values and SQLAlchemy 2.0.54 now refuses it outright.
+        now = datetime.now(timezone.utc)
         stmt = delete(ClientSession).where(
             col(ClientSession.user_id) == current_user.id,
             col(ClientSession.refresh_expires_at) < now,

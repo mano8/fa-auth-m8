@@ -77,7 +77,7 @@ def _add_api_key(db_session, user_id, *, revoked: bool = False) -> ApiKey:
 
 
 def _add_session(db_session, user) -> ClientSession:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc)
     cs = ClientSession(
         id=str(uuid.uuid4()),
         user_id=user.id,

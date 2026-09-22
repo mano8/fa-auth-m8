@@ -10,7 +10,7 @@ from auth_user_service.services.client_sessions import SessionController
 
 
 def _make_session_create(jti: str | None = None) -> ClientSessionCreate:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc)
     return ClientSessionCreate(
         jwt_jti=jti or str(uuid.uuid4()),
         refresh_token_hash="r" * 64,
@@ -79,7 +79,7 @@ class TestCreateClientSession:
         assert result.auth_generation == 9
 
     def test_stores_external_tokens(self, db_session, sample_user):
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(timezone.utc)
         session_data = ClientSessionCreate(
             jwt_jti=str(uuid.uuid4()),
             refresh_token_hash="t" * 64,

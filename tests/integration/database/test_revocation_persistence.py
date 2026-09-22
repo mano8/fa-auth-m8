@@ -48,7 +48,7 @@ from tests.integration.database._factories import (
     jti,
     make_api_key,
     make_user,
-    naive_utc,
+    aware_utc,
 )
 
 pytestmark = pytest.mark.database_integration
@@ -206,7 +206,7 @@ def test_expired_session_purge_persists(it_session: Session) -> None:
     """The maintenance purge is a revocation path too (3.5.4)."""
     user = make_user(it_session)
     issued = issue_session(it_session, user, jti=jti("expired"))
-    past = naive_utc() - timedelta(days=10)
+    past = aware_utc() - timedelta(days=10)
     issued.jwt_expires_at = past
     issued.refresh_expires_at = past
     it_session.add(issued)

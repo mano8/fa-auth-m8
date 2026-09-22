@@ -48,7 +48,10 @@ def session_list(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:
         statement = select(ClientSession).offset(skip).limit(limit)
         users = session.exec(statement).all()
 
-        return ClientSessionsPublic(data=users, count=count)
+        return ClientSessionsPublic(
+            data=[ClientSessionPublic.model_validate(row) for row in users],
+            count=count,
+        )
     except HTTPException:
         raise
     except Exception as ex:

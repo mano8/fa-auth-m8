@@ -57,7 +57,10 @@ def read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:
         statement = select(User).offset(skip).limit(limit)
         users = session.exec(statement).all()
 
-        return UsersPublic(data=users, count=count)
+        return UsersPublic(
+            data=[UserPublic.model_validate(row) for row in users],
+            count=count,
+        )
     except Exception as ex:
         return handle_route_exception(ex=ex, session=session)
 

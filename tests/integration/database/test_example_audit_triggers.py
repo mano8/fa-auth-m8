@@ -54,7 +54,7 @@ from tests.integration.database._example_chain import (
     clear_example_audit_rows,
     loaded_example,
 )
-from tests.integration.database._factories import naive_utc, uuid_literal
+from tests.integration.database._factories import aware_utc, uuid_literal
 
 pytestmark = pytest.mark.database_integration
 
@@ -144,7 +144,7 @@ def _insert_category(engine: sa.Engine, owner_id: uuid.UUID) -> int:
             {
                 "name": f"layer-b {suffix}",
                 "slug": f"layer-b-{suffix}",
-                "now": naive_utc(),
+                "now": aware_utc(),
                 "owner_id": str(owner_id),
             },
         )

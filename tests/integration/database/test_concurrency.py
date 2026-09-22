@@ -52,7 +52,7 @@ from tests.integration.database._factories import (
     issue_session,
     jti,
     make_user,
-    naive_utc,
+    aware_utc,
 )
 
 pytestmark = pytest.mark.database_integration
@@ -229,7 +229,7 @@ class TestConcurrentLoginDuringDowngrade:
                     user_in=UserUpdate(role=RoleType.READER),
                 )
 
-            now = naive_utc()
+            now = aware_utc()
             try:
                 minted = SessionController.create_client_session(
                     session=login_session,
@@ -310,7 +310,7 @@ class TestConcurrentLoginDuringDowngrade:
                 with Session(second_engine) as session:
                     owner = session.get(User, user_id)
                     assert owner is not None
-                    now = naive_utc()
+                    now = aware_utc()
                     try:
                         SessionController.create_client_session(
                             session=session,

@@ -137,8 +137,12 @@ class TestPurgeExpiredAuditRows:
 
     def test_naive_now_is_normalised_to_aware_utc(self, db_session) -> None:
         actor = uuid.uuid4()
-        naive_now = datetime.now(timezone.utc).replace(tzinfo=None)
-        old_row = _old_row(actor, created_at=naive_now - timedelta(days=400))
+        # The naive value is the *point* of this test — it is what gets
+        # passed as ``now=`` below. The row itself must still be built from an
+        # aware timestamp, because the column no longer accepts anything else.
+        aware_now = datetime.now(timezone.utc)
+        naive_now = aware_now.replace(tzinfo=None)
+        old_row = _old_row(actor, created_at=aware_now - timedelta(days=400))
         db_session.add(old_row)
         db_session.commit()
 

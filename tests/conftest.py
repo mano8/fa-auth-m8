@@ -187,7 +187,7 @@ def google_user(db_session):
 
 @pytest.fixture
 def sample_client_session(db_session, sample_user):
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc)
     client_session = ClientSession(
         id=str(uuid.uuid4()),
         user_id=sample_user.id,
@@ -206,7 +206,7 @@ def sample_client_session(db_session, sample_user):
 
 @pytest.fixture
 def expired_client_session(db_session, sample_user):
-    past = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=10)
+    past = datetime.now(timezone.utc) - timedelta(days=10)
     client_session = ClientSession(
         id=str(uuid.uuid4()),
         user_id=sample_user.id,
