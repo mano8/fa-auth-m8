@@ -55,7 +55,7 @@ def _raw_insert_mismatched_user(session, *, role: str, is_superuser: int) -> uui
 def _add_session(
     session, user_id: uuid.UUID, *, jti: str, revoked: bool = False
 ) -> None:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc)
     session.add(
         ClientSession(
             id=str(uuid.uuid4()),
@@ -147,7 +147,7 @@ class TestSecurityPreflightController:
         mismatched_id = _raw_insert_mismatched_user(
             db_session, role="USER", is_superuser=1
         )
-        past = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
+        past = datetime.now(timezone.utc) - timedelta(days=1)
         db_session.add(
             ClientSession(
                 id=str(uuid.uuid4()),

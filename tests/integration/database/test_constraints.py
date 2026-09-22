@@ -38,7 +38,7 @@ from auth_user_service.db_models.users import User
 from tests.integration.database._factories import (
     make_api_key,
     make_user,
-    naive_utc,
+    aware_utc,
     raw_insert_user,
     uuid_literal,
 )
@@ -345,7 +345,7 @@ class TestApiKeyRelations:
         key = make_api_key(it_session, user, audiences=("consumer-a",))
         it_session.add(
             ApiKeyAudience(
-                api_key_id=key.id, audience_id="consumer-a", created_at=naive_utc()
+                api_key_id=key.id, audience_id="consumer-a", created_at=aware_utc()
             )
         )
         with pytest.raises(CONSTRAINT_VIOLATION):
@@ -373,7 +373,7 @@ class TestOutboxSchema:
             auth_generation=2,
             effect_type=EFFECT_BLACKLIST,
             target_digest=digest,
-            payload={"jti": "j", "expires_at": naive_utc().isoformat()},
+            payload={"jti": "j", "expires_at": aware_utc().isoformat()},
             status=STATUS_PENDING,
         )
 

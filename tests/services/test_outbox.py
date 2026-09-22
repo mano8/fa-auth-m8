@@ -29,6 +29,7 @@ from auth_user_service.services.outbox import (
     EVENT_SCHEMA_V2,
     OutboxController,
     OutboxWorker,
+    _as_aware_utc,
     _digest_jti,
     _event_id,
 )
@@ -332,3 +333,24 @@ class TestFromSettings:
         assert worker.completed_retention_seconds == (
             settings.OUTBOX_COMPLETED_RETENTION_SECONDS
         )
+
+
+class TestOutboxAsAwareUtc:
+    """``_as_aware_utc`` normalises a naive timestamp and leaves an aware one.
+
+    Covered directly because every caller in this module now hands it an
+    already-aware value: the columns stopped accepting naive datetimes, so the
+    naive branch is reachable only from a caller outside this repository (a
+    stored value read back through an older driver, a hand-built argument) —
+    which is exactly the case the helper exists for.
+    """
+
+    def test_a_naive_timestamp_is_stamped_as_utc(self) -> None:
+        naive = datetime(2026, 9, 22, 17, 30, 15)
+        result = _as_aware_utc(naive)
+        assert result.tzinfo is timezone.utc
+        assert result == datetime(2026, 9, 22, 17, 30, 15, tzinfo=timezone.utc)
+
+    def test_an_aware_timestamp_is_returned_unchanged(self) -> None:
+        aware = datetime(2026, 9, 22, 17, 30, 15, tzinfo=timezone.utc)
+        assert _as_aware_utc(aware) is aware

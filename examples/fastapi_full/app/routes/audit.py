@@ -42,6 +42,7 @@ from fastapi_full.app.deps import (
 )
 from fastapi_full.app.ownership import is_canonical_superuser
 from fastapi_full.db_models.privileged_action_audit import (
+    PrivilegedActionAuditPublic,
     PrivilegedActionAuditsPublic,
 )
 
@@ -72,7 +73,10 @@ def read_audit_log(
         skip=skip,
         limit=limit,
     )
-    return PrivilegedActionAuditsPublic(data=rows, count=count)
+    return PrivilegedActionAuditsPublic(
+        data=[PrivilegedActionAuditPublic.model_validate(row) for row in rows],
+        count=count,
+    )
 
 
 class AuditPurgeRequest(SQLModel):

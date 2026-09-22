@@ -158,7 +158,7 @@ def _user_row() -> User:
 
 
 def _session_row(user_id: uuid.UUID) -> ClientSession:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc)
     return ClientSession(
         id=str(uuid.uuid4()),
         user_id=user_id,

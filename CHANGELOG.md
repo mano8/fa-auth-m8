@@ -14,6 +14,77 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.2.3] - 2026-09-22
+
+Dev-set drift repair — `B27-dev-set-drift-repair` of the workspace's
+consumer-alignment closure plan, finding `G20`. CI installs
+`auth_user_service/requirements_dev.txt`, whose entries are `>=` floors, so
+`test`, `typecheck` and the three-engine `Database integration` matrix resolve
+a fresh dependency graph on every run; the generation that resolved on
+2026-09-22 — sqlmodel `0.0.46` / SQLAlchemy `2.0.54` / pydantic `2.13.5` —
+stopped hiding defects that were already on `main`. This repository carried
+63 of the 72 failures across the four affected services.
+
+None of this is a contract change: no route, request or response shape moves,
+and the shipped `requirements_prod.lock` is untouched. `SERVICE_VERSION` moves
+to `2.2.3`.
+
+> The `Database integration` job was red on **all three** engines (postgresql,
+> mariadb, mysql), and red at 08:04 on `77f302c` — `main` *before* `2.2.2`
+> merged — which is the cleanest proof available that `G20` predates the
+> patch-layer release rather than being caused by it.
+
+### Fixed
+
+- **Expiry and activity timestamps are timezone-aware UTC end to end.**
+  `ClientSession.jwt_expires_at` / `refresh_expires_at` and the audit and
+  tombstone timestamps are aware UTC columns — their own field descriptions
+  say `(UTC)` — but `ClientSessionController.purge_expired_sessions` compared
+  them against a `datetime.now(timezone.utc).replace(tzinfo=None)` bound, and
+  the dashboard's activity range was built from a bare `datetime.now()`.
+  SQLAlchemy `2.0.54` rejects a naive value at the column boundary
+  (*"Datetime values must have timezone information"*), which is the whole of
+  this repository's share of `G20`. Both now use aware UTC. Deliberately
+  **not** fixed with a `NaiveDatetime` annotation, which would have recorded
+  the bug and kept storing ambiguous local times.
+- **`id` and `attempts` carry model-level defaults, not only column
+  defaults.** `PrivilegedActionAudit.id`, `User.id`, `ApiKey.id`,
+  `RevocationOutbox.id` and `RevocationOutbox.attempts` declared their default
+  **only** inside `sa_column`, which SQLAlchemy applies at `INSERT` time — so
+  the models' own constructors still required them and sqlmodel `0.0.46`
+  reports every construction site as missing a named argument. Each now
+  declares the matching `default_factory` / `default`, so a row is complete by
+  its own schema the moment it is built. Same values, same column defaults.
+- **`ApiKeyService.set_key_audiences_in_tx` always flushes the parent.** The
+  flush used to be guarded by `if api_key.id is None`, a branch that existed
+  only because the primary key arrived at `INSERT` time; with `ApiKey.id`
+  defaulted at construction that branch became unreachable. The flush itself
+  is still required — it puts the key row in front of the `api_key_id`
+  foreign keys and the deletes in front of the inserts that replace them — so
+  it is now unconditional.
+- **`GET /users/`, `GET /sessions/` and the privileged-action audit list
+  serialize through their declared public models.** Each passed raw ORM rows
+  into a field declared `list[UserPublic]` / `list[ClientSessionPublic]` /
+  `list[PrivilegedActionAuditPublic]`. The table model and the public model
+  are siblings, so the declaration was never true; pydantic coerced row by row
+  at runtime and mypy `2.3.1` now reports it. The routes convert explicitly
+  via `model_validate`. Responses are byte-identical.
+
+### Changed
+
+- **Test factories store aware UTC.** The integration factory `naive_utc()` —
+  whose docstring described naive values as *"the shape every DateTime column
+  stores"* — is now `aware_utc()`, and the 23 ad-hoc
+  `.replace(tzinfo=None)` strips across the suite are gone. The two
+  `test_naive_now_is_normalised_to_aware_utc` tests keep their naive value:
+  it is what they pass as the `now=` **argument**, which is the behaviour they
+  exist to pin, while the rows they build are now aware.
+- **`_as_aware_utc` is covered directly** in `services/generation.py` and
+  `services/outbox.py`. Every caller inside this repository now hands it an
+  already-aware value, so its naive branch is reachable only from outside —
+  which is exactly the case the helper exists for, and now has an
+  admit-and-deny pair of its own.
+
 ## [2.2.2] - 2026-09-20
 
 Debian patch-layer convergence — `B23-converge-patch-layer` (Wave 6) of the

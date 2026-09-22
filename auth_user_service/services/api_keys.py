@@ -181,18 +181,21 @@ class ApiKeyService:
         *audiences* must already be validated (:meth:`validate_audiences`).
         Returns the created rows.
 
-        A newly issued key has no ``id`` yet — the primary key comes from the
-        column default, which SQLAlchemy only applies at INSERT time — so the
-        parent is flushed first when needed. Without it every binding would
-        carry a null ``api_key_id`` and the insert would fail on the NOT NULL
-        column. Flushing is transaction-neutral: the caller still owns the
-        commit boundary.
+        The parent is flushed before the bindings are built, so the key row
+        exists when the ``api_key_id`` foreign keys are inserted and the
+        deletes above land before the inserts that replace them. Flushing is
+        transaction-neutral: the caller still owns the commit boundary.
+
+        This used to be conditional on ``api_key.id is None``, because the
+        primary key came only from the column default and SQLAlchemy applies
+        that at INSERT time. ``ApiKey.id`` now carries a model-level
+        ``default_factory``, so a newly built key already has its id and that
+        branch became unreachable — the flush itself is still required.
         """
         for existing in list(api_key.audiences or []):
             session.delete(existing)
-        if api_key.id is None:
-            session.add(api_key)
-            session.flush()
+        session.add(api_key)
+        session.flush()
         now = datetime.now(timezone.utc)
         rows = [
             ApiKeyAudience(api_key_id=api_key.id, audience_id=audience, created_at=now)

@@ -69,7 +69,7 @@ def _raw_row(session, user_id: uuid.UUID):
 
 
 def _add_active_session(session, user_id: uuid.UUID, *, jti: str) -> None:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc)
     session.add(
         ClientSession(
             id=str(uuid.uuid4()),

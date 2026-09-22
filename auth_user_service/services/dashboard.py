@@ -2,7 +2,7 @@
 Dashboard Controller
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Union
 from fastapi.responses import JSONResponse
 from sqlalchemy import case, and_
@@ -44,7 +44,11 @@ class DashboardController:
         Raises:
             ValueError: If an invalid time_range is provided.
         """
-        now = datetime.now()
+        # Aware UTC, not ``datetime.now()``: both bounds are compared against
+        # the ``updated_at``/``created_at`` columns, and SQLAlchemy 2.0.54
+        # rejects a naive value at that boundary (``Datetime values must have
+        # timezone information``).
+        now = datetime.now(timezone.utc)
         if time_range == RangeActivityType.HOUR:
             start = now.replace(minute=0, second=0, microsecond=0)
             end = start + timedelta(hours=1)

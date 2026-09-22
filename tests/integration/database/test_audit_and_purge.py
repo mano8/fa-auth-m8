@@ -315,8 +315,7 @@ class TestDeadKeyPurge:
         long_expired = make_api_key(
             it_session,
             owner,
-            expires_at=datetime.now(timezone.utc).replace(tzinfo=None)
-            - timedelta(days=FLOOR_DAYS + 10),
+            expires_at=datetime.now(timezone.utc) - timedelta(days=FLOOR_DAYS + 10),
         )
         dead_ids = {long_dead.id, long_expired.id}
         survivor_ids = {recently_revoked.id, live.id}

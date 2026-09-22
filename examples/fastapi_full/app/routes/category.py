@@ -28,6 +28,7 @@ from fastapi_full.db_models.categories import (
     CategoryCreate,
     CategoryUpdate,
     CategoriesPublic,
+    CategoryPublic,
     build_category,
 )
 from fastapi_full.db_models.privileged_action_audit import AuditAction
@@ -73,7 +74,10 @@ async def read_root(
             )
             items = session.exec(statement).all()
 
-        return CategoriesPublic(data=items, count=count)
+        return CategoriesPublic(
+            data=[CategoryPublic.model_validate(row) for row in items],
+            count=count,
+        )
     except Exception as ex:
         return handle_route_exception(ex=ex, session=session)
 

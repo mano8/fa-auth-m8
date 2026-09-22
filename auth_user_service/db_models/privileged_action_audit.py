@@ -61,6 +61,12 @@ class PrivilegedActionAudit(SQLModel, table=True):
     __table_args__ = (get_table_args(),)
 
     id: uuid.UUID = Field(
+        # ``default_factory`` mirrors the ``sa_column``'s ``default``: the
+        # column-level one is applied by SQLAlchemy at INSERT, so the model's
+        # own constructor still declared ``id`` as required and sqlmodel
+        # 0.0.46 reports every construction site as missing it. Declaring it
+        # here makes the type match what the row actually is.
+        default_factory=uuid.uuid4,
         sa_column=Column(
             "id",
             Uuid(as_uuid=True),

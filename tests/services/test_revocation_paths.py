@@ -74,7 +74,7 @@ def recording_hub(monkeypatch):
 
 
 def _session_create(jti: str | None = None) -> ClientSessionCreate:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc)
     return ClientSessionCreate(
         jwt_jti=jti or str(uuid.uuid4()),
         refresh_token_hash="r" * 64,
@@ -424,7 +424,7 @@ class TestSecurityRepair:
     async def test_repair_revokes_the_session_from_db_state(self, db_session):
         user_id = _raw_insert_mismatched_user(db_session)
         jti = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(timezone.utc)
         db_session.add(
             ClientSession(
                 id=str(uuid.uuid4()),
@@ -461,7 +461,7 @@ class TestGlobalLegacyRevocation:
         self, db_session, sample_user
     ):
         jti = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(timezone.utc)
         db_session.add(
             ClientSession(
                 id=str(uuid.uuid4()),

@@ -28,7 +28,7 @@ from auth_user_service.services.legacy_session_revocation import (
 
 
 def _add_session(session, user_id, *, jti: str, auth_generation) -> None:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc)
     session.add(
         ClientSession(
             id=str(uuid.uuid4()),

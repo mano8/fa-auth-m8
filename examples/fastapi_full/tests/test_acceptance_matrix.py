@@ -52,7 +52,10 @@ from fastapi_full.core.config import settings
 from fastapi_full.core.deps import get_db, get_owner_verifier
 from fastapi_full.core.user_directory import UserDirectoryUnavailable
 from fastapi_full.db_models.categories import Category
-from fastapi_full.db_models.privileged_action_audit import PrivilegedActionAudit
+from fastapi_full.db_models.privileged_action_audit import (
+    AuditAction,
+    PrivilegedActionAudit,
+)
 
 # Every role in the hierarchy gets its own subject id, so "own data" and
 # "someone else's data" are never the same row between two parametrized runs.
@@ -355,7 +358,7 @@ class TestAuditReadScope:
             PrivilegedActionAudit(
                 actor_user_id=ACTOR_IDS["superadmin"],
                 actor_role="superadmin",
-                action="edit",
+                action=AuditAction.EDIT,
                 table_name=str(Category.__tablename__),
                 row_pk="1",
                 target_owner_id=str(OTHER_ID),

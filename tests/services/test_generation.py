@@ -33,6 +33,7 @@ from auth_user_service.services.generation import (
     GenerationController,
     GenerationOverflowError,
     JtiStatusDecision,
+    _as_aware_utc,
     is_session_generation_stale,
     next_generation,
     tombstone_retention_seconds,
@@ -57,7 +58,7 @@ def _add_outbox_row(db_session, user_id: uuid.UUID, *, status: str) -> Revocatio
 def _stamp_session(
     db_session, user, *, jti: str, generation: int | None
 ) -> ClientSession:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc)
     cs = ClientSession(
         id=str(uuid.uuid4()),
         user_id=user.id,
@@ -317,7 +318,7 @@ class TestCleanupExpiredTombstones:
         horizon = tombstone_retention_seconds()
         old_id = self._write_tombstone(
             db_session,
-            updated_at=(now - timedelta(seconds=horizon + 60)).replace(tzinfo=None),
+            updated_at=(now - timedelta(seconds=horizon + 60)),
         )
         deleted = GenerationController.cleanup_expired_tombstones(db_session, now=now)
         assert deleted == 1
@@ -325,9 +326,7 @@ class TestCleanupExpiredTombstones:
 
     def test_retains_rows_within_horizon(self, db_session):
         now = datetime.now(timezone.utc)
-        fresh_id = self._write_tombstone(
-            db_session, updated_at=now.replace(tzinfo=None)
-        )
+        fresh_id = self._write_tombstone(db_session, updated_at=now)
         deleted = GenerationController.cleanup_expired_tombstones(db_session, now=now)
         assert deleted == 0
         assert db_session.get(AuthTombstone, fresh_id) is not None
@@ -344,7 +343,7 @@ class TestCleanupExpiredTombstones:
         horizon = tombstone_retention_seconds()
         stale_id = self._write_tombstone(
             db_session,
-            updated_at=(now - timedelta(seconds=horizon * 10)).replace(tzinfo=None),
+            updated_at=(now - timedelta(seconds=horizon * 10)),
         )
         _add_outbox_row(db_session, stale_id, status=status)
 
@@ -360,7 +359,7 @@ class TestCleanupExpiredTombstones:
         horizon = tombstone_retention_seconds()
         stale_id = self._write_tombstone(
             db_session,
-            updated_at=(now - timedelta(seconds=horizon + 60)).replace(tzinfo=None),
+            updated_at=(now - timedelta(seconds=horizon + 60)),
         )
         _add_outbox_row(db_session, stale_id, status=STATUS_COMPLETED)
 
@@ -373,7 +372,7 @@ class TestCleanupExpiredTombstones:
         # One subject's dead letter never pins another subject's tombstone.
         now = datetime.now(timezone.utc)
         horizon = tombstone_retention_seconds()
-        updated_at = (now - timedelta(seconds=horizon + 60)).replace(tzinfo=None)
+        updated_at = now - timedelta(seconds=horizon + 60)
         pinned_id = self._write_tombstone(db_session, updated_at=updated_at)
         free_id = self._write_tombstone(db_session, updated_at=updated_at)
         _add_outbox_row(db_session, pinned_id, status=STATUS_DEAD)
@@ -572,3 +571,24 @@ class TestDecideJtiStatus:
         stub = _StubSession(session_row=session_row, owner=owner)
         decision = GenerationController.decide_jti_status(stub, "j" * 16, subject)
         assert decision.active is False
+
+
+class TestGenerationAsAwareUtc:
+    """``_as_aware_utc`` normalises a naive timestamp and leaves an aware one.
+
+    Covered directly because every caller in this module now hands it an
+    already-aware value: the columns stopped accepting naive datetimes, so the
+    naive branch is reachable only from a caller outside this repository (a
+    stored value read back through an older driver, a hand-built argument) —
+    which is exactly the case the helper exists for.
+    """
+
+    def test_a_naive_timestamp_is_stamped_as_utc(self) -> None:
+        naive = datetime(2026, 9, 22, 17, 30, 15)
+        result = _as_aware_utc(naive)
+        assert result.tzinfo is timezone.utc
+        assert result == datetime(2026, 9, 22, 17, 30, 15, tzinfo=timezone.utc)
+
+    def test_an_aware_timestamp_is_returned_unchanged(self) -> None:
+        aware = datetime(2026, 9, 22, 17, 30, 15, tzinfo=timezone.utc)
+        assert _as_aware_utc(aware) is aware

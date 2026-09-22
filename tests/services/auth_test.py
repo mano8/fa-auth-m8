@@ -479,7 +479,7 @@ class TestRefreshLineageIsCurrent:
     def _make_session(self, db_session, user, jti, generation):
         from datetime import datetime, timezone
 
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(timezone.utc)
         client_session = ClientSession(
             id=str(uuid.uuid4()),
             user_id=user.id,

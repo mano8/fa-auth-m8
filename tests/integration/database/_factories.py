@@ -36,9 +36,15 @@ def jti(label: str) -> str:
     return f"layerb-{label}".ljust(16, "-")
 
 
-def naive_utc(moment: Optional[datetime] = None) -> datetime:
-    """UTC timestamp without tzinfo — the shape every DateTime column stores."""
-    return (moment or datetime.now(timezone.utc)).replace(tzinfo=None)
+def aware_utc(moment: Optional[datetime] = None) -> datetime:
+    """Timezone-aware UTC timestamp — the shape every DateTime column stores.
+
+    Was ``aware_utc`` and stripped the tzinfo, which is what every DateTime
+    column stored when these factories were written. SQLAlchemy 2.0.54 rejects
+    a naive value at the column boundary, so the name had become a statement
+    about storage that is no longer true.
+    """
+    return moment or datetime.now(timezone.utc)
 
 
 def make_user(
@@ -82,7 +88,7 @@ def issue_session(
     session: Session, user: User, *, jti: Optional[str] = None
 ) -> ClientSession:
     """Issue a session through the real issuance path (stamps the generation)."""
-    now = naive_utc()
+    now = aware_utc()
     return SessionController.create_client_session(
         session=session,
         current_user=user,
@@ -120,7 +126,7 @@ def make_api_key(
     for audience in audiences:
         session.add(
             ApiKeyAudience(
-                api_key_id=key.id, audience_id=audience, created_at=naive_utc()
+                api_key_id=key.id, audience_id=audience, created_at=aware_utc()
             )
         )
     if audiences:
@@ -131,7 +137,7 @@ def make_api_key(
         session.execute(
             sa.text("UPDATE auth_api_key SET updated_at = :ts WHERE id = :id"),
             {
-                "ts": naive_utc(updated_at),
+                "ts": aware_utc(updated_at),
                 "id": uuid_literal(session.get_bind(), key.id),
             },
         )

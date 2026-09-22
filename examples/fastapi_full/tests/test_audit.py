@@ -389,8 +389,12 @@ class TestPurgeExpiredAuditRows:
         assert result.removed == 3
 
     def test_naive_now_is_normalised_to_aware_utc(self, db_session) -> None:
-        naive_now = datetime.now(timezone.utc).replace(tzinfo=None)
-        db_session.add(_audit_row(created_at=naive_now - timedelta(days=400)))
+        # The naive value is the *point* of this test — it is what gets
+        # passed as ``now=`` below. The row itself must still be built from an
+        # aware timestamp, because the column no longer accepts anything else.
+        aware_now = datetime.now(timezone.utc)
+        naive_now = aware_now.replace(tzinfo=None)
+        db_session.add(_audit_row(created_at=aware_now - timedelta(days=400)))
         db_session.commit()
 
         result = purge_expired_audit_rows(
