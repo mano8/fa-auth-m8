@@ -67,6 +67,10 @@ class PrivilegedActionAudit(SQLModel, table=True):
     )
 
     id: uuid.UUID = Field(
+        # Mirrors the ``sa_column``'s ``default``, which SQLAlchemy applies
+        # only at INSERT — so the constructor still declared ``id`` required.
+        # Matches ``auth_user_service``'s model of the same name.
+        default_factory=uuid.uuid4,
         sa_column=Column(
             "id",
             Uuid(as_uuid=True),

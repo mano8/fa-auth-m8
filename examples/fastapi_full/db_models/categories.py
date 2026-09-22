@@ -37,7 +37,20 @@ class CategoryBase(SQLModel):
 class CategoryGenerators(CategoryBase):
     """
     Category schema with slug auto-generation.
+
+    ``slug`` is redeclared as optional here — and only here, on the payload
+    schemas, never on the table. The validator below derives it from the
+    required ``name``, so a caller neither has to send one nor can usefully
+    disagree with the derived value; inheriting the table's required ``slug``
+    published a schema demanding a field the service overwrites. Same shape
+    as ``prompt-engine-m8``'s ``CategoryGenerators``.
     """
+
+    # Deliberately widens the base's ``str`` — a payload may omit what the
+    # validator derives, while the table it feeds still cannot hold a null.
+    slug: Optional[str] = Field(  # type: ignore[assignment]
+        default=None, min_length=1, max_length=50
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -148,4 +161,13 @@ def build_category(item_in: CategoryCreate, *, owner_id: uuid.UUID) -> Category:
     Returns:
         The unsaved ``Category`` row.
     """
-    return Category(name=item_in.name, slug=item_in.slug, owner_id=owner_id)
+    # ``item_in.slug`` is ``Optional`` on the payload because the validator
+    # derives it; the table's is not. Deriving again here — the same
+    # ``slugify(name)`` the validator ran — keeps the row's required field
+    # concrete without a cast, and is a no-op for any payload that went
+    # through validation.
+    return Category(
+        name=item_in.name,
+        slug=item_in.slug or slugify(item_in.name),
+        owner_id=owner_id,
+    )
