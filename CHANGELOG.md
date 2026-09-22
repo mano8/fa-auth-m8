@@ -14,6 +14,66 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.2.2] - 2026-09-20
+
+Debian patch-layer convergence — `B23-converge-patch-layer` (Wave 6) of the
+workspace's consumer-alignment closure plan, finding `G18`; the form is
+recorded once, in the workspace's `.workspace/context/debian-patch-layer.md`,
+and the five service images now carry it byte-for-byte. Image-only patch
+release: no service behaviour, API, or dependency floor change —
+`auth-sdk-m8>=3.2.0,<4.0.0` and the example consumers' `fastapi-m8>=4.5.1,<5.0.0`
+floors are exactly as `2.2.1` declared them, so nothing in `fastapi-m8`'s
+`COMPAT_MATRIX` moves. The example packages' `__version__` follow the service
+to `2.2.2` as `REPOSITORY_CONTEXT.md` requires.
+
+### Security
+
+- **The runtime image's Debian layer is now the fleet's one form:**
+  `apt-get update && apt-get upgrade -y`, nothing exact-pinned, nothing
+  installed that the base does not already ship. `curl` is no longer
+  installed: its exact `=8.14.1-2+deb13u5` pin was the one package
+  `apt-get upgrade -y` could not raise, it had already been hand-raised once
+  (`deb13u4` → `deb13u5`, `83e5b1d`) for an advisory on a package nothing in
+  this image uses — no `HEALTHCHECK`, the Compose healthchecks probe with
+  `python -c "import urllib.request…"`, and the only `curl` calls in this
+  repository run outside the image.
+  `auth_user_service/Dockerfile.local` and `examples/fastapi_full/Dockerfile`
+  carry the same block — `83e5b1d` had raised all three at once — and the
+  example image gains the `apt-get upgrade -y` it never had.
+- **Base image raised to the current `python:3.14-slim` digest
+  `caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2`**
+  (Debian 13.7, Python 3.14.7, created 2026-09-19), from `c845af…` (Debian 13.5).
+  All five service images now pin this same digest, and from here on base
+  digests move together — on advisory or on cadence, never one repository
+  alone. Measured inside the new base: every package this fleet had ever
+  pinned ships at or above its pinned version (`openssl` `3.5.7-1~deb13u2`,
+  `gzip` `1.13-1+deb13u1`, `libpcre2-8-0` `10.46-1~deb13u2`, `libsqlite3-0`
+  `3.46.1-7+deb13u2`, `perl-base` `5.40.1-6+deb13u1`), so `upgrade -y` is a
+  no-op today and self-heals from the next advisory on.
+- **pip is dropped from the runtime image**, as the other four service
+  images already do. Nothing installs anything at run time. From pip
+  `26.2.1` — the pip the new base ships — pip carries an SBOM of its
+  vendored tree (`pip/_vendor/bom.cdx.json`) that Trivy reads as installed
+  packages, surfacing GHSA-6v7p-g79w-8964 (`msgpack` 1.1.2) and
+  CVE-2025-47273 (`setuptools` 70.3.0): both pip's vendored copies, neither
+  in `requirements_prod.lock` nor in `pip list`. Removing pip deletes the
+  code instead of ignoring the report. `Dockerfile.local` (the dev image)
+  keeps pip.
+- **`anyio` `4.14.1` → `4.14.2` in `auth_user_service/requirements_prod.lock`** — CVE-2026-63374
+  (CRITICAL, TLS certificate spoofing via IDNA 2003 host-name encoding in
+  `TLSStream`) and CVE-2026-63349 (HIGH, `run_process`/`open_process`
+  retaining the parent's supplementary groups), both published 2026-09-18,
+  after this repository's last green `trivy-image` run on `main`. Transitive
+  (under `httpx` and `starlette`), so the hash-locked release set is the only place it
+  appears; regenerated with `pip-compile --upgrade-package anyio==4.14.2`,
+  so exactly one version line moves. Found by this release's own pre-PR
+  Trivy read — the gate's freshness limit, not a property of the diff.
+- Verified before the change was proposed: `docker build --no-cache` green
+  on the new Dockerfile; Trivy at the `trivy-image` gate's own settings
+  (`severity: CRITICAL,HIGH`, `ignore-unfixed: true`) reports **0**
+  findings; inside the built container `openssl version` reads
+  `OpenSSL 3.5.7` and `dpkg-query -W curl` reports it not installed.
+
 ## [2.2.1] - 2026-09-13
 
 Example-tooling fix on the `J1` line. No service behaviour, API, or dependency
