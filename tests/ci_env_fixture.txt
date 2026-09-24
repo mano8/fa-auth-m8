@@ -1,0 +1,47 @@
+# CI test environment for fa-auth-m8 — NOT a secret file.
+#
+# Every value here is a throwaway CI literal: the suite needs a complete,
+# schema-valid environment before `auth_user_service` can even be imported,
+# and these are the shapes that satisfy its boot validators. Nothing here
+# reaches a running system; the repository's own `.gitignore` keeps real
+# `.env` files untracked, and `.gitleaks.toml` allowlists `tests/` for exactly
+# this kind of deterministic fixture.
+#
+# It lives here rather than inline in `.github/workflows/CI.yaml` because two
+# jobs now need it — `test` and `test-shipped-lock` — and a second copy of
+# these literals inside the workflow is both a duplicate to drift and a fresh
+# gitleaks finding on every diff that touches it.
+DOMAIN=localhost
+ENVIRONMENT=local
+PROJECT_NAME=fa-auth-m8
+STACK_NAME=fa-auth-m8
+API_PREFIX=/user
+BACKEND_HOST=http://localhost:8000
+FRONTEND_HOST=http://localhost:5173
+BACKEND_CORS_ORIGINS=http://localhost:8000,http://localhost:5173
+SELECTED_DB=Mysql
+DB_HOST=localhost
+DB_PORT=3306
+DB_DATABASE=test_db
+DB_USER=test_user
+DB_PASSWORD=CiTestDb_Passw0rd
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_USER=appuser
+REDIS_PASSWORD=CiTestRed_Passw0rd
+ACCESS_SECRET_KEY=CiTest-AccessKey-fa-auth2024-AbCdE
+REFRESH_SECRET_KEY=CiTest-RefreshKey-fa-auth2024-AbCd
+# auth-sdk-m8 >= 1.0.0 secure-by-default: this single-service CI run uses the
+# documented opt-out — HS256 symmetric keys + strict iss/aud off — plus a test
+# EVENT_SIGNING_KEY so the boot validators pass without RSA keys or a key store.
+ACCESS_TOKEN_ALGORITHM=HS256
+REFRESH_TOKEN_ALGORITHM=HS256
+TOKEN_STRICT_VALIDATION=false
+EVENT_SIGNING_KEY=CiTest-EventSigning-fa-auth2024-AbCd
+FIRST_SUPERUSER=ci-admin@example.com
+FIRST_SUPERUSER_PASSWORD=CiTestSup_Pass0rd
+PRIVATE_API_SECRET=CiTest-PrivateApi-fa-auth2024-AbCd
+SESSION_SECRET=CiTest-SessionSecret-fa-auth2024-AbCd
+TOKENS_ENCRYPTION_KEY=CiTest-TokensEnc-fa-auth2024-AbCd
+GOOGLE_CLIENT_ID=fake-ci-client.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=CiTest-GoogleSecret-fa-auth2024-AbCd

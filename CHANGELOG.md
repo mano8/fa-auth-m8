@@ -25,9 +25,11 @@ a fresh dependency graph on every run; the generation that resolved on
 stopped hiding defects that were already on `main`. This repository carried
 63 of the 72 failures across the four affected services.
 
-None of this is a contract change: no route, request or response shape moves,
-and the shipped `requirements_prod.lock` is untouched. `SERVICE_VERSION` moves
-to `2.2.3`.
+None of this is a contract change: no route, request or response shape moves.
+`SERVICE_VERSION` moves to `2.2.3`. The shipped `requirements_prod.lock` is
+untouched *by that repair* — it moves in this same release for a different
+reason (`B29`, below), and that move is what finally puts the tested
+generation and the shipped one on the same graph.
 
 > The `Database integration` job was red on **all three** engines (postgresql,
 > mariadb, mysql), and red at 08:04 on `77f302c` — `main` *before* `2.2.2`
@@ -84,6 +86,84 @@ to `2.2.3`.
   already-aware value, so its naive branch is reachable only from outside —
   which is exactly the case the helper exists for, and now has an
   admit-and-deny pair of its own.
+- **The shipped locks move onto the library generation CI already tests
+  against** (`B29-align-shipped-library-generation`, finding `G22`). This is
+  the other half of the entry above: `B27` found nine defects here because the
+  *tested* generation moved, in a release whose *shipped* generation still
+  could not see them. Three declared pins move in
+  `auth_user_service/requirements_prod.lock`, plus `pydantic-core`,
+  `pydantic`'s hard `==` peer. Regenerated with
+  `pip-compile --generate-hashes --no-emit-index-url --no-strip-extras --upgrade-package sqlalchemy==2.0.54 --upgrade-package sqlmodel==0.0.46 --upgrade-package pydantic==2.13.5`,
+  never a blanket `--upgrade`. Read out of the images themselves:
+
+  | Package | Published `2.2.2` image | This release |
+  | --- | --- | --- |
+  | `sqlalchemy` | `2.0.51` | **`2.0.54`** |
+  | `sqlmodel` | `0.0.42` | **`0.0.46`** |
+  | `pydantic` | `2.13.4` | **`2.13.5`** |
+  | `pydantic-core` | `2.46.4` | **`2.46.5`** |
+  | `colorama` | `0.4.6` | **not installed** (see below) |
+
+  sqlmodel `0.0.42` was the newest of three *different* generations the five
+  service images shipped; all five now agree on one.
+
+### Added
+
+- **`examples/fastapi_full/requirements_prod.lock`, and a `--require-hashes`
+  release install to go with it** (`B29`, leg 1b). The maintained example was
+  a **second unpinned image** in this repository, not a documentation folder:
+  its Dockerfile installed `-r requirements_prod.txt` — floors throughout —
+  and `example-smoke.yaml` builds and runs it **six times per run**, against
+  whatever pip resolved that day. That is precisely the mechanism `G20` rode
+  into the fleet. It now installs from a hash-locked, fully pinned set at the
+  same generation as the service beside it, exactly as
+  `auth_user_service/Dockerfile` does; development builds keep the unpinned
+  floors, which is what a development build is for. It is never published to
+  a registry, so it takes no release of its own and adds no publish row — it
+  rides this one. It is also the file a consumer copies when they build a
+  service against `fastapi-m8`, so it now demonstrates the practice the fleet
+  asks for instead of describing it.
+
+  Read out of the example image, built before and after the change:
+
+  | Package | Unpinned build (same day) | Hash-locked build |
+  | --- | --- | --- |
+  | `sqlalchemy` | `2.0.54` | `2.0.54` |
+  | `sqlmodel` | **`0.0.47`** | **`0.0.46`** |
+  | `pydantic` | `2.13.5` | `2.13.5` |
+  | `pydantic-core` | `2.46.5` | `2.46.5` |
+  | `fastapi-m8` | `4.5.1` | `4.5.1` |
+  | `gunicorn` | `26.2.0` | `26.2.0` |
+
+  The one row that differs is the whole argument: sqlmodel `0.0.47` published
+  **the same day** this branch was cut, and the unpinned build took it with
+  no commit, no review and no record — while the five service images, this
+  one included, are pinned to `0.0.46`, the generation the fleet converged on
+  in this step. The lock is what makes that a decision rather than a
+  coincidence of timing.
+- **`test-shipped-lock` — a CI job that actually runs the shipped set** (`B29`,
+  leg 2). `pip-audit` and Trivy *scan* a lock; neither *executes* it, so until
+  now nothing here ever ran a test against the graph the release image
+  installs. The job installs `auth_user_service/requirements_prod.lock` with
+  `--require-hashes` exactly as the Dockerfile does, derives a constraints
+  file from it (`scripts/shipped_lock_env.py --emit-constraints`), adds the
+  test tooling on top without dragging any shipped package forward,
+  re-asserts that every lock pin is still at its locked version (`--verify`),
+  and runs the full suite at the 100 % coverage gate. Copied from
+  `prompt-engine-m8`, the one repository in the fleet that already had it.
+- **`scripts/shipped_lock_env.py`** — the lock-parsing helper that job needs.
+
+### Removed
+
+- **`colorama` is no longer installed in the release image** (`B29`). It is a
+  Windows-only ANSI shim, pulled in transitively by `click` (under `uvicorn`),
+  and it entered the lock because that lock had been regenerated on a Windows
+  host: `pip-compile` resolves for the platform it runs on, and the entry it
+  wrote carried **no environment marker**, so every Linux release image
+  installed it unconditionally. Confirmed present in the published `2.2.2`
+  image and absent from this one. Both locks are now resolved inside
+  `python:3.14-slim` — the images' own platform, and the only place this
+  repository's release graphs are ever installed.
 
 ## [2.2.2] - 2026-09-20
 

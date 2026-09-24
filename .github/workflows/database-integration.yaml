@@ -73,8 +73,16 @@ jobs:
           # scripts that mutate authorization state, the bundled example's own
           # persistence/audit code (Layer B now gates its `m8_app` chain and
           # runs its retention purge), and this layer itself.
+          #
+          # The hash-locked release sets count too (`requirements_prod.lock`,
+          # service and example both): they are where the SQLAlchemy and
+          # sqlmodel versions the image actually runs are pinned, so a change
+          # there is the most database-sensitive dependency change there is.
+          # Added with `B29-align-shipped-library-generation` — the pattern had
+          # matched `requirements*.txt` only, so the first PR to move a locked
+          # SQLAlchemy pin skipped the matrix entirely.
           if echo "$changed" | grep -Eq \
-            '^auth_user_service/(db_models|alembic|services|scripts)/|^auth_user_service/core/(db_utils|engine_async|engine_sync|init_db|config)\.py$|^examples/docker_compose/[^/]+/shared_migrations/|^examples/fastapi_full/(alembic|app|db_models|core)/|^tests/integration/|^pytest\.ini$|^\.github/workflows/database-integration\.yaml$|requirements.*\.txt$'
+            '^auth_user_service/(db_models|alembic|services|scripts)/|^auth_user_service/core/(db_utils|engine_async|engine_sync|init_db|config)\.py$|^examples/docker_compose/[^/]+/shared_migrations/|^examples/fastapi_full/(alembic|app|db_models|core)/|^tests/integration/|^pytest\.ini$|^\.github/workflows/database-integration\.yaml$|requirements.*\.txt$|requirements.*\.lock$'
           then
             echo "run_matrix=true" >> "$GITHUB_OUTPUT"
             echo "reason=database-sensitive files changed" >> "$GITHUB_OUTPUT"
