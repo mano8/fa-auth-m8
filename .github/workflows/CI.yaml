@@ -114,44 +114,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r auth_user_service/requirements_dev.txt
 
+      # The throwaway CI environment lives in tests/ci_env_fixture.txt — see the
+      # header there for why it is a file rather than an inline heredoc.
       - name: Create test .env
-        run: |
-          cat > auth_user_service/.env << 'ENVEOF'
-          DOMAIN=localhost
-          ENVIRONMENT=local
-          PROJECT_NAME=fa-auth-m8
-          STACK_NAME=fa-auth-m8
-          API_PREFIX=/user
-          BACKEND_HOST=http://localhost:8000
-          FRONTEND_HOST=http://localhost:5173
-          BACKEND_CORS_ORIGINS=http://localhost:8000,http://localhost:5173
-          SELECTED_DB=Mysql
-          DB_HOST=localhost
-          DB_PORT=3306
-          DB_DATABASE=test_db
-          DB_USER=test_user
-          DB_PASSWORD=CiTestDb_Passw0rd
-          REDIS_HOST=localhost
-          REDIS_PORT=6379
-          REDIS_USER=appuser
-          REDIS_PASSWORD=CiTestRed_Passw0rd
-          ACCESS_SECRET_KEY=CiTest-AccessKey-fa-auth2024-AbCdE
-          REFRESH_SECRET_KEY=CiTest-RefreshKey-fa-auth2024-AbCd
-          # auth-sdk-m8 >= 1.0.0 secure-by-default: this single-service CI run uses the
-          # documented opt-out — HS256 symmetric keys + strict iss/aud off — plus a test
-          # EVENT_SIGNING_KEY so the boot validators pass without RSA keys or a key store.
-          ACCESS_TOKEN_ALGORITHM=HS256
-          REFRESH_TOKEN_ALGORITHM=HS256
-          TOKEN_STRICT_VALIDATION=false
-          EVENT_SIGNING_KEY=CiTest-EventSigning-fa-auth2024-AbCd
-          FIRST_SUPERUSER=ci-admin@example.com
-          FIRST_SUPERUSER_PASSWORD=CiTestSup_Pass0rd
-          PRIVATE_API_SECRET=CiTest-PrivateApi-fa-auth2024-AbCd
-          SESSION_SECRET=CiTest-SessionSecret-fa-auth2024-AbCd
-          TOKENS_ENCRYPTION_KEY=CiTest-TokensEnc-fa-auth2024-AbCd
-          GOOGLE_CLIENT_ID=fake-ci-client.apps.googleusercontent.com
-          GOOGLE_CLIENT_SECRET=CiTest-GoogleSecret-fa-auth2024-AbCd
-          ENVEOF
+        run: cp tests/ci_env_fixture.txt auth_user_service/.env
 
       - name: Run tests
         run: pytest --cov-report=xml --cov-fail-under=100
@@ -195,6 +161,40 @@ jobs:
       # is needed here.
       - name: Run bundled-example unit tests
         run: pytest -c examples/fastapi_full/pytest.ini examples/fastapi_full/tests
+
+  test-shipped-lock:
+    name: Tests against the shipped prod lock
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install the shipped set exactly as the Dockerfile does
+        run: pip install --require-hashes -r auth_user_service/requirements_prod.lock
+
+      - name: Derive constraints from the lock
+        run: python scripts/shipped_lock_env.py --emit-constraints lock-constraints.txt
+
+      # PyYAML and hypothesis are test-only (the policy tests parse the workflow
+      # and compose files; the property tests need hypothesis); the constraints
+      # file keeps them from moving anything the image ships.
+      - name: Add test tooling without moving the shipped set
+        run: pip install -c lock-constraints.txt pytest pytest-cov coverage pyyaml hypothesis
+
+      - name: Verify the environment is still the shipped set
+        run: python scripts/shipped_lock_env.py --verify
+
+      # The throwaway CI environment lives in tests/ci_env_fixture.txt — see the
+      # header there for why it is a file rather than an inline heredoc.
+      - name: Create test .env
+        run: cp tests/ci_env_fixture.txt auth_user_service/.env
+
+      - name: Run tests against the shipped set
+        run: pytest --cov-fail-under=100 -p no:cacheprovider
 
   trivy-image:
     runs-on: ubuntu-latest

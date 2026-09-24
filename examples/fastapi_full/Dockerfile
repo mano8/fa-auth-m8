@@ -9,13 +9,24 @@ ENV PIP_ROOT_USER_ACTION=ignore
 COPY ./fastapi_full/requirements_base.txt .
 COPY ./fastapi_full/requirements_dev.txt .
 COPY ./fastapi_full/requirements_prod.txt .
+COPY ./fastapi_full/requirements_prod.lock .
 
+# This example is the file a consumer copies when they build a service against
+# `fastapi-m8`, so it demonstrates the practice the fleet asks for rather than
+# describing it. Release builds install from a hash-locked, fully pinned set,
+# exactly as `auth_user_service/Dockerfile` does, so a rebuild of the same
+# source cannot silently resolve a different dependency graph. Development
+# builds keep the unpinned floors, which is what a development build is for.
+# Regenerate the lock with:
+#   pip-compile --generate-hashes --no-emit-index-url --no-strip-extras \
+#     --output-file=requirements_prod.lock requirements_prod.txt
 RUN pip install --upgrade "pip==26.1.1" && \
-    pip install --prefix=/install --no-cache-dir -r requirements_base.txt && \
     if [ "$ENVIRONMENT" = "development" ]; then \
+        pip install --prefix=/install --no-cache-dir -r requirements_base.txt && \
         pip install --prefix=/install --no-cache-dir -r requirements_dev.txt ; \
     else \
-        pip install --prefix=/install --no-cache-dir -r requirements_prod.txt ; \
+        pip install --prefix=/install --no-cache-dir \
+            --require-hashes -r requirements_prod.lock ; \
     fi
 
 
