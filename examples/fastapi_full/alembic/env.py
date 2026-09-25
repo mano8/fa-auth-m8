@@ -18,6 +18,7 @@ from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
 from fastapi_full.core.config import settings
+from fastapi_full.core.utc_session import pin_utc_session
 import fastapi_full.db_models  # noqa: F401
 
 # ---------------------------------------------------------------------
@@ -98,10 +99,14 @@ def run_migrations_online() -> None:
         raise RuntimeError("Alembic configuration section is missing.")
     configuration["sqlalchemy.url"] = get_url()
 
-    connectable = engine_from_config(
-        configuration,  # type: ignore[arg-type]
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
+    # A UTC session makes the timestamp -> timestamptz ALTER an autogenerate
+    # emits read existing naive rows as UTC instead of the server's zone (G23).
+    connectable = pin_utc_session(
+        engine_from_config(
+            configuration,  # type: ignore[arg-type]
+            prefix="sqlalchemy.",
+            poolclass=pool.NullPool,
+        )
     )
 
     with connectable.connect() as connection:

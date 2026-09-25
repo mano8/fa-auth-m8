@@ -58,6 +58,23 @@ WORKDIR /opt
 COPY --from=builder /install /usr/local
 COPY --chown=appuser:appuser ./fastapi_full ./fastapi_full
 
+# Drop pip from the runtime image, as the five service images do (copied
+# from auth_user_service/Dockerfile, reason included, because this is the
+# file a consumer copies). Nothing here installs anything at run time:
+# `docker_start.sh` runs alembic and uvicorn, and the release set is
+# installed hash-locked in the builder. pip is dead weight - and not inert
+# dead weight: from pip 26.2.1 (the pip the base digest above ships) it
+# carries an SBOM of its vendored dependency tree (pip/_vendor/bom.cdx.json)
+# that Trivy reads as installed packages, surfacing GHSA-6v7p-g79w-8964
+# (msgpack 1.1.2) and CVE-2025-47273 (setuptools 70.3.0) - both pip's
+# vendored copies, neither in requirements_prod.lock nor in `pip list`.
+# Removing pip deletes the code instead of ignoring the report, which is why
+# this is not a .trivyignore entry. setuptools and wheel are not shipped by
+# this base; `pip list` in the digest above reads pip alone.
+RUN python -m pip uninstall -y pip \
+    && rm -rf "$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/pip" \
+    && rm -f /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.*
+
 USER appuser
 
 EXPOSE 8000

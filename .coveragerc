@@ -4,7 +4,6 @@ omit =
     auth_user_service/main.py
     auth_user_service/alembic/*
     auth_user_service/services/oauth.py
-    auth_user_service/core/engine_async.py
     auth_user_service/core/engine_sync.py
     auth_user_service/core/init_db.py
     auth_user_service/core/config.py
