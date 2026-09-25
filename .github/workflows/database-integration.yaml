@@ -82,7 +82,7 @@ jobs:
           # matched `requirements*.txt` only, so the first PR to move a locked
           # SQLAlchemy pin skipped the matrix entirely.
           if echo "$changed" | grep -Eq \
-            '^auth_user_service/(db_models|alembic|services|scripts)/|^auth_user_service/core/(db_utils|engine_async|engine_sync|init_db|config)\.py$|^examples/docker_compose/[^/]+/shared_migrations/|^examples/fastapi_full/(alembic|app|db_models|core)/|^tests/integration/|^pytest\.ini$|^\.github/workflows/database-integration\.yaml$|requirements.*\.txt$|requirements.*\.lock$'
+            '^auth_user_service/(db_models|alembic|services|scripts)/|^auth_user_service/core/(db_utils|engine_sync|utc_session|init_db|config)\.py$|^examples/docker_compose/[^/]+/shared_migrations/|^examples/fastapi_full/(alembic|app|db_models|core)/|^tests/integration/|^pytest\.ini$|^\.github/workflows/database-integration\.yaml$|requirements.*\.txt$|requirements.*\.lock$'
           then
             echo "run_matrix=true" >> "$GITHUB_OUTPUT"
             echo "reason=database-sensitive files changed" >> "$GITHUB_OUTPUT"
@@ -92,7 +92,7 @@ jobs:
           fi
 
   matrix:
-    name: Layer B (${{ matrix.database }})
+    name: Layer B (${{ matrix.label || matrix.database }})
     needs: scope
     if: needs.scope.outputs.run_matrix == 'true'
     runs-on: ubuntu-latest
@@ -106,6 +106,17 @@ jobs:
           - database: postgresql
             image: postgres:18.4-alpine
             port: 5432
+          # The same certified PostgreSQL, initialised in a zone that is not
+          # UTC (initdb takes TZ), as a self-hosted Debian server usually is.
+          # sqlmodel binds aware UTC datetimes; a naive column cast them in the
+          # session zone, so API keys outlived their expiry by the offset until
+          # the service pinned its sessions to UTC (B30, G23). The suite asserts
+          # the server really runs this zone before it trusts a green result.
+          - database: postgresql
+            label: postgresql-europe-madrid
+            image: postgres:18.4-alpine
+            port: 5432
+            server_tz: Europe/Madrid
           - database: mysql
             image: mysql:8.4.10
             port: 3306
@@ -119,6 +130,7 @@ jobs:
         # Every image ignores the other images' variables, so one env block
         # provisions the disposable database on all three.
         env:
+          TZ: ${{ matrix.server_tz || 'UTC' }}
           POSTGRES_DB: auth_it_db
           POSTGRES_USER: auth_it_user
           POSTGRES_PASSWORD: ItTestDb1!secure
@@ -165,6 +177,7 @@ jobs:
           FA_AUTH_IT_DATABASE: ${{ env.IT_DATABASE }}
           FA_AUTH_IT_USER: ${{ env.IT_USER }}
           FA_AUTH_IT_PASSWORD: ${{ env.IT_PASSWORD }}
+          FA_AUTH_IT_EXPECT_SERVER_TZ: ${{ matrix.server_tz }}
         run: |
           pytest -m database_integration tests/integration/database \
             --database=${{ matrix.database }} --no-cov
@@ -200,4 +213,4 @@ jobs:
             echo "::error::the three-dialect matrix did not pass — a release must not proceed while any supported dialect fails (4.6)"
             exit 1
           fi
-          echo "PostgreSQL, MySQL, and MariaDB all passed."
+          echo "PostgreSQL (UTC and Europe/Madrid), MySQL, and MariaDB all passed."

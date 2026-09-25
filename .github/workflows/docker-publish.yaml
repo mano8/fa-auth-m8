@@ -67,6 +67,31 @@ jobs:
           exit-code: "1"
           format: table
 
+      # The push below ships arm64 too, so the gate scans it as well: a
+      # second single-platform build under the QEMU set up above, loaded and
+      # scanned before anything is pushed.
+      - name: Build image for scanning (arm64)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: auth_user_service/Dockerfile
+          platforms: linux/arm64
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:scan-arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy image scan arm64 (CRITICAL/HIGH CVEs — blocks push on findings)
+        uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297 # master
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_NAME }}:scan-arm64
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
       - name: Trivy image scan (JSON — attach to release)
         uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297 # master
         with:

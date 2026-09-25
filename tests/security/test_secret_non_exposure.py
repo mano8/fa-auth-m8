@@ -347,3 +347,52 @@ class TestApiKeyReadSurfacesNeverSerialiseKeyMaterial:
         derive from ``ApiKey``, so there is no column to omit by accident."""
         assert not issubclass(ApiKeyAdminPublic, ApiKey)
         assert "key_hash" not in ApiKeyAdminPublic.model_fields
+
+
+# ── engine statement logging (B30, G30) ───────────────────────────────────────
+
+_ENGINE_FACTORIES = {"create_engine", "create_async_engine", "engine_from_config"}
+_SOURCE_ROOTS = ("auth_user_service", "examples/fastapi_full")
+
+
+def _engine_echo_calls() -> list[str]:
+    """Every engine factory call in shipped source that turns statement echo on.
+
+    ``echo=True`` makes SQLAlchemy log every statement **with its bound
+    parameters** — here password hashes, token JTIs and API-key material.
+    Anything but a literal ``False`` counts, so a setting that can be flipped
+    on at run time is refused as well.
+    """
+    import ast
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    offenders: list[str] = []
+    for root in _SOURCE_ROOTS:
+        for path in sorted((repo_root / root).rglob("*.py")):
+            if "tests" in path.relative_to(repo_root).parts:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = (
+                    func.attr
+                    if isinstance(func, ast.Attribute)
+                    else getattr(func, "id", None)
+                )
+                if name not in _ENGINE_FACTORIES:
+                    continue
+                for keyword in node.keywords:
+                    if keyword.arg in {"echo", "echo_pool"} and not (
+                        isinstance(keyword.value, ast.Constant)
+                        and keyword.value.value is False
+                    ):
+                        rel = path.relative_to(repo_root).as_posix()
+                        offenders.append(f"{rel}:{node.lineno} {keyword.arg}=")
+    return offenders
+
+
+def test_no_engine_logs_its_statements() -> None:
+    assert _engine_echo_calls() == []

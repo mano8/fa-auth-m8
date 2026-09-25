@@ -49,6 +49,7 @@ from tests.integration.database._engines import (
     external_endpoint,
     wait_until_ready,
 )
+from auth_user_service.core.utc_session import pin_utc_session
 from tests.integration.database._schema import reset_database
 
 #: Alembic version table for this suite — private, so a mistakenly shared
@@ -169,13 +170,20 @@ def configured_settings(
 def it_engine(
     engine_spec: EngineSpec, db_endpoint: Endpoint, configured_settings: None
 ) -> Iterator[sa.Engine]:
-    """Primary engine for the suite (``pool_size`` leaves room for races)."""
-    engine = sa.create_engine(
-        db_endpoint.uri(engine_spec),
-        future=True,
-        pool_size=5,
-        max_overflow=10,
-        connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS},
+    """Primary engine for the suite (``pool_size`` leaves room for races).
+
+    Pinned exactly as the service pins its own engine (``core/engine_sync.py``),
+    so on the non-UTC PostgreSQL leg every test here reads and writes through
+    the session clock the service really runs (G23).
+    """
+    engine = pin_utc_session(
+        sa.create_engine(
+            db_endpoint.uri(engine_spec),
+            future=True,
+            pool_size=5,
+            max_overflow=10,
+            connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS},
+        )
     )
     yield engine
     engine.dispose()
@@ -186,12 +194,15 @@ def second_engine(
     engine_spec: EngineSpec, db_endpoint: Endpoint, configured_settings: None
 ) -> Iterator[sa.Engine]:
     """A **separate** engine, so concurrency tests use genuinely distinct
-    connections rather than two sessions sharing one pooled connection."""
-    engine = sa.create_engine(
-        db_endpoint.uri(engine_spec),
-        future=True,
-        pool_size=5,
-        connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS},
+    connections rather than two sessions sharing one pooled connection.
+    Pinned to UTC like :func:`it_engine`."""
+    engine = pin_utc_session(
+        sa.create_engine(
+            db_endpoint.uri(engine_spec),
+            future=True,
+            pool_size=5,
+            connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS},
+        )
     )
     yield engine
     engine.dispose()

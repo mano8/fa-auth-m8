@@ -173,6 +173,13 @@ jobs:
         with:
           python-version: "3.14"
 
+      # pip-compile resolves for the host it runs on: a Windows regeneration
+      # adds unmarked Windows-only packages, and one made beside a sibling
+      # checkout records a --find-links into it. Both install fine on Linux,
+      # so refuse the lock before anything else in this job can pass on it.
+      - name: Refuse a lock that is not a portable PyPI-only resolve
+        run: python scripts/shipped_lock_env.py --check-portable auth_user_service/requirements_prod.lock examples/fastapi_full/requirements_prod.lock
+
       - name: Install the shipped set exactly as the Dockerfile does
         run: pip install --require-hashes -r auth_user_service/requirements_prod.lock
 
@@ -220,6 +227,30 @@ jobs:
         with:
           scan-type: image
           image-ref: fa-auth-m8:ci-scan
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      # The bundled fastapi_full example is not published, but it is the
+      # template consumers copy, and example-smoke builds it on every run. Hold
+      # it to the same gate as the service image (B30, G27).
+      - name: Build the fastapi_full example image for scanning (amd64)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: examples
+          file: examples/fastapi_full/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: fa-auth-m8-example:ci-scan
+          cache-from: type=gha
+
+      - name: Trivy image scan of the example (CRITICAL/HIGH CVEs — blocks PR on findings)
+        uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297 # master
+        with:
+          scan-type: image
+          image-ref: fa-auth-m8-example:ci-scan
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"

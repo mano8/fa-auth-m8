@@ -13,3 +13,9 @@ traefik/certs/*.crt
 traefik/certs/*.key
 *.pem
 *README_DEV*
+
+# Migrations are generated at first boot from the image this stack runs
+# (auth_user_service/scripts/docker_start.sh) and belong to the deployment,
+# not to the repository: a tracked snapshot would stop that generation and
+# pin an old schema onto a newer image (B30, G28).
+shared_migrations/*/versions/*.py

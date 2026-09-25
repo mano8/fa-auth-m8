@@ -38,6 +38,50 @@ generation and the shipped one on the same graph.
 
 ### Fixed
 
+- **API keys expire when they say they do on a PostgreSQL server that does
+  not run in UTC** (`B30-pre-publish-hardening` leg 1, finding `G23`,
+  operator decision (a)+(b)). The sqlmodel `0.0.46` this release ships maps a
+  `datetime` field to `UTCDateTime`, which binds an *aware* UTC value, while
+  every deployed database holds `timestamp without time zone` columns
+  generated under the previous mapping. PostgreSQL casts that value into the
+  column **in the session `TimeZone`**. Under `Europe/Madrid`, a key issued to
+  expire at `19:29:18Z` was stored and read back as `21:29:18Z`, and because
+  `ApiKeyService.get_active_key` compares `expires_at` in Python, the key kept
+  validating for two hours after its expiry. MySQL and MariaDB were never
+  affected.
+  - **(a) UTC sessions.** `core/utc_session.py` runs `SET TIME ZONE 'UTC'` on
+    every connection the service engine (`core/engine_sync.py`), both Alembic
+    environments and the `fastapi_full` example's engine open, so the cast is
+    a no-op on every server. Other dialects are left alone.
+  - **(b) `timestamptz`.** The four tracked PostgreSQL chains
+    (`postgres_m8` and `metrics_m8`, `auth_user` and `m8_app`) gain a
+    `timestamptz_columns` revision: 16 issuer columns and 3 example columns,
+    exactly the set Alembic's own comparison reports against each chain's
+    previous head. Every ALTER reads the stored value as UTC explicitly
+    (`USING <column> AT TIME ZONE 'UTC'`), so it is exact even without the pin.
+    An implicit cast would use the session zone and move every existing row by
+    its offset (measured: `12:00Z` → `11:00Z` under `Europe/Madrid`). The
+    downgrade converts back the same way. New deployments generate
+    `timestamptz` at first boot. An existing deployment that owns its own
+    migrations stays correct under the pin, and can move to `timestamptz` with
+    an ordinary `alembic revision --autogenerate`, which now runs pinned.
+  - **The regression is live, not inferred.** The `Database integration`
+    workflow gains a `postgresql-europe-madrid` leg, the certified
+    `postgres:18.4-alpine` initialised in `Europe/Madrid`, which asserts that
+    the server really runs that zone. `tests/integration/database/test_session_clock.py`
+    issues one key a second past its expiry and one five minutes before it,
+    at head and, on PostgreSQL, at the naive revision before `timestamptz`.
+    Both expiries must read back exactly, the first refused and the second
+    accepted. A row written before the revision must also read the same
+    instant after it. Observed **failing on `main`** against that server (the
+    two-hour read above). The suite's own engines are now pinned exactly as
+    the service's are.
+- **`hardened_m8` generates its schema from the image it runs again**
+  (leg 6, finding `G28`, operator decision (a)). Two "initial" migrations,
+  stamped 2026-09-13 and swept into `39d1987`, had stopped
+  `docker_start.sh` from autogenerating at first boot and applied a naive
+  snapshot to the `2.2.3` models. Both are removed, and the stack's
+  `.gitignore` now keeps generated revisions out of the repository.
 - **Expiry and activity timestamps are timezone-aware UTC end to end.**
   `ClientSession.jwt_expires_at` / `refresh_expires_at` and the audit and
   tombstone timestamps are aware UTC columns — their own field descriptions
@@ -164,6 +208,38 @@ generation and the shipped one on the same graph.
   image and absent from this one. Both locks are now resolved inside
   `python:3.14-slim` — the images' own platform, and the only place this
   repository's release graphs are ever installed.
+- **`auth_user_service/core/engine_async.py`** (leg 4, finding `G30`). It
+  built `create_async_engine(..., echo=True)` at import, which logs every
+  statement with its bound parameters (password hashes, token JTIs, API-key
+  material). Nothing outside `tests/` imported it, so no published image ever
+  ran it, and `mysql+pymysql` would not have worked as an async driver
+  anyway. `tests/security/test_secret_non_exposure.py` now fails on any
+  engine factory in the service or the example called with `echo`/`echo_pool`
+  other than a literal `False`. It failed on this module before the removal.
+
+### Security
+
+- **The `fastapi_full` example image drops pip, and CI scans it.** Leg 3,
+  finding `G27`. The example brought in the hash lock with `B29` but not the
+  runtime-stage pip removal the service image carries, so it read **2 HIGH**
+  under Trivy: GHSA-6v7p-g79w-8964 and CVE-2025-47273, both from pip
+  `26.2.1`'s vendored SBOM. The block is copied from
+  `auth_user_service/Dockerfile`, reason included, since this is the file a
+  consumer copies. `trivy-image` now scans the example at the same settings
+  as the service image.
+- **A lock that only resolves where it was made is now refused** (leg 2,
+  finding `G24`). `scripts/shipped_lock_env.py --check-portable` runs first
+  in `test-shipped-lock`, over both this repository's locks, and fails on a
+  package-source option, a filesystem path, or a commented deny-list of
+  platform-only distributions (`colorama`, `pywin32`, `pywin32-ctypes`,
+  `pywinpty`). A Windows regeneration can no longer put `colorama` back
+  silently. The same check is in all five service repositories.
+- **The arm64 image is scanned before it is pushed** (leg 8, finding
+  `G31`(a)). A second single-platform build is Trivy-gated at the same
+  settings before the multi-arch push. `tests/test_publish_scans_every_platform.py`
+  fails if any pushed platform lacks its own blocking scan, and
+  `tests/security/test_publish_provenance.py` now picks the push step by its
+  platform list rather than by naming arm64.
 
 ## [2.2.2] - 2026-09-20
 

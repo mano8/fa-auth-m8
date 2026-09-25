@@ -48,6 +48,18 @@ def _steps_with_name(steps: list[dict], fragment: str) -> list[dict]:
     return [s for s in steps if fragment.lower() in s.get("name", "").lower()]
 
 
+def _is_multi_arch_push(step: dict) -> bool:
+    """The build-push step that ships more than one platform.
+
+    A single-platform ``linux/arm64`` scan build exists too (B30, G31), so the
+    push is told apart by its platform list, not by naming arm64.
+    """
+    platforms = str(step.get("with", {}).get("platforms", ""))
+    return step.get("uses", "").startswith("docker/build-push-action") and (
+        "," in platforms
+    )
+
+
 # ---------------------------------------------------------------------------
 # Permissions
 # ---------------------------------------------------------------------------
@@ -242,12 +254,7 @@ def test_build_push_step_has_provenance() -> None:
     ]
     if not push_steps:
         # Fallback: find the step with multi-arch platforms
-        push_steps = [
-            s
-            for s in steps
-            if s.get("uses", "").startswith("docker/build-push-action")
-            and "arm64" in str(s.get("with", {}).get("platforms", ""))
-        ]
+        push_steps = [s for s in steps if _is_multi_arch_push(s)]
     assert push_steps, "No multi-arch build-push step found"
     provenance = push_steps[0].get("with", {}).get("provenance", "")
     assert "max" in str(provenance).lower(), (
@@ -333,12 +340,7 @@ def test_trivy_gate_precedes_push() -> None:
         if s.get("uses", "").startswith("aquasecurity/trivy-action")
         and s.get("with", {}).get("exit-code") == "1"
     ]
-    push_indices = [
-        i
-        for i, s in enumerate(steps)
-        if s.get("uses", "").startswith("docker/build-push-action")
-        and "arm64" in str(s.get("with", {}).get("platforms", ""))
-    ]
+    push_indices = [i for i, s in enumerate(steps) if _is_multi_arch_push(s)]
     assert trivy_indices and push_indices, (
         "Could not find both blocking Trivy step and multi-arch push step"
     )
@@ -352,12 +354,7 @@ def test_cosign_sign_follows_push() -> None:
     """The cosign sign step must appear after the multi-arch push step."""
     steps = _job_steps(_load_workflow())
     sign_indices = [i for i, s in enumerate(steps) if "cosign sign" in s.get("run", "")]
-    push_indices = [
-        i
-        for i, s in enumerate(steps)
-        if s.get("uses", "").startswith("docker/build-push-action")
-        and "arm64" in str(s.get("with", {}).get("platforms", ""))
-    ]
+    push_indices = [i for i, s in enumerate(steps) if _is_multi_arch_push(s)]
     assert sign_indices and push_indices, (
         "Could not find both cosign sign step and multi-arch push step"
     )

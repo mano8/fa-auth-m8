@@ -330,6 +330,16 @@ def test_downgrade_to_baseline_then_upgrade_round_trip(
     """
     command.upgrade(alembic_config, "head")
 
+    # The PostgreSQL chains end in the timestamptz revision (B30, G23); step
+    # back over it first, so the walk below starts where it always has.
+    script = ScriptDirectory.from_config(alembic_config).get_revision("head")
+    if script is not None and script.path.endswith("_timestamptz_columns.py"):
+        command.downgrade(alembic_config, "-1")
+        expires_at = {
+            c["name"]: c for c in sa.inspect(empty_database).get_columns("auth_api_key")
+        }["expires_at"]
+        assert expires_at["type"].timezone is False
+
     command.downgrade(alembic_config, "-1")
     assert PrivilegedActionAudit.__tablename__ not in table_names(empty_database)
 

@@ -177,6 +177,27 @@ def test_database_matrix_covers_every_certified_dialect_at_its_pinned_version() 
     )
 
 
+def test_database_matrix_runs_postgresql_on_a_non_utc_server() -> None:
+    """One PostgreSQL leg runs on a server whose zone is not UTC (B30, G23).
+
+    Every other leg's server runs UTC, where a session-clock defect cannot
+    fail anything. The leg passes its zone to the service container (``TZ``,
+    which initdb reads) and to the suite (``FA_AUTH_IT_EXPECT_SERVER_TZ``),
+    which asserts the server really runs it.
+    """
+    wf = _load_yaml(DATABASE_YAML)
+    job = wf["jobs"]["matrix"]
+    zones = [
+        entry.get("server_tz")
+        for entry in job["strategy"]["matrix"]["include"]
+        if entry["database"] == "postgresql"
+    ]
+    assert any(zone and zone != "UTC" for zone in zones), zones
+    assert "matrix.server_tz" in job["services"]["database"]["env"]["TZ"]
+    run_step = next(s for s in job["steps"] if "FA_AUTH_IT_MODE" in s.get("env", {}))
+    assert run_step["env"]["FA_AUTH_IT_EXPECT_SERVER_TZ"] == "${{ matrix.server_tz }}"
+
+
 def test_database_matrix_does_not_fail_fast() -> None:
     """Every dialect's result is evidence; one failure must not cancel the rest."""
     wf = _load_yaml(DATABASE_YAML)

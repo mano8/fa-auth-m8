@@ -5,8 +5,10 @@ from typing import Annotated
 from fastapi import Depends
 from sqlmodel import Session, create_engine
 from auth_user_service.core.config import settings
+from auth_user_service.core.utc_session import pin_utc_session
 
-engine = create_engine(str(settings.SQLALCHEMY_DATABASE_URI))
+# Every PostgreSQL session this engine opens runs in UTC (G23).
+engine = pin_utc_session(create_engine(str(settings.SQLALCHEMY_DATABASE_URI)))
 
 
 def get_db() -> Generator[Session, None, None]:
