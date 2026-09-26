@@ -150,6 +150,15 @@ generation and the shipped one on the same graph.
 
   sqlmodel `0.0.42` was the newest of three *different* generations the five
   service images shipped; all five now agree on one.
+- **Every stack and doc pins the image this release publishes**
+  (`B32-pre-publish-pin-alignment`). `hardened_m8` (`docker-compose.yml`,
+  `docker-compose.production.yml`, `README.md`), `vault_dev_m8`
+  (`docker-compose.yml`, `README.md`), `README.md` and `DOCKERHUB.md` move
+  `tepochtli/fa-auth-m8:2.2.1` → `2.2.3`, so the `v2.2.3` tree carries its
+  own tag instead of needing a re-pin commit after the publish. The
+  `hardened_m8/README.md` production note had still cited `0.9.9`. Until
+  `2.2.3` is on Docker Hub these stacks cannot pull it; `example-smoke.yaml`
+  already builds an unpublished pinned tag locally, so CI is unaffected.
 
 ### Added
 

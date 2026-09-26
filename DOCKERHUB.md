@@ -165,11 +165,11 @@ mode.
 ## Image Tags
 
 ```sh
-docker pull tepochtli/fa-auth-m8:2.2.1
+docker pull tepochtli/fa-auth-m8:2.2.3
 docker pull tepochtli/fa-auth-m8:latest
 ```
 
-Use a pinned semver tag such as `2.2.1` for production. Avoid `latest` in
+Use a pinned semver tag such as `2.2.3` for production. Avoid `latest` in
 long-lived deployments.
 
 To use the published image in your own compose stack:
@@ -177,7 +177,7 @@ To use the published image in your own compose stack:
 ```yaml
 services:
   auth_user_service:
-    image: tepochtli/fa-auth-m8:2.2.1
+    image: tepochtli/fa-auth-m8:2.2.3
 ```
 
 ---
