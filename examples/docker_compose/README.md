@@ -116,7 +116,7 @@ docker compose up -d --build
 Generate secret values with:
 
 ```sh
-python -c "import secrets; print(secrets.token_urlsafe(64))"
+python -c "import secrets,string; a=string.ascii_letters+string.digits; print('Aa1-'+''.join(secrets.choice(a) for _ in range(44)))"
 ```
 
 To rotate cryptographic keys without reinitializing: `bash init.sh --rotate-keys`.
@@ -137,7 +137,7 @@ Some stacks also use a shared `.env` file at the stack root for infrastructure v
 Generate secrets with:
 
 ```sh
-python -c "import secrets; print(secrets.token_urlsafe(64))"
+python -c "import secrets,string; a=string.ascii_letters+string.digits; print('Aa1-'+''.join(secrets.choice(a) for _ in range(44)))"
 ```
 
 ### Secure-by-default boot requirements
