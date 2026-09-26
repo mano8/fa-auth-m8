@@ -2,7 +2,7 @@
 
 **PostgreSQL 18** + **RS256 asymmetric token signing** + **stateful** token mode + **Prometheus & Grafana** observability + **container hardening** + **network segmentation**.
 
-`auth_user_service` runs from the published Docker Hub image (`tepochtli/fa-auth-m8:2.2.1`). Secrets live in env files — no Vault required.
+`auth_user_service` runs from the published Docker Hub image (`tepochtli/fa-auth-m8:2.2.3`). Secrets live in env files — no Vault required.
 
 **Choose this when:** you want production-grade container posture (read-only rootfs, dropped capabilities, resource limits) and observability, but don't need HashiCorp Vault. Use [vault_dev_m8](../vault_dev_m8/) when you also need secrets-manager injection.
 
@@ -111,7 +111,7 @@ flush data. The contract is locked by `tests/security/test_redis_acl_policy.py`.
 | redis_cache | redis:8.8.0-alpine | `127.0.0.1:6379` |
 | prometheus | ubuntu/prometheus:3.11-26.04_stable | `127.0.0.1:9090` |
 | grafana | grafana/grafana:13.1.0 | `127.0.0.1:3000` |
-| auth_user_service | [tepochtli/fa-auth-m8:2.2.1](https://hub.docker.com/r/tepochtli/fa-auth-m8) | via Traefik at `/user` |
+| auth_user_service | [tepochtli/fa-auth-m8:2.2.3](https://hub.docker.com/r/tepochtli/fa-auth-m8) | via Traefik at `/user` |
 | fastapi_full | local build | via Traefik at `/fastapi` |
 
 ---
@@ -184,7 +184,7 @@ docker compose up -d
 `auth_user_service` pulls from Docker Hub — no `--build` needed for it. Only `fastapi_full` is built locally.
 
 > **Pinned for production:** the image is pinned to a specific release tag
-> (`tepochtli/fa-auth-m8:0.9.9`) in `docker-compose.yml` for reproducible deployments —
+> (`tepochtli/fa-auth-m8:2.2.3`) in `docker-compose.yml` for reproducible deployments —
 > bump it to a newer published tag as releases are cut (never use `:latest`).
 
 ---
