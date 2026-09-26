@@ -44,6 +44,18 @@ _REFRESH_TTL_SECONDS = settings.REFRESH_TOKEN_EXPIRE_MINUTES * 60
 _REFUSAL_DETAIL = "Google sign-in could not be completed for this account."
 
 
+# The one code a failed Google sign-in hands back to the client (N21). It names
+# no reason, for the same reason the refusal detail does not.
+_AUTH_ERROR_CODE = "google_signin_failed"
+
+
+def _failure_redirect(redirect_target: str) -> RedirectResponse:
+    """Send the browser back to its trusted target with the generic error code."""
+    return RedirectResponse(
+        url=f"{redirect_target}#auth_error={_AUTH_ERROR_CODE}", status_code=303
+    )
+
+
 def _get_oauth_session(redis: object, state: str) -> dict:
     """Retrieve and parse the OAuth session; raises 400 if missing/expired."""
     raw_session = OAuthSessionStore(redis).get(state)  # type: ignore[arg-type]
@@ -219,7 +231,7 @@ async def google_auth_callback(
         raise HTTPException(400, "Invalid state parameter") from ex
 
     try:
-        response = await _perform_oauth_exchange(
+        response = await _exchange_or_raise(
             session,
             redis,
             code,
@@ -229,10 +241,43 @@ async def google_auth_callback(
             code_challenge,
             state,
         )
-        _inc_oauth_metric("success")
-        return response
+    except HTTPException:
+        # This is a top-level navigation from Google: when the OAuth session
+        # names a target (it passed the redirect policy when it was stored),
+        # send the browser back to it with one generic code instead of leaving
+        # it on a JSON page of the API origin (S1A, N21). The failure itself was
+        # already logged and counted.
+        if not redirect_target:
+            raise
+        return _failure_redirect(redirect_target)
+    _inc_oauth_metric("success")
+    return response
+
+
+async def _exchange_or_raise(
+    session: SessionDep,
+    redis: object,
+    code: str,
+    code_verifier: str,
+    callback_uri: str,
+    redirect_target: str,
+    code_challenge: str,
+    state: str,
+) -> RedirectResponse:
+    """Run the exchange, turning every failure into a generic ``HTTPException``."""
+    try:
+        return await _perform_oauth_exchange(
+            session,
+            redis,
+            code,
+            code_verifier,
+            callback_uri,
+            redirect_target,
+            code_challenge,
+            state,
+        )
     except HTTPXError as ex:
-        logger.error("Google token exchange failed: %s", ex)  # nosec B106
+        logger.error("Google token exchange failed: %s", type(ex).__name__)  # nosec B106
         _inc_oauth_metric("failed")
         raise HTTPException(
             status_code=400, detail="Token exchange with Google failed."

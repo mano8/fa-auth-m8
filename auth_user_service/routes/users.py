@@ -259,11 +259,14 @@ def delete_user(
         user = session.get(User, user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
+        # Deleting someone else is an operator decision to ban: a GOOGLE
+        # account's identity is blocked until an audited unblock (D-j).
         delete_user_account(
             session=session,
             actor_id=current_user.id,
             actor_role=current_user.role,
             db_user=user,
+            block_google_identity=user.id != current_user.id,
         )
         # Best-effort push so consumers drop any cached state for the deleted
         # user; the account is already gone from the DB regardless of delivery.

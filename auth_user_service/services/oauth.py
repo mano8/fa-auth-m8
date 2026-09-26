@@ -11,6 +11,11 @@ from auth_user_service.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Fixed client-facing details (S1A, N20): the exception text of a failed
+# exchange never reaches the client.
+_TOKEN_EXCHANGE_FAILED = "Token exchange with Google failed."
+_AUTHENTICATION_ERROR = "Authentication error."
+
 
 class OAuthController:
     """Manage add on auth."""
@@ -66,11 +71,25 @@ class OAuthController:
                 name=id_info.get("name"),
                 picture=id_info.get("picture"),
             )
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as ex:
+            # Only the type and upstream status are logged; the exception text
+            # can carry the request, and nothing upstream reaches the client.
+            logger.warning(
+                "event=google_token_exchange.failed error=%s upstream_status=%d",
+                type(ex).__name__,
+                ex.response.status_code,
+            )
+            raise HTTPException(status_code=400, detail=_TOKEN_EXCHANGE_FAILED) from ex
         except httpx.HTTPError as ex:
-            raise HTTPException(
-                status_code=400, detail=f"Token exchange failed: {ex}"
-            ) from ex
+            logger.warning(
+                "event=google_token_exchange.failed error=%s upstream_status=-",
+                type(ex).__name__,
+            )
+            raise HTTPException(status_code=400, detail=_TOKEN_EXCHANGE_FAILED) from ex
         except Exception as ex:
-            raise HTTPException(
-                status_code=500, detail=f"Authentication error: {ex}"
-            ) from ex
+            logger.error(
+                "event=google_token_exchange.error error=%s", type(ex).__name__
+            )
+            raise HTTPException(status_code=500, detail=_AUTHENTICATION_ERROR) from ex

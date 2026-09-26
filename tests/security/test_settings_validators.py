@@ -473,25 +473,32 @@ def no_google_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
+_GOOGLE_ID = "client.apps.googleusercontent.com"
+_GOOGLE_SECRET = "Aa1-google-client-secret-32chars!!"
+_GOOGLE_PAIR = {"GOOGLE_CLIENT_ID": _GOOGLE_ID, "GOOGLE_CLIENT_SECRET": _GOOGLE_SECRET}
+
+
+@pytest.mark.usefixtures("no_google_env")
+def test_google_credentials_without_redirect_uri_fail_startup() -> None:
+    """Google credentials without a fixed callback URI fail construction."""
+    with pytest.raises(ValidationError, match="GOOGLE_OAUTH_REDIRECT_URI") as exc:
+        _make(**_GOOGLE_PAIR)
+    for value in _GOOGLE_PAIR.values():
+        assert value not in str(exc.value)
+
+
 @pytest.mark.usefixtures("no_google_env")
 @pytest.mark.parametrize(
-    "credentials",
-    [
-        {"GOOGLE_CLIENT_ID": "client.apps.googleusercontent.com"},
-        {"GOOGLE_CLIENT_SECRET": "Aa1-google-client-secret-32chars!!"},
-        {
-            "GOOGLE_CLIENT_ID": "client.apps.googleusercontent.com",
-            "GOOGLE_CLIENT_SECRET": "Aa1-google-client-secret-32chars!!",
-        },
-    ],
+    "credential",
+    [{"GOOGLE_CLIENT_ID": _GOOGLE_ID}, {"GOOGLE_CLIENT_SECRET": _GOOGLE_SECRET}],
 )
-def test_google_credentials_without_redirect_uri_fail_startup(
-    credentials: dict,
+def test_one_google_credential_without_the_other_fails_startup(
+    credential: dict,
 ) -> None:
-    """Any Google credential without a fixed callback URI fails construction."""
-    with pytest.raises(ValidationError, match="GOOGLE_OAUTH_REDIRECT_URI") as exc:
-        _make(**credentials)
-    for value in credentials.values():
+    """S1A (N23): the client id and secret are only meaningful together."""
+    with pytest.raises(ValidationError, match="must be set together") as exc:
+        _make(**credential, GOOGLE_OAUTH_REDIRECT_URI=_GOOGLE_CALLBACK)
+    for value in credential.values():
         assert value not in str(exc.value)
 
 
@@ -508,19 +515,31 @@ def test_google_credentials_without_redirect_uri_fail_startup(
 )
 def test_malformed_google_redirect_uri_fails_startup(uri: str, match: str) -> None:
     with pytest.raises(ValidationError, match=match):
+        _make(**_GOOGLE_PAIR, GOOGLE_OAUTH_REDIRECT_URI=uri)
+
+
+@pytest.mark.usefixtures("no_google_env")
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_http_google_redirect_uri_fails_outside_local(environment: str) -> None:
+    """S1A (N23): Google sends the authorization code here, so https off-local."""
+    with pytest.raises(ValidationError, match="must use https"):
         _make(
-            GOOGLE_CLIENT_ID="client.apps.googleusercontent.com",
-            GOOGLE_OAUTH_REDIRECT_URI=uri,
+            **_GOOGLE_PAIR,
+            ENVIRONMENT=environment,
+            PRIVATE_API_CONSUMERS=_prod_consumers(),
+            GOOGLE_OAUTH_REDIRECT_URI="http://auth.example.com/cb/",
         )
 
 
 @pytest.mark.usefixtures("no_google_env")
+def test_http_google_redirect_uri_is_allowed_locally() -> None:
+    s = _make(**_GOOGLE_PAIR, GOOGLE_OAUTH_REDIRECT_URI="http://localhost:8000/cb/")
+    assert s.GOOGLE_OAUTH_REDIRECT_URI == "http://localhost:8000/cb/"
+
+
+@pytest.mark.usefixtures("no_google_env")
 def test_google_credentials_with_redirect_uri_construct() -> None:
-    s = _make(
-        GOOGLE_CLIENT_ID="client.apps.googleusercontent.com",
-        GOOGLE_CLIENT_SECRET="Aa1-google-client-secret-32chars!!",
-        GOOGLE_OAUTH_REDIRECT_URI=_GOOGLE_CALLBACK,
-    )
+    s = _make(**_GOOGLE_PAIR, GOOGLE_OAUTH_REDIRECT_URI=_GOOGLE_CALLBACK)
     assert s.GOOGLE_OAUTH_REDIRECT_URI == _GOOGLE_CALLBACK
 
 

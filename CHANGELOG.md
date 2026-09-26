@@ -16,10 +16,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Google login is bound to the Google identity and to the account state (`S1`
-of the account-security patch, findings `N1` and `N2`). No route, request, or
-response shape changes. There is no new database object: the lookup uses the
-existing unique index on `oauth_user_id`, so no migration is needed.
+Account-security patch, part one: Google login is bound to the Google identity
+and to the account state (`S1`, findings `N1` and `N2`), and the gaps found
+reviewing it are closed (`S1A`, findings `N3` re-auth part and `N16`–`N23`).
+No route is added and `CONTRACT_VERSION` stays `"2.0"`.
+`PATCH /profile/update/me/` gains one optional request field,
+`current_password`. One table is added, `auth_identity_block`, by an additive
+revision in each tracked compose migration chain; nothing reads it before the
+new code runs, so it can be applied ahead of the rollout.
 
 ### Security
 
@@ -36,13 +40,52 @@ existing unique index on `oauth_user_id`, so no migration is needed.
 - **Google must assert `email_verified: true`** to create or enter an
   account. A missing claim is refused as well, instead of failing schema
   validation with a `500`.
-- **Disabled and tombstoned accounts get no token or session from Google
-  login** (`N2`). `is_active` was checked for password login only. Both
-  checks now run before anything is minted.
+- **Disabled accounts get no token or session from Google login** (`N2`).
+  `is_active` was checked for password login only. The check now runs before
+  anything is minted.
 - **The Google callback URI comes from configuration only.** When
   `GOOGLE_OAUTH_REDIRECT_URI` was empty, the callback rebuilt it from the
   request's `Host` header through `request.url_for`, and `/google-api/login-url/`
   sent no `redirect_uri` at all. Both routes now answer `503` without it.
+- **Sessions obtained through the old implicit link can be evicted** (`N16`).
+  The new audited command `google_link_remediation` revokes them like a role
+  change: generation bump, session rows deleted, and the durable outbox
+  effects (Redis blacklist per access JTI, user-wide v2 session-revoked event
+  for consumer caches). Run it right after deploying this release; see the
+  README runbook.
+- **Changing an email needs re-authentication** (`N3`, `N17`). On
+  `PATCH /profile/update/me/`, a GOOGLE account can no longer change its email
+  (`403`), and a PASSWORD account must send `current_password` (`400` when it
+  is missing or wrong). The password is checked with constant work **before**
+  the new address is looked up, so the `409` for an address in use no longer
+  answers a caller without the password. Before, a stolen access token was
+  enough to move the account to another address, and a Google account could
+  squat an unused address whose real owner's Google sign-in was then refused.
+- **An applied email change revokes** — self-service and admin
+  (`PATCH /users/update/{user_id}/`) alike: `email_verified` becomes `false`,
+  `auth_generation` is bumped, and every session is revoked with the durable
+  outbox effects. The admin response reports `revocation_enqueued: true`.
+- **Self-service deletion revokes like admin deletion** (`N19`).
+  `DELETE /profile/delete/me/` deleted the row directly: no tombstone, no
+  session revocation, no outbox effect, so consumer caches and stateless
+  validators kept honoring the subject's tokens until they expired. Both paths
+  now run one transaction: privileged-action audit row, tombstone, session
+  revocation, durable outbox effects (new for admin deletion too), and the
+  `user.deleted` event.
+- **An administrator's deletion of a Google account bans its Google identity**
+  (`N18`, decision `D-j`). Deletion removed the row, the tombstone is keyed by
+  the old user id, and the next Google login provisioned a fresh account for
+  the same `sub`. An admin deletion of another GOOGLE account now records a
+  block keyed by the SHA-256 of `google:<sub>` (the `sub` itself is never
+  stored), and that identity is refused (`refused_blocked`) until the audited
+  `google_identity_unblock` command lifts it. A user who deletes their own
+  account is not blocked and can sign in again as a new account; the old
+  account's tokens stay revoked by its tombstone.
+- **A failed Google token exchange no longer echoes its exception** (`N20`).
+  `Token exchange failed: {ex}` and `Authentication error: {ex}` became fixed
+  details; the exception type and the upstream status go to the server log
+  only. A missing `id_token` keeps its own `400` instead of being rewrapped as
+  a `500`.
 
 ### Changed
 
@@ -51,16 +94,32 @@ existing unique index on `oauth_user_id`, so no migration is needed.
   account itself is unchanged. `python -m auth_user_service.scripts.google_link_report`
   lists the affected accounts by id (read-only). The README runbook
   *Google sign-in refused for a password account* covers the follow-up.
-- **Behavior change: `GOOGLE_OAUTH_REDIRECT_URI` is required at startup
-  whenever `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` is set.** It must be
-  an absolute `http(s)` URL with a host and no fragment. A deployment that
-  set Google credentials and relied on the derived callback no longer starts
-  until it sets the URI registered in Google Console.
-- Every Google refusal returns the same `400`
+- **Behavior change: Google configuration is validated at startup.**
+  `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` must be set together (`N23`).
+  With them, `GOOGLE_OAUTH_REDIRECT_URI` is required: an absolute URL with a
+  host and no fragment, and `https` unless `ENVIRONMENT=local` (`N23`). A
+  deployment that relied on the derived callback, set only one credential, or
+  used an `http` callback outside `local` no longer starts until it is fixed.
+- **Behavior change: `PATCH /profile/update/me/` requires `current_password`
+  to change the email of a PASSWORD account, refuses it for a GOOGLE account,
+  and signs the caller out when it applies.** A client that changes the email
+  must send the password and then sign in again; its session is revoked like
+  after an expiry.
+- **Behavior change: a refused Google callback redirects** (`N21`). The
+  callback is a top-level navigation from Google, so a refusal or an exchange
+  failure ended on a raw JSON page on the API origin. When the OAuth session
+  names a target (it passed the redirect policy when stored), the callback now
+  answers `303` to `<redirect_target>#auth_error=google_signin_failed`, one
+  generic code for every failure. Without a trusted target it stays the
+  generic JSON error. A client treats the missing `auth_code` as a failed
+  sign-in; rendering the code is up to the client.
+- Every Google refusal carries the same detail
   (`Google sign-in could not be completed for this account.`). The reason
   goes to a `WARNING` log line
   (`event=google_login.refused reason=… user_id=…`, never the email or `sub`)
   and to `oauth_attempts_total{provider="google", result="refused_<reason>"}`.
+  The reasons are `email_unverified`, `subject_missing`, `email_in_use`,
+  `subject_mismatch`, `inactive`, `blocked`, and `provisioning_conflict`.
 - A new Google account's email is normalized before the collision lookup and
   stored normalized. Its `email_verified` is always `true`, because only a
   verified Google email gets this far.
@@ -71,7 +130,13 @@ existing unique index on `oauth_user_id`, so no migration is needed.
   handler redirected every HTTP error under `oauth-callback` to a
   `google_auth_login` route that does not exist, so each one came back as a
   `500`, and it also wrote the error text into the session cookie. The
-  callback now returns JSON errors like every other route.
+  callback now returns JSON errors like every other route, or the `303` above.
+- **Two concurrent first logins for the same new Google `sub` no longer
+  `500`** (`N22`). The loser of the unique-constraint race rolls back and
+  resolves once more by `sub`, entering the winner's account; any other
+  conflict is a refusal.
+- `PATCH /profile/update/me/` with `"email": null` leaves the email unchanged
+  instead of failing on the non-nullable column.
 
 ### Added
 
@@ -80,6 +145,21 @@ existing unique index on `oauth_user_id`, so no migration is needed.
   superadmins listed separately. It exits `1` when any account is affected.
   The list is a lower bound: an account keeps one session row, and a later
   password login clears the Google evidence from it.
+- `auth_user_service.scripts.google_link_remediation`: the audited eviction
+  command above. `--scope reported` (default, `--confirm
+  REVOKE-GOOGLE-LINKED-SESSIONS`) revokes the report's accounts;
+  `--scope all-sessions` (`--confirm REVOKE-ALL-SESSIONS`) revokes every
+  account holding a session. Both take `--actor` and `--reason`, log ids and
+  counts only, and are idempotent.
+- `auth_user_service.scripts.google_identity_unblock`: lifts the Google
+  identity block of an admin-deleted account, by that account's id
+  (`--user-id`, `--actor`, `--reason`). Idempotent.
+- Table `auth_identity_block` (`identity_digest` primary key, `user_id`
+  without a foreign key, `created_at`), with an additive revision in the
+  `postgres_m8`, `rs256_m8`, `quickstart_m8`, and `metrics_m8` chains. A stack
+  that generates its own migrations needs one new revision for it.
+- `PATCH /profile/update/me/` request field `current_password` (optional,
+  8–128 characters, never stored).
 
 ---
 

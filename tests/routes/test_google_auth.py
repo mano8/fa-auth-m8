@@ -388,9 +388,15 @@ class TestGoogleAuthCallback:
                 )
         assert exc.value.status_code == 400
 
-    @pytest.mark.anyio
-    async def test_exchange_httpx_error_raises_400(self) -> None:
-        """HTTPXError from _perform_oauth_exchange → 400."""
+    @staticmethod
+    async def _callback_failing_with(
+        failure: BaseException, redirect_target: str
+    ) -> object:
+        """Run the callback with an exchange that fails with *failure*."""
+        session_data = {
+            **_mock_oauth_session_data(),
+            "redirect_target": redirect_target,
+        }
         with (
             patch(
                 "auth_user_service.routes.google_auth.get_redis_client",
@@ -398,81 +404,57 @@ class TestGoogleAuthCallback:
             ),
             patch(
                 "auth_user_service.routes.google_auth._get_oauth_session",
-                return_value=_mock_oauth_session_data(),
+                return_value=session_data,
             ),
             patch(
                 "auth_user_service.routes.google_auth._perform_oauth_exchange",
                 new_callable=AsyncMock,
-                side_effect=HTTPXError("network error"),
+                side_effect=failure,
             ),
             patch("auth_user_service.routes.google_auth._inc_oauth_metric"),
             patch("auth_user_service.routes.google_auth.settings") as mock_cfg,
         ):
             mock_cfg.GOOGLE_OAUTH_REDIRECT_URI = "https://example.com/callback"
-            with pytest.raises(HTTPException) as exc:
-                await google_auth_callback(
-                    session=MagicMock(),
-                    code="code",
-                    state="state",
-                )
-        assert exc.value.status_code == 400
+            return await google_auth_callback(
+                session=MagicMock(),
+                code="code",
+                state="state",
+            )
+
+    _FAILURES = [
+        pytest.param(HTTPXError("network error"), 400, id="httpx-error"),
+        pytest.param(HTTPException(503, "DB down"), 503, id="http-exception"),
+        pytest.param(RuntimeError("unexpected"), 500, id="unexpected"),
+    ]
 
     @pytest.mark.anyio
-    async def test_exchange_http_exception_reraised(self) -> None:
-        """HTTPException from _perform_oauth_exchange → re-raised unchanged."""
-        with (
-            patch(
-                "auth_user_service.routes.google_auth.get_redis_client",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "auth_user_service.routes.google_auth._get_oauth_session",
-                return_value=_mock_oauth_session_data(),
-            ),
-            patch(
-                "auth_user_service.routes.google_auth._perform_oauth_exchange",
-                new_callable=AsyncMock,
-                side_effect=HTTPException(503, "DB down"),
-            ),
-            patch("auth_user_service.routes.google_auth.settings") as mock_cfg,
-        ):
-            mock_cfg.GOOGLE_OAUTH_REDIRECT_URI = "https://example.com/callback"
-            with pytest.raises(HTTPException) as exc:
-                await google_auth_callback(
-                    session=MagicMock(),
-                    code="code",
-                    state="state",
-                )
-        assert exc.value.status_code == 503
+    @pytest.mark.parametrize("failure,status", _FAILURES)
+    async def test_exchange_failure_redirects_to_trusted_target(
+        self, failure: BaseException, status: int
+    ) -> None:
+        """S1A (N21): a failure after the session was found goes back to the
+        stored target with one generic code, never a JSON page."""
+        del status
+        target = _mock_oauth_session_data()["redirect_target"]
+        response = await self._callback_failing_with(failure, target)
+
+        assert response.status_code == 303
+        assert response.headers["location"] == (
+            f"{target}#auth_error=google_signin_failed"
+        )
+        assert "set-cookie" not in response.headers
 
     @pytest.mark.anyio
-    async def test_exchange_generic_exception_raises_500(self) -> None:
-        """Unexpected exception from _perform_oauth_exchange → 500."""
-        with (
-            patch(
-                "auth_user_service.routes.google_auth.get_redis_client",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "auth_user_service.routes.google_auth._get_oauth_session",
-                return_value=_mock_oauth_session_data(),
-            ),
-            patch(
-                "auth_user_service.routes.google_auth._perform_oauth_exchange",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("unexpected"),
-            ),
-            patch("auth_user_service.routes.google_auth._inc_oauth_metric"),
-            patch("auth_user_service.routes.google_auth.settings") as mock_cfg,
-        ):
-            mock_cfg.GOOGLE_OAUTH_REDIRECT_URI = "https://example.com/callback"
-            with pytest.raises(HTTPException) as exc:
-                await google_auth_callback(
-                    session=MagicMock(),
-                    code="code",
-                    state="state",
-                )
-        assert exc.value.status_code == 500
+    @pytest.mark.parametrize("failure,status", _FAILURES)
+    async def test_exchange_failure_without_target_stays_generic(
+        self, failure: BaseException, status: int
+    ) -> None:
+        """No trusted target → the generic HTTP error, mapped by kind."""
+        with pytest.raises(HTTPException) as exc:
+            await self._callback_failing_with(failure, "")
+        assert exc.value.status_code == status
+        assert "network error" not in str(exc.value.detail)
+        assert "unexpected" not in str(exc.value.detail)
 
     @pytest.mark.anyio
     async def test_success_uses_configured_redirect_uri(self) -> None:

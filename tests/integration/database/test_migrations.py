@@ -32,6 +32,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlmodel import SQLModel
 
+from auth_user_service.db_models.identity_blocks import IdentityBlock
 from auth_user_service.db_models.privileged_action_audit import PrivilegedActionAudit
 from auth_user_service.db_models.security_policy import SecurityPolicy
 from auth_user_service.db_models.sessions import ClientSession
@@ -102,6 +103,7 @@ def test_upgrade_head_from_empty_database(
         ClientSession.__tablename__,
         SecurityPolicy.__tablename__,
         PrivilegedActionAudit.__tablename__,
+        IdentityBlock.__tablename__,
         "auth_revocation_outbox",
         "auth_tombstone",
         "auth_api_key",
@@ -330,9 +332,18 @@ def test_downgrade_to_baseline_then_upgrade_round_trip(
     """
     command.upgrade(alembic_config, "head")
 
-    # The PostgreSQL chains end in the timestamptz revision (B30, G23); step
-    # back over it first, so the walk below starts where it always has.
-    script = ScriptDirectory.from_config(alembic_config).get_revision("head")
+    # Every chain ends in the identity-block revision (S1A); it drops only its
+    # own table.
+    command.downgrade(alembic_config, "-1")
+    assert IdentityBlock.__tablename__ not in table_names(empty_database)
+
+    # The PostgreSQL chains then end in the timestamptz revision (B30, G23);
+    # step back over it first, so the walk below starts where it always has.
+    with empty_database.connect() as conn:
+        applied = conn.execute(
+            sa.text("SELECT version_num FROM alembic_version_auth_integration")
+        ).scalar_one()
+    script = ScriptDirectory.from_config(alembic_config).get_revision(applied)
     if script is not None and script.path.endswith("_timestamptz_columns.py"):
         command.downgrade(alembic_config, "-1")
         expires_at = {
@@ -366,6 +377,7 @@ def test_downgrade_to_baseline_then_upgrade_round_trip(
     command.upgrade(alembic_config, "head")
     assert has_check_constraint(empty_database, User.__tablename__, _CHECK_NAME)
     assert PrivilegedActionAudit.__tablename__ in table_names(empty_database)
+    assert IdentityBlock.__tablename__ in table_names(empty_database)
     with empty_database.connect() as conn:
         seeded = conn.execute(
             sa.text(

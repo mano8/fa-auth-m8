@@ -21,9 +21,15 @@ import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session, select
 
-from auth_sdk_m8.schemas.base import ApiKeyAccessMode, Period, RoleType
+from auth_sdk_m8.schemas.base import (
+    ApiKeyAccessMode,
+    AuthProviderType,
+    Period,
+    RoleType,
+)
 
 from auth_user_service.db_models.api_keys import ApiKey, ApiKeyAudience, RateLimit
+from auth_user_service.db_models.identity_blocks import IdentityBlock
 from auth_user_service.db_models.outbox import (
     EFFECT_BLACKLIST,
     STATUS_PENDING,
@@ -35,6 +41,8 @@ from auth_user_service.db_models.security_policy import (
 )
 from auth_user_service.db_models.tombstones import AuthTombstone
 from auth_user_service.db_models.users import User
+from auth_user_service.services.identity_blocks import IdentityBlockController
+from auth_user_service.services.role_admin import delete_user_account
 from tests.integration.database._factories import (
     make_api_key,
     make_user,
@@ -230,6 +238,42 @@ class TestTombstonePersistence:
         surviving = it_session.get(AuthTombstone, user.id)
         assert surviving is not None
         assert surviving.terminal_generation == 2**33
+
+
+# ── identity block (S1A, D-j) ─────────────────────────────────────────────────
+
+
+class TestIdentityBlock:
+    def test_admin_deletion_of_a_google_account_persists_its_block(
+        self, it_session: Session, clean_database: sa.Engine
+    ) -> None:
+        """The chain creates the table, with no FK, and the real deletion writes
+        a digest-keyed block that outlives the account it names."""
+        table = IdentityBlock.__tablename__
+        assert table in sa.inspect(clean_database).get_table_names()
+        assert not sa.inspect(clean_database).get_foreign_keys(table)
+
+        user = make_user(it_session)
+        user.provider = AuthProviderType.GOOGLE
+        user.oauth_user_id = f"sub-{uuid.uuid4().hex}"
+        user.hashed_password = None
+        it_session.add(user)
+        it_session.commit()
+        user_id, subject = user.id, user.oauth_user_id
+
+        delete_user_account(
+            session=it_session,
+            actor_id=uuid.uuid4(),
+            actor_role=RoleType.SUPERADMIN,
+            db_user=user,
+            block_google_identity=True,
+        )
+
+        assert it_session.get(User, user_id) is None
+        assert IdentityBlockController.is_blocked(
+            it_session, provider=AuthProviderType.GOOGLE, subject=subject
+        )
+        assert IdentityBlockController.unblock_deleted_user(it_session, user_id) == 1
 
 
 # ── API-key relations (§3.11, §3.12, APIKEY-LIFECYCLE-01) ─────────────────────

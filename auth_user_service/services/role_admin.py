@@ -36,7 +36,7 @@ from typing import Optional
 from sqlmodel import Session, col, select
 
 from auth_sdk_m8.authorization import has_minimum_role, has_superuser_privileges
-from auth_sdk_m8.schemas.base import RoleType
+from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 
 from auth_user_service.db_models.outbox import (
     EFFECT_BLACKLIST,
@@ -57,6 +57,7 @@ from auth_user_service.services.client_sessions import (
     SessionController,
 )
 from auth_user_service.services.generation import GenerationController
+from auth_user_service.services.identity_blocks import IdentityBlockController
 from auth_user_service.services.outbox import OutboxController
 from auth_user_service.services.users import UserController, _derive_is_superuser
 
@@ -198,7 +199,7 @@ def _lock_user_row(session: Session, user: User) -> None:
     session.exec(select(User).where(col(User.id) == user.id).with_for_update()).first()
 
 
-def _record_enqueued_metrics(rows: list[RevocationOutbox]) -> None:
+def record_enqueued_metrics(rows: list[RevocationOutbox]) -> None:
     """Count the enqueued effects by type after the transaction commits."""
     blacklist = sum(1 for row in rows if row.effect_type == EFFECT_BLACKLIST)
     outbox_metrics.record_enqueued(EFFECT_BLACKLIST, blacklist)
@@ -290,7 +291,7 @@ def _enforce_last_superuser_invariant(
         raise LastSuperuserError("last_superuser_required")
 
 
-def _revoke_and_enqueue_authorization_change(
+def revoke_and_enqueue_authorization_change(
     session: Session, db_user: User
 ) -> list[RevocationOutbox]:
     """Bump the generation, drop the user's sessions, and enqueue the side effects.
@@ -326,8 +327,9 @@ def change_user_authorization(
     matrix are enforced under the lock, the generation is bumped, sessions
     revoked, and the revocation side effects enqueued to the durable outbox on any
     authorization transition, and the owner's API keys are revoked on
-    deactivation — all committed once. A pure profile update takes no lock and
-    revokes nothing. Returns an :class:`AuthorizationChangeResult` carrying the
+    deactivation — all committed once. An applied email change counts as such a
+    transition and also clears ``email_verified`` (S1A). Any other profile update
+    takes no lock and revokes nothing. Returns an :class:`AuthorizationChangeResult` carrying the
     refreshed user, its current generation, and whether revocation was enqueued.
 
     A single ``edit`` privileged-action audit row is written **in this
@@ -344,15 +346,23 @@ def change_user_authorization(
         _lock_user_row(session, db_user)
         _enforce_last_superuser_invariant(session, db_user, intent)
 
+    previous_email = db_user.email
     outcome = UserController.apply_user_update(db_user=db_user, user_in=user_in)
     if intent.active_requested:
         db_user.is_active = intent.intended_active
+    # An applied email change is an identity change (S1A, N17): the new
+    # address is unverified and every session issued for the old one is revoked.
+    email_changed = db_user.email != previous_email
+    if email_changed:
+        db_user.email_verified = False
 
-    authorization_changed = outcome.role_changed or intent.activation_changed
+    authorization_changed = (
+        outcome.role_changed or intent.activation_changed or email_changed
+    )
 
     enqueued: list[RevocationOutbox] = []
     if authorization_changed:
-        enqueued = _revoke_and_enqueue_authorization_change(session, db_user)
+        enqueued = revoke_and_enqueue_authorization_change(session, db_user)
     if intent.deactivated:
         ApiKeyService.revoke_all_user_keys_in_tx(session, db_user.id)
 
@@ -374,7 +384,7 @@ def change_user_authorization(
     session.refresh(db_user)
 
     if authorization_changed:
-        _record_enqueued_metrics(enqueued)
+        record_enqueued_metrics(enqueued)
     return AuthorizationChangeResult(
         user=db_user,
         auth_generation=db_user.auth_generation,
@@ -388,15 +398,24 @@ def delete_user_account(
     actor_id: object,
     actor_role: RoleType,
     db_user: User,
+    block_google_identity: bool = False,
 ) -> None:
     """Hard-delete a user as the route-owned superuser-set transaction (3.5.3).
 
     Acquires the lock, enforces the last-superuser invariant, writes the durable
-    deletion tombstone, revokes the user's sessions, deletes the row (cascading
-    its API keys and remaining sessions), bumps the policy revision, and commits
-    once. Self-deletion is permitted subject only to the last-superuser rule
-    (3.10); the durable tombstone makes every token ever minted for the subject
-    revoked (3.5.1).
+    deletion tombstone, revokes the user's sessions, enqueues the revocation
+    side effects (Redis blacklist + user-wide v2 event) to the durable outbox at
+    the terminal generation, deletes the row (cascading its API keys and
+    remaining sessions), bumps the policy revision, and commits once.
+    Self-deletion is permitted subject only to the last-superuser rule (3.10);
+    the durable tombstone makes every token ever minted for the subject revoked
+    (3.5.1). Self-service and admin deletion both run this one transaction
+    (``D-j``).
+
+    ``block_google_identity`` is the admin decision to ban: for a GOOGLE
+    account it also records a block marker for its Google ``sub``, so the
+    identity cannot provision a new account until an audited unblock. A user
+    deleting their own account passes ``False`` and may come back.
 
     A single ``delete`` privileged-action audit row is written **in this
     transaction**, capturing the target's id/owner **before** the row is removed
@@ -420,8 +439,28 @@ def delete_user_account(
         row_pk=db_user.id,
         target_owner_id=db_user.id,
     )
-    GenerationController.write_deletion_tombstone(session=session, user=db_user)
-    SessionController.capture_and_delete_user_sessions(session, db_user.id)
+    tombstone = GenerationController.write_deletion_tombstone(
+        session=session, user=db_user
+    )
+    targets, _ = SessionController.capture_and_delete_user_sessions(session, db_user.id)
+    enqueued = OutboxController.enqueue_role_change_effects(
+        session,
+        user_id=db_user.id,
+        auth_generation=tombstone.terminal_generation,
+        targets=targets,
+    )
+    if (
+        block_google_identity
+        and db_user.provider == AuthProviderType.GOOGLE
+        and db_user.oauth_user_id
+    ):
+        IdentityBlockController.block(
+            session,
+            provider=AuthProviderType.GOOGLE,
+            subject=db_user.oauth_user_id,
+            user_id=db_user.id,
+        )
     session.delete(db_user)
     _bump_policy_revision(policy)
     session.commit()
+    record_enqueued_metrics(enqueued)

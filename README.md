@@ -504,9 +504,9 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 | -------- | -------- | ----------- |
 | `FIRST_SUPERUSER` | yes | Email of the bootstrap superuser — used only on first run |
 | `FIRST_SUPERUSER_PASSWORD` | yes | Password of the bootstrap superuser — used only on first run |
-| `GOOGLE_CLIENT_ID` | no | Google OAuth2 client ID |
-| `GOOGLE_CLIENT_SECRET` | no | Google OAuth2 client secret |
-| `GOOGLE_OAUTH_REDIRECT_URI` | when Google is set | Fixed backend callback URI for native-app PKCE OAuth. Must match Google Console exactly: an absolute `http(s)` URL with a host and no fragment. **Required whenever `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` is set** — startup fails without it. It is never derived from the request `Host`. |
+| `GOOGLE_CLIENT_ID` | no | Google OAuth2 client ID. Set it together with `GOOGLE_CLIENT_SECRET`, or neither — startup fails with only one. |
+| `GOOGLE_CLIENT_SECRET` | no | Google OAuth2 client secret. Set it together with `GOOGLE_CLIENT_ID`. |
+| `GOOGLE_OAUTH_REDIRECT_URI` | when Google is set | Fixed backend callback URI for native-app PKCE OAuth. Must match Google Console exactly: an absolute URL with a host and no fragment, and `https` unless `ENVIRONMENT=local`. **Required whenever the Google credentials are set** — startup fails without it. It is never derived from the request `Host`. |
 | `OAUTH_ALLOWED_REDIRECT_SCHEMES` | no | URI scheme(s) accepted as `redirect_target` at `/google-api/login-url/` (default `chrome-extension://`). Add `https://` only for trusted web clients; add `http://` only for local development. |
 | `OAUTH_ALLOWED_REDIRECT_PREFIXES` | no | Optional full-URI prefix allowlist. Required for `http://` and `https://` redirects to pin trusted callback origins; optional for native public-client schemes. Plain HTTP is limited to localhost and rejected in production/staging. |
 | `CORS_ALLOWED_ORIGIN_SCHEMES` | no | Scheme-level CORS origins for native-app `fetch()` calls (e.g. `chrome-extension://`). |
@@ -817,7 +817,7 @@ placeholder fails closed immediately.
 - `EVENT_SIGNING_KEY` is set when `EVENT_SIGNING_ENABLED=true` (the default).
 - `TOKEN_ISSUER` and `TOKEN_AUDIENCE` are set when `TOKEN_STRICT_VALIDATION=true` (the default).
 - `ACCESS_PUBLIC_KEY_FILE` or `JWKS_URI` is present for RS256/ES256.
-- `GOOGLE_OAUTH_REDIRECT_URI` is set when `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` is set.
+- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set together, and then `GOOGLE_OAUTH_REDIRECT_URI` is set and uses `https` unless `ENVIRONMENT=local`.
 
 | Setting | SDK default | Dev / local | `hardened_m8` | Production overlay |
 | --- | --- | --- | --- | --- |
@@ -867,16 +867,27 @@ account. There is no implicit linking between Google and password identities:
 - Google must assert `email_verified: true`, to create an account or to enter one.
 - A new Google identity whose email already belongs to another account is refused. That covers a
   PASSWORD account (the first superuser included) and a Google account bound to a different `sub`.
-- A disabled (`is_active=false`) or tombstoned account is refused before any token or session is
-  issued.
+- A disabled (`is_active=false`) account is refused before any token or session is issued.
+- A Google identity whose account an administrator deleted is blocked (see
+  [Account deletion and Google identities](#account-deletion-and-google-identities)).
 - An existing Google user keeps signing in by `sub`, even after their Google address changes.
+- Two concurrent first logins for the same new `sub` never fail with a `500`: the loser enters
+  the winner's account.
 
-Every refusal returns the same `400` (`Google sign-in could not be completed for this account.`),
-so the response does not reveal which rule fired. The reason goes to a `WARNING` log line
+Every refusal carries the same detail (`Google sign-in could not be completed for this account.`),
+so the response does not reveal which rule fired. The callback is a top-level navigation from
+Google, so when its OAuth session names a `redirect_target` (checked against the redirect policy
+when it was stored), any refusal or exchange failure answers `303` to
+`<redirect_target>#auth_error=google_signin_failed` — one generic code. Without a target it
+answers the generic JSON `400`. A failed token exchange never echoes its exception text; the
+exception type and upstream status go to the server log only. The reason goes to a `WARNING` log line
 (`event=google_login.refused reason=<reason> user_id=<id or ->`) and to the
 `oauth_attempts_total{provider="google", result="refused_<reason>"}` counter. The reasons are
-`email_unverified`, `subject_missing`, `email_in_use`, `subject_mismatch`, `inactive` and
-`tombstoned`. The log never contains the email, the Google `sub`, or a token.
+`email_unverified`, `subject_missing`, `email_in_use`, `subject_mismatch`, `inactive`, `blocked`
+and `provisioning_conflict`. The log never contains the email, the Google `sub`, or a token.
+
+A GOOGLE account cannot change its email through `PATCH /profile/update/me/` (`403`); see
+[Email change](#email-change).
 
 #### Runbook: Google sign-in refused for a password account
 
@@ -902,6 +913,79 @@ password (the account, its data and its password are unchanged).
 4. Watch `oauth_attempts_total{result="refused_email_in_use"}` after the upgrade. A burst for the
    same `user_id` in the log means someone is trying a Google identity against a password
    account.
+
+#### Runbook: evict the sessions obtained through the implicit link
+
+Refusing new Google logins evicts nobody: a session and refresh token obtained through the old
+email match stay valid until they expire. Run the remediation **right after deploying** this
+release, after saving the report output from step 1 above (the remediation deletes the session
+rows the report reads, so a later report comes back clean):
+
+```bash
+docker compose exec auth python -m auth_user_service.scripts.google_link_remediation \
+  --confirm REVOKE-GOOGLE-LINKED-SESSIONS --actor <who> --reason <why>
+```
+
+For each reported account it bumps `auth_generation`, deletes the session rows, and enqueues the
+durable outbox effects (Redis blacklist of each access JTI, user-wide v2 `session-revoked` event
+for consumer caches) — exactly what a role change does. Access, refresh, and `jti-status` all
+fail afterwards, and the affected users sign in again with their password. A refresh needs the
+account's current session row, which is the row the report reads, so every *refreshable* session
+from the link is covered. An access token whose row a later password login replaced is already
+refused by `jti-status` and stays wire-valid for stateless validation only until its own expiry.
+
+To stop relying on that evidence at all, revoke every session fleet-wide (everyone signs in again):
+
+```bash
+docker compose exec auth python -m auth_user_service.scripts.google_link_remediation \
+  --scope all-sessions --confirm REVOKE-ALL-SESSIONS --actor <who> --reason <why>
+```
+
+Each scope needs its own `--confirm` token; a mismatch exits `2` and touches nothing. The command
+logs the actor, the reason, the scope, account ids and counts — never an email, `sub`, token, or
+JTI — and a repeat run finds nothing left to revoke.
+
+### Email change
+
+The email decides who can recover an account, so `PATCH /profile/update/me/` treats a change of it
+as an identity change:
+
+- a PASSWORD account must send `current_password` with the new `email` (`400` when it is missing
+  or wrong). The password is checked with constant work **before** the new address is looked up,
+  so the `409` for an address in use only answers the account holder;
+- a GOOGLE account cannot change its email (`403`): the address is Google's;
+- an applied change clears `email_verified`, bumps `auth_generation`, and revokes every session —
+  the caller's included — with the durable outbox effects. The client signs in again. The change
+  is logged as `event=profile.email_changed user_id=<id>` (never the address).
+
+An administrator's email change through `PATCH /users/update/{user_id}/` also clears
+`email_verified` and revokes, and its response reports `revocation_enqueued: true`. Re-sending the
+current address is not a change.
+
+### Account deletion and Google identities
+
+Self-service (`DELETE /profile/delete/me/`) and admin (`DELETE /users/delete/{user_id}/`) deletion
+run the same transaction: privileged-action audit row, [deletion tombstone](#deletion-tombstones),
+session revocation, and the durable outbox effects, then the `user.deleted` event. Every token
+minted for the deleted subject is revoked.
+
+Only an **administrator** deleting **another** GOOGLE account also bans its Google identity: it
+records a row in `<prefix>_identity_block` keyed by the SHA-256 of `google:<sub>` (the `sub` itself
+is never stored) and naming the deleted account's id. That Google account's next sign-in is refused
+(`refused_blocked`) and provisions nothing. A user who deletes their own account is not blocked and
+can come back as a new account.
+
+#### Runbook: lift a Google identity block
+
+Find the deleted account's id in the privileged-action audit (`action=delete`, `row_pk`), then:
+
+```bash
+docker compose exec auth python -m auth_user_service.scripts.google_identity_unblock \
+  --user-id <deleted-account-uuid> --actor <who> --reason <why>
+```
+
+It logs the actor, the reason, the id and the number of blocks lifted, and is idempotent (a
+second run lifts `0`). The next Google sign-in of that identity provisions a new account.
 
 ---
 
@@ -1412,6 +1496,11 @@ Migrations are applied automatically on container start. To run manually:
 alembic -c auth_user_service/alembic.ini revision --autogenerate -m "description"
 alembic -c auth_user_service/alembic.ini upgrade head
 ```
+
+The `postgres_m8`, `rs256_m8`, `quickstart_m8`, and `metrics_m8` chains carry every revision the
+service needs, including the additive `auth_identity_block` table (account-security patch). A
+stack that generates its own migrations must add one revision for that table before the new
+image serves traffic; the revision is safe to apply while the previous image still runs.
 
 **MySQL prerequisite — trigger creation under binary logging.** The
 privileged-action audit table's write-once guard is a trigger. MySQL 8 enables

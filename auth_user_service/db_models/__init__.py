@@ -8,6 +8,7 @@ from .api_keys import (
     RateLimit as RateLimit,
 )
 from .tombstones import AuthTombstone as AuthTombstone
+from .identity_blocks import IdentityBlock as IdentityBlock
 from .security_policy import SecurityPolicy as SecurityPolicy
 from .outbox import RevocationOutbox as RevocationOutbox
 from .privileged_action_audit import (

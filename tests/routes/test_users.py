@@ -7,8 +7,10 @@ import pytest
 from fastapi import HTTPException
 from sqlmodel import delete, select
 
-from auth_sdk_m8.schemas.base import RoleType
+from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 from auth_user_service.db_models.api_keys import ApiKey
+from auth_user_service.db_models.identity_blocks import IdentityBlock
+from auth_user_service.services.identity_blocks import identity_digest
 from auth_user_service.db_models.privileged_action_audit import (
     AuditAction,
     PrivilegedActionAudit,
@@ -80,6 +82,31 @@ class TestDeleteUser:
         tombstone = db_session.get(AuthTombstone, sample_user.id)
         assert tombstone is not None
         assert tombstone.terminal_generation == expected_terminal
+
+    def test_admin_deleting_a_google_account_blocks_its_identity(
+        self, db_session, google_user, superuser
+    ) -> None:
+        """S1A (D-j): deleting someone else is an operator decision to ban."""
+        deleted_id, sub = google_user.id, google_user.oauth_user_id
+
+        with patch("auth_user_service.routes.users.emit"):
+            delete_user(session=db_session, current_user=superuser, user_id=deleted_id)
+
+        block = db_session.get(
+            IdentityBlock, identity_digest(AuthProviderType.GOOGLE, sub)
+        )
+        assert block is not None and block.user_id == deleted_id
+
+    def test_admin_self_deletion_does_not_block(self, db_session, superuser) -> None:
+        with (
+            patch("auth_user_service.routes.users.emit"),
+            patch("auth_user_service.routes.users.delete_user_account") as delete,
+        ):
+            delete_user(
+                session=db_session, current_user=superuser, user_id=superuser.id
+            )
+
+        assert delete.call_args.kwargs["block_google_identity"] is False
 
 
 class TestUpdateUserResponseContract:

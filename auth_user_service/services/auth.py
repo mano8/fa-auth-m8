@@ -158,14 +158,26 @@ class AuthController:
         db_user = UserController.get_user_by_email(session=session, email=email)
         # Always run bcrypt regardless of whether the user exists so that response
         # time is constant and cannot be used to enumerate valid email addresses.
-        hash_to_check = (
-            db_user.hashed_password
-            if db_user and db_user.hashed_password
-            else _DUMMY_HASH
-        )
-        if not SecurityHelper.verify_password(password, hash_to_check):
+        if not AuthController.verify_password_constant_work(
+            password, db_user.hashed_password if db_user else None
+        ):
             return None
         return db_user
+
+    @staticmethod
+    def verify_password_constant_work(
+        password: str, hashed_password: Optional[str]
+    ) -> bool:
+        """Check *password* against *hashed_password*, running bcrypt every time.
+
+        With no stored hash (unknown account, or one without a password), the
+        check still runs against a dummy hash and fails, so the response time
+        does not reveal which case applied.
+        """
+        if not hashed_password:
+            SecurityHelper.verify_password(password, _DUMMY_HASH)
+            return False
+        return SecurityHelper.verify_password(password, hashed_password)
 
     @staticmethod
     def get_tokens_expire() -> tuple[timedelta, timedelta]:

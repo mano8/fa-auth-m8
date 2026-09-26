@@ -386,6 +386,14 @@ class UserUpdateMe(SQLModel):
         description="Updated avatar URL",
     )
 
+    current_password: Optional[str] = Field(
+        default=None,
+        min_length=8,
+        max_length=128,
+        description="Existing password, required when a PASSWORD account changes "
+        "its email. Checked, never stored.",
+    )
+
     @field_validator("avatar", mode="before")
     @classmethod
     def validate_avatar_url(cls, v: object) -> object:

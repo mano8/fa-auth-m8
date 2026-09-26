@@ -3,7 +3,6 @@
 from typing import Any
 from fastapi import APIRouter, HTTPException
 
-from auth_user_service.services.users import UserController
 from auth_user_service.core.deps import CurrentUser, SessionDep
 from auth_user_service.core.security import SecurityHelper
 from auth_user_service.db_models.users import (
@@ -12,18 +11,25 @@ from auth_user_service.db_models.users import (
     UserPublic,
     UserUpdateMe,
 )
+from auth_user_service.events import EVENT_USER_DELETED, emit
 from auth_user_service.schemas.user import ResponseUser
+from auth_user_service.services.profile import (
+    CurrentPasswordRequired,
+    EmailAlreadyInUse,
+    EmailChangeNotAllowed,
+    IncorrectCurrentPassword,
+    ProfileController,
+)
+from auth_user_service.services.role_admin import delete_user_account
 from auth_sdk_m8.authorization import has_superuser_privileges
 from auth_sdk_m8.controllers.base import BaseController
 from auth_sdk_m8.models.shared import Message
+from auth_sdk_m8.schemas.user_events import UserDeletedEvent
 from auth_user_service.core.exceptions import handle_route_exception
 
 # pylint: disable=not-callable, broad-exception-caught
 
 router = APIRouter(prefix="/profile", tags=["profile"])
-
-# Explicit allowlist for self-service profile updates — must never include is_superuser.
-_SELF_SERVICE_FIELDS: frozenset[str] = frozenset({"email", "full_name", "avatar"})
 
 
 @router.patch(
@@ -36,28 +42,34 @@ def update_user_me(
 ) -> Any:
     """
     Update own user.
+
+    An email change needs ``current_password`` (PASSWORD accounts) and is
+    refused for GOOGLE accounts. An applied change clears ``email_verified`` and
+    revokes every session, this one included, so the client signs in again.
     """
 
     try:
-        if user_in.email:
-            existing_user = UserController.get_user_by_email(
-                session=session, email=user_in.email
-            )
-            if existing_user and existing_user.id != current_user.id:
-                raise HTTPException(
-                    status_code=409, detail="User with this email already exists"
-                )
         db_user = session.get(User, current_user.id)
         if db_user is None:
             raise HTTPException(status_code=404, detail="User not found")
-        user_data = user_in.model_dump(exclude_unset=True)
-        for field, value in user_data.items():
-            if field in _SELF_SERVICE_FIELDS:
-                setattr(db_user, field, value)
-        session.add(db_user)
-        session.commit()
-        session.refresh(db_user)
-        return ResponseUser(success=True, user=db_user)
+        result = ProfileController.update_me(session, db_user, user_in)
+        return ResponseUser(success=True, user=result.user)
+    except EmailChangeNotAllowed as ex:
+        raise HTTPException(
+            status_code=403,
+            detail="The email of a Google account cannot be changed",
+        ) from ex
+    except CurrentPasswordRequired as ex:
+        raise HTTPException(
+            status_code=400,
+            detail="current_password is required to change the email",
+        ) from ex
+    except IncorrectCurrentPassword as ex:
+        raise HTTPException(status_code=400, detail="Incorrect password") from ex
+    except EmailAlreadyInUse as ex:
+        raise HTTPException(
+            status_code=409, detail="User with this email already exists"
+        ) from ex
     except HTTPException:
         raise
     except Exception as ex:
@@ -114,6 +126,8 @@ def read_user_me(current_user: CurrentUser) -> Any:
 def delete_user_me(session: SessionDep, current_user: CurrentUser) -> Any:
     """
     Delete own user.
+
+    Tombstones the subject and revokes every session and token minted for it.
     """
     try:
         if has_superuser_privileges(current_user.role, current_user.is_superuser):
@@ -124,8 +138,17 @@ def delete_user_me(session: SessionDep, current_user: CurrentUser) -> Any:
         db_user = session.get(User, current_user.id)
         if db_user is None:
             raise HTTPException(status_code=404, detail="User not found")
-        session.delete(db_user)
-        session.commit()
+        user_id = str(db_user.id)
+        # The same transaction as an admin deletion (tombstone, session
+        # revocation, durable outbox effects), minus the identity block: a user
+        # who deletes their own account may come back (D-j).
+        delete_user_account(
+            session=session,
+            actor_id=current_user.id,
+            actor_role=current_user.role,
+            db_user=db_user,
+        )
+        emit(EVENT_USER_DELETED, UserDeletedEvent(user_id=user_id).model_dump())
         return Message(message="User deleted successfully")
     except HTTPException:
         raise

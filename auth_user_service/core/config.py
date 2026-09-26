@@ -278,10 +278,18 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
         configuration only (S1), so any Google credential makes
         ``GOOGLE_OAUTH_REDIRECT_URI`` mandatory, and it must be an absolute
         ``http(s)`` URL with a host and no fragment (the form Google Console
-        registers). The message names the setting, never a credential value.
+        registers). Outside ``ENVIRONMENT=local`` it must be ``https`` (S1A,
+        N23): Google sends the authorization code to it. The two credentials are
+        only meaningful together, so one without the other is refused too. The
+        message names the setting, never a credential value.
         """
         if self.GOOGLE_CLIENT_ID is None and self.GOOGLE_CLIENT_SECRET is None:
             return self
+        if self.GOOGLE_CLIENT_ID is None or self.GOOGLE_CLIENT_SECRET is None:
+            raise ValueError(
+                "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set together: "
+                "set both to enable Google sign-in, or neither to disable it."
+            )
         uri = self.GOOGLE_OAUTH_REDIRECT_URI
         if not uri:
             raise ValueError(
@@ -299,6 +307,10 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
             )
         if parsed.fragment:
             raise ValueError("GOOGLE_OAUTH_REDIRECT_URI must not contain a fragment")
+        if parsed.scheme != "https" and self.ENVIRONMENT != "local":
+            raise ValueError(
+                "GOOGLE_OAUTH_REDIRECT_URI must use https unless ENVIRONMENT=local"
+            )
         return self
 
     # API key rate limiting defaults (0 = disabled for that period)

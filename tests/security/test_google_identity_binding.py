@@ -11,11 +11,17 @@ Proofs (plan ``S1`` acceptance):
 - PASSWORD account + Google login with the same email → refused;
 - superuser target → refused;
 - Google ``email_verified`` false or absent → refused;
-- inactive or tombstoned account → refused;
+- inactive account → refused;
 - a different ``sub`` asserting a bound Google account's email → refused;
 - existing Google users keep logging in, by ``sub``;
 - every refusal is the same generic ``400``, audited and counted, and mints
   no token or session.
+
+S1A adds, on the real deletion path (``D-j``, ``N18``): a self-deleted Google
+user comes back as a new account whose old tokens stay revoked; an admin
+deletion blocks the ``sub`` until an audited unblock; two concurrent first
+logins for one ``sub`` never ``500`` (``N22``); and a refused callback with a
+trusted target redirects to it with one generic code (``N21``).
 """
 
 from __future__ import annotations
@@ -29,10 +35,12 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
-from auth_sdk_m8.schemas.base import AuthProviderType
+from sqlalchemy.exc import IntegrityError
 
+from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
+
+from auth_user_service.db_models.identity_blocks import IdentityBlock
 from auth_user_service.db_models.sessions import ClientSession
-from auth_user_service.db_models.tombstones import AuthTombstone
 from auth_user_service.db_models.users import User
 from auth_user_service.routes import google_auth
 from auth_user_service.routes.google_auth import (
@@ -41,6 +49,18 @@ from auth_user_service.routes.google_auth import (
     _resolve_google_user,
 )
 from auth_user_service.schemas.google import OAuthGoogleToken
+from auth_user_service.services.generation import GenerationController
+from auth_user_service.services.google_identity import (
+    GoogleIdentityController,
+    GoogleLoginRefusal,
+    GoogleLoginRefused,
+)
+from auth_user_service.services.identity_blocks import (
+    IdentityBlockController,
+    identity_digest,
+)
+from auth_user_service.services.role_admin import delete_user_account
+from auth_user_service.services.users import UserController
 
 pytestmark = pytest.mark.security
 
@@ -182,15 +202,166 @@ def test_inactive_google_account_is_refused(db_session, google_user, metrics) ->
     assert _refusal_label(metrics) == "refused_inactive"
 
 
-def test_tombstoned_account_is_refused(db_session, google_user, metrics) -> None:
-    db_session.add(AuthTombstone(user_id=google_user.id, terminal_generation=9))
-    db_session.commit()
+# ── deletion through the real path (S1A, D-j, N18) ───────────────────────────
 
-    exc = _refused(
-        db_session, _token(email=google_user.email, sub=google_user.oauth_user_id)
+
+def _delete(session: Session, user: User, *, actor_id: uuid.UUID, block: bool) -> None:
+    delete_user_account(
+        session=session,
+        actor_id=actor_id,
+        actor_role=RoleType.SUPERADMIN if block else user.role,
+        db_user=user,
+        block_google_identity=block,
     )
+
+
+def test_self_deleted_google_user_comes_back_as_a_new_account(
+    db_session, google_user, metrics
+) -> None:
+    """Self-deletion does not ban: the same ``sub`` provisions a fresh account,
+    and the deleted account's tokens stay revoked by its tombstone."""
+    old_id, sub, email = google_user.id, google_user.oauth_user_id, google_user.email
+    _delete(db_session, google_user, actor_id=old_id, block=False)
+
+    user = _resolve_google_user(db_session, _token(email=email, sub=sub))
+
+    assert user.id != old_id
+    assert user.oauth_user_id == sub
+    assert GenerationController.subject_is_tombstoned(db_session, old_id)
+    assert not GenerationController.subject_is_tombstoned(db_session, user.id)
+
+
+def test_admin_deleted_google_identity_is_blocked(
+    db_session, google_user, superuser, metrics
+) -> None:
+    """An admin deletion bans the ``sub``: nothing is provisioned for it."""
+    sub, email = google_user.oauth_user_id, google_user.email
+    _delete(db_session, google_user, actor_id=superuser.id, block=True)
+
+    exc = _refused(db_session, _token(email=email, sub=sub))
+
     _assert_generic_refusal(exc)
-    assert _refusal_label(metrics) == "refused_tombstoned"
+    assert _refusal_label(metrics) == "refused_blocked"
+    assert db_session.exec(select(User).where(User.email == email)).first() is None
+
+
+def test_block_stores_only_a_digest_of_the_subject(
+    db_session, google_user, superuser
+) -> None:
+    deleted_id, sub = google_user.id, google_user.oauth_user_id
+    _delete(db_session, google_user, actor_id=superuser.id, block=True)
+
+    [block] = db_session.exec(
+        select(IdentityBlock).where(IdentityBlock.user_id == deleted_id)
+    ).all()
+    assert block.identity_digest == identity_digest(AuthProviderType.GOOGLE, sub)
+    assert sub not in block.identity_digest
+
+
+def test_blocking_twice_keeps_one_marker(db_session) -> None:
+    sub, first, second = f"sub-{uuid.uuid4().hex}", uuid.uuid4(), uuid.uuid4()
+    for user_id in (first, second):
+        IdentityBlockController.block(
+            db_session, provider=AuthProviderType.GOOGLE, subject=sub, user_id=user_id
+        )
+        db_session.commit()
+
+    block = db_session.get(IdentityBlock, identity_digest(AuthProviderType.GOOGLE, sub))
+    assert block is not None and block.user_id == first
+
+
+def test_unblocked_identity_can_sign_in_again(
+    db_session, google_user, superuser, metrics
+) -> None:
+    deleted_id = google_user.id
+    sub, email = google_user.oauth_user_id, google_user.email
+    _delete(db_session, google_user, actor_id=superuser.id, block=True)
+
+    assert IdentityBlockController.unblock_deleted_user(db_session, deleted_id) == 1
+    assert IdentityBlockController.unblock_deleted_user(db_session, deleted_id) == 0
+
+    user = _resolve_google_user(db_session, _token(email=email, sub=sub))
+    assert user.oauth_user_id == sub
+    assert user.id != deleted_id
+
+
+def test_admin_deletion_of_a_password_account_blocks_nothing(
+    db_session, sample_user, superuser
+) -> None:
+    deleted_id = sample_user.id
+    _delete(db_session, sample_user, actor_id=superuser.id, block=True)
+
+    blocks = db_session.exec(
+        select(IdentityBlock).where(IdentityBlock.user_id == deleted_id)
+    ).all()
+    assert blocks == []
+
+
+# ── concurrent first logins (S1A, N22) ───────────────────────────────────────
+
+
+def _row(*, sub: str, email: str, provider: AuthProviderType) -> User:
+    google = provider == AuthProviderType.GOOGLE
+    return User(
+        id=uuid.uuid4(),
+        email=email,
+        full_name="Race Winner",
+        oauth_user_id=sub if google else None,
+        hashed_password=None if google else "x" * 60,
+        provider=provider,
+        is_active=True,
+        email_verified=True,
+        is_superuser=False,
+        role=RoleType.USER,
+    )
+
+
+def _losing_create(winner: User | None):
+    """``create_user`` that loses the race: *winner* commits first through
+    another session, then the loser's insert hits the unique constraint."""
+
+    def create_user(*, session: Session, user_create: object) -> User:
+        del user_create
+        if winner is not None:
+            with Session(session.get_bind()) as other:
+                other.add(winner)
+                other.commit()
+        raise IntegrityError("INSERT INTO auth_user", None, Exception("unique"))
+
+    return patch.object(UserController, "create_user", side_effect=create_user)
+
+
+def test_race_loser_enters_the_winners_account(db_session) -> None:
+    email, sub = _new_email(), f"sub-{uuid.uuid4().hex}"
+    winner = _row(sub=sub, email=email, provider=AuthProviderType.GOOGLE)
+    winner_id = winner.id
+
+    with _losing_create(winner):
+        user = GoogleIdentityController.resolve(
+            db_session, _token(email=email, sub=sub)
+        )
+
+    assert user.id == winner_id
+
+
+def test_race_lost_to_a_password_account_is_refused(db_session) -> None:
+    email, sub = _new_email(), f"sub-{uuid.uuid4().hex}"
+    holder = _row(sub=sub, email=email, provider=AuthProviderType.PASSWORD)
+
+    with _losing_create(holder):
+        with pytest.raises(GoogleLoginRefused) as exc:
+            GoogleIdentityController.resolve(db_session, _token(email=email, sub=sub))
+
+    assert exc.value.reason is GoogleLoginRefusal.EMAIL_IN_USE
+
+
+def test_unexplained_conflict_is_a_refusal_not_a_500(db_session) -> None:
+    token = _token(email=_new_email(), sub=f"sub-{uuid.uuid4().hex}")
+    with _losing_create(None):
+        with pytest.raises(GoogleLoginRefused) as exc:
+            GoogleIdentityController.resolve(db_session, token)
+
+    assert exc.value.reason is GoogleLoginRefusal.PROVISIONING_CONFLICT
 
 
 # ── legitimate Google users ──────────────────────────────────────────────────
@@ -350,10 +521,7 @@ def app_client(db_session) -> Iterator[TestClient]:
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_refused_callback_returns_generic_json_400(
-    app_client, sample_user, metrics
-) -> None:
-    """The app's error handler must not turn the refusal into a 500 or redirect."""
+def _refused_callback(app_client, sample_user, redirect_target: str):
     from auth_user_service.core.config import settings
 
     with (
@@ -362,7 +530,7 @@ def test_refused_callback_returns_generic_json_400(
             f"{_ROUTE}._get_oauth_session",
             return_value={
                 "pkce_verifier": "v",
-                "redirect_target": "chrome-extension://x/cb.html",
+                "redirect_target": redirect_target,
                 "code_challenge": "c",
             },
         ),
@@ -372,11 +540,31 @@ def test_refused_callback_returns_generic_json_400(
             return_value=_token(email=sample_user.email, sub="sub-attacker"),
         ),
     ):
-        response = app_client.get(
+        return app_client.get(
             f"{settings.API_PREFIX}/google-auth/oauth-callback/",
             params={"code": "google-code", "state": "state-1"},
             follow_redirects=False,
         )
+
+
+def test_refused_callback_redirects_to_the_trusted_target(
+    app_client, sample_user, metrics
+) -> None:
+    """S1A (N21): the browser goes back to its target with one generic code."""
+    target = "chrome-extension://x/cb.html"
+    response = _refused_callback(app_client, sample_user, target)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == (f"{target}#auth_error=google_signin_failed")
+    assert "set-cookie" not in response.headers
+    assert _refusal_label(metrics) == "refused_email_in_use"
+
+
+def test_refused_callback_without_target_returns_generic_json_400(
+    app_client, sample_user, metrics
+) -> None:
+    """The app's error handler must not turn the refusal into a 500."""
+    response = _refused_callback(app_client, sample_user, "")
 
     assert response.status_code == 400
     assert response.json() == {"detail": _REFUSAL_DETAIL}
