@@ -48,7 +48,7 @@ def _login_settings(**overrides):
     m = MagicMock()
     m.OAUTH_ALLOWED_REDIRECT_SCHEMES = ["chrome-extension://"]
     m.OAUTH_ALLOWED_REDIRECT_PREFIXES = []
-    m.GOOGLE_OAUTH_REDIRECT_URI = ""
+    m.GOOGLE_OAUTH_REDIRECT_URI = "https://example.com/callback"
     for k, v in overrides.items():
         setattr(m, k, v)
     return m
@@ -223,6 +223,26 @@ class TestGetGoogleLoginUrl:
                 )
         assert exc.value.status_code == 400
         assert "code_challenge" in exc.value.detail
+
+    @pytest.mark.anyio
+    async def test_empty_callback_uri_fails_closed_before_redis(self):
+        """No GOOGLE_OAUTH_REDIRECT_URI → 503; no redirect_uri-less URL is built (S1)."""
+        s = _login_settings(GOOGLE_OAUTH_REDIRECT_URI="")
+        with (
+            patch("auth_user_service.routes.oauth_login.settings", s),
+            patch("auth_user_service.routes.oauth_login.get_redis_client") as redis,
+            patch(
+                "auth_user_service.routes.oauth_login.AuthController.get_google_login_url"
+            ) as build_url,
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await get_google_login_url(
+                    redirect_target=_VALID_REDIRECT,
+                    code_challenge=_VALID_CODE_CHALLENGE,
+                )
+        assert exc.value.status_code == 503
+        redis.assert_not_called()
+        build_url.assert_not_called()
 
     @pytest.mark.anyio
     async def test_http_redirect_rejected_by_default(self):

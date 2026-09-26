@@ -6,6 +6,7 @@ This module loads environment settings securely and applies best practices.
 import logging
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -268,6 +269,38 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _require_google_redirect_uri(self) -> "Settings":
+        """Fail startup when Google credentials are set without a fixed callback URI.
+
+        The Google callback URI used to fall back to ``request.url_for``, which
+        builds it from the client-controlled ``Host`` header. It now comes from
+        configuration only (S1), so any Google credential makes
+        ``GOOGLE_OAUTH_REDIRECT_URI`` mandatory, and it must be an absolute
+        ``http(s)`` URL with a host and no fragment (the form Google Console
+        registers). The message names the setting, never a credential value.
+        """
+        if self.GOOGLE_CLIENT_ID is None and self.GOOGLE_CLIENT_SECRET is None:
+            return self
+        uri = self.GOOGLE_OAUTH_REDIRECT_URI
+        if not uri:
+            raise ValueError(
+                "GOOGLE_OAUTH_REDIRECT_URI is required when GOOGLE_CLIENT_ID or "
+                "GOOGLE_CLIENT_SECRET is set: the Google callback URI is never "
+                "derived from the request host. Set it to the exact callback "
+                "registered in Google Console, e.g. "
+                "https://auth.example.com/api/v1/google-auth/oauth-callback/"
+            )
+        parsed = urlsplit(uri)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(
+                "GOOGLE_OAUTH_REDIRECT_URI must be an absolute http(s) URL "
+                "including a host"
+            )
+        if parsed.fragment:
+            raise ValueError("GOOGLE_OAUTH_REDIRECT_URI must not contain a fragment")
+        return self
+
     # API key rate limiting defaults (0 = disabled for that period)
     # API_KEY_STRICT_RATE_LIMIT is an explicit opt-in, but production/strict
     # deployments inherit strict behaviour regardless — see
@@ -331,7 +364,8 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     GOOGLE_CLIENT_ID: Optional[SecretStr] = None
     GOOGLE_CLIENT_SECRET: Optional[SecretStr] = None
     # Fixed backend callback URI — must match Google Console exactly.
-    # Never auto-generated from request host to prevent host-spoofing.
+    # Never auto-generated from request host to prevent host-spoofing; required
+    # whenever a Google credential is set (``_require_google_redirect_uri``).
     GOOGLE_OAUTH_REDIRECT_URI: str = ""
     PRIVATE_API_SECRET: SecretStr
     # ── Per-consumer private-API credentials (Phase 9.1, issuer side) ─────────

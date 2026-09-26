@@ -5,16 +5,20 @@ import logging
 import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from httpx import HTTPError as HTTPXError
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import SecretStr
 
 from auth_user_service.services.auth import AuthController
-from auth_user_service.db_models.users import User, UserCreate
+from auth_user_service.db_models.users import User
 from auth_user_service.core.deps import SessionDep
 from auth_user_service.services.client_sessions import SessionController
-from auth_user_service.services.users import UserController
+from auth_user_service.services.google_identity import (
+    GoogleIdentityController,
+    GoogleLoginRefused,
+)
 from auth_user_service.services.oauth import OAuthController
+from auth_user_service.schemas.google import OAuthGoogleToken
 from auth_user_service.core.client import (
     AuthCodeStore,
     OAuthSessionStore,
@@ -25,7 +29,6 @@ from auth_user_service.core.config import settings
 from auth_sdk_m8.observability.metrics import get as _get_metrics
 
 from auth_sdk_m8.schemas.auth import ExternalTokensData
-from auth_sdk_m8.schemas.base import AuthProviderType
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,12 @@ router = APIRouter(prefix="/google-auth", tags=["google-auth"])
 
 _SECURE_COOKIE = settings.ENVIRONMENT != "local"
 _REFRESH_TTL_SECONDS = settings.REFRESH_TOKEN_EXPIRE_MINUTES * 60
+
+# One detail for every identity/account-state refusal (S1): the response never
+# says which rule fired, so it cannot be used to learn whether an email holds a
+# password account, a different Google identity, or a disabled account. The
+# reason is recorded server-side only (log + bounded metric label).
+_REFUSAL_DETAIL = "Google sign-in could not be completed for this account."
 
 
 def _get_oauth_session(redis: object, state: str) -> dict:
@@ -46,22 +55,24 @@ def _get_oauth_session(redis: object, state: str) -> dict:
     return json.loads(raw_session)
 
 
-def _get_or_create_user(session: SessionDep, oauth_token: object) -> User:
-    """Return the existing user or create one from the OAuth token data."""
-    user = UserController.get_user_by_email(
-        session=session,
-        email=oauth_token.email,  # type: ignore[attr-defined]
-    )
-    if user is None:
-        user_in = UserCreate(
-            provider=AuthProviderType.GOOGLE,
-            oauth_user_id=oauth_token.user_id,  # type: ignore[attr-defined]
-            email=oauth_token.email,  # type: ignore[attr-defined]
-            email_verified=oauth_token.email_verified,  # type: ignore[attr-defined]
-            full_name=oauth_token.name.strip(),  # type: ignore[attr-defined]
+def _resolve_google_user(session: SessionDep, oauth_token: OAuthGoogleToken) -> User:
+    """Return the account this Google identity may enter, or refuse generically.
+
+    Binding rules live in :class:`GoogleIdentityController` (S1). Every refusal
+    is audited with its reason and the matched account id only — never the
+    asserted email, the Google ``sub``, or a token — counted under a bounded
+    metric label, and answered with the same ``400``.
+    """
+    try:
+        return GoogleIdentityController.resolve(session, oauth_token)
+    except GoogleLoginRefused as refusal:
+        logger.warning(
+            "event=google_login.refused reason=%s user_id=%s",
+            refusal.reason.value,
+            refusal.user_id if refusal.user_id is not None else "-",
         )
-        user = UserController.create_user(session=session, user_create=user_in)
-    return user
+        _inc_oauth_metric(f"refused_{refusal.reason.value}")
+        raise HTTPException(status_code=400, detail=_REFUSAL_DETAIL) from None
 
 
 def _build_redirect_response(
@@ -142,7 +153,8 @@ async def _perform_oauth_exchange(
         code_verifier=code_verifier,
         redirect_uri=callback_uri,
     )
-    user = _get_or_create_user(session, oauth_token)
+    # Identity and account state are settled before anything is minted.
+    user = _resolve_google_user(session, oauth_token)
     access_token, refresh_token, jti = AuthController.create_auth_tokens(user=user)
     access_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     AuthController.create_auth_session(
@@ -172,7 +184,6 @@ async def _perform_oauth_exchange(
 
 @router.get("/oauth-callback/")
 async def google_auth_callback(
-    request: Request,
     session: SessionDep,
     code: str,
     state: str,
@@ -183,6 +194,13 @@ async def google_auth_callback(
     Uses get()+delete() NOT GETDEL — transient failures don't destroy the session.
     Delivers auth_code via URL fragment (#auth_code=) to avoid server/proxy logging.
     """
+    # Fixed config URI only — never derived from the request, whose Host is
+    # client-controlled (S1). Startup already refuses Google credentials without
+    # it; this keeps the route fail-closed on its own.
+    callback_uri = settings.GOOGLE_OAUTH_REDIRECT_URI
+    if not callback_uri:
+        raise HTTPException(status_code=503, detail="Google OAuth is not configured.")
+
     try:
         redis = get_redis_client()
         if redis is None:
@@ -199,11 +217,6 @@ async def google_auth_callback(
     except Exception as ex:
         logger.error("OAuth session lookup failed: %s", ex)
         raise HTTPException(400, "Invalid state parameter") from ex
-
-    # Use fixed config URI — never derived from request to prevent host-spoofing.
-    callback_uri = settings.GOOGLE_OAUTH_REDIRECT_URI or str(
-        request.url_for("google_auth_callback")
-    )
 
     try:
         response = await _perform_oauth_exchange(

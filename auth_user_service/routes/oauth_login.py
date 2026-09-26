@@ -181,11 +181,16 @@ async def get_google_login_url(
     if not _CHALLENGE_RE.fullmatch(code_challenge):
         raise HTTPException(status_code=400, detail="code_challenge format invalid.")
 
+    # Fixed config URI only (S1): an empty value used to be sent as no
+    # redirect_uri at all. Startup refuses Google credentials without it.
+    callback_uri = settings.GOOGLE_OAUTH_REDIRECT_URI
+    if not callback_uri:
+        raise HTTPException(status_code=503, detail="Google OAuth is not configured.")
+
     redis = get_redis_client()
     if redis is None:
         raise HTTPException(status_code=503, detail="Cache service unavailable.")
 
-    callback_uri = settings.GOOGLE_OAUTH_REDIRECT_URI or None
     url, state, pkce_verifier = AuthController.get_google_login_url(
         redirect_uri=callback_uri
     )

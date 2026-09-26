@@ -227,6 +227,32 @@ class UserController:
         return session_user
 
     @staticmethod
+    def get_user_by_oauth_identity(
+        *, session: Session, provider: AuthProviderType, oauth_user_id: str
+    ) -> Optional[User]:
+        """
+        Retrieve a user by their external identity ``(provider, oauth_user_id)``.
+
+        This is the only lookup an external login may use to enter an existing
+        account: the IdP's stable subject identifies the account, never the
+        email address it currently asserts. ``oauth_user_id`` is unique, so the
+        existing unique index serves the query.
+
+        Args:
+            session (Session): The database session to use for the query.
+            provider (AuthProviderType): The provider that issued the subject.
+            oauth_user_id (str): The provider's stable subject (``sub``).
+
+        Returns:
+            User | None: The bound user if found, otherwise None.
+        """
+        statement = select(User).where(
+            User.provider == provider,
+            User.oauth_user_id == oauth_user_id,
+        )
+        return session.exec(statement).first()
+
+    @staticmethod
     def count_users(*, session: Session) -> int:
         """
         Count users present.

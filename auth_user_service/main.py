@@ -9,7 +9,7 @@ import uvicorn
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 from fastapi.middleware.cors import CORSMiddleware
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -457,12 +457,14 @@ if settings.METRICS_ENABLED:
 async def custom_error_handler(
     request: Request, exc: StarletteHTTPException
 ) -> Response:
-    """Redirect OAuth error pages; return JSON for all other HTTP exceptions."""
-    from_path = request.url.path
-    if any(x in from_path for x in ["login_success", "oauth-callback"]):
-        redirect = RedirectResponse(url=request.url_for("google_auth_login"))
-        request.session["error"] = str(exc)
-        return redirect
+    """Return every HTTP exception as JSON, the Google callback included.
+
+    The callback's errors used to be redirected to a ``google_auth_login`` route
+    that no longer exists, so each one surfaced as a ``500`` instead of its own
+    status — which hid the generic ``400`` a refused Google login must return
+    (S1).
+    """
+    del request  # the response does not depend on the request
     headers = dict(exc.headers) if exc.headers else {}
     return JSONResponse(
         status_code=exc.status_code,

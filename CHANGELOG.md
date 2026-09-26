@@ -14,6 +14,75 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+Google login is bound to the Google identity and to the account state (`S1`
+of the account-security patch, findings `N1` and `N2`). No route, request, or
+response shape changes. There is no new database object: the lookup uses the
+existing unique index on `oauth_user_id`, so no migration is needed.
+
+### Security
+
+- **A Google login can no longer enter an account just because the email
+  matches** (`N1`). Up to `2.2.3` the callback looked up the account by the
+  email Google asserted and ignored its `provider`, `oauth_user_id`, and
+  Google's `email_verified` claim. Any Google identity asserting a PASSWORD
+  account's email, the first superuser's included, got tokens and a session
+  for that account. The account is now found only by
+  `(provider=GOOGLE, oauth_user_id=<Google sub>)`. A new identity whose email
+  another account already holds is refused. That covers a PASSWORD account
+  and a Google account bound to a different `sub`. There is no implicit
+  linking.
+- **Google must assert `email_verified: true`** to create or enter an
+  account. A missing claim is refused as well, instead of failing schema
+  validation with a `500`.
+- **Disabled and tombstoned accounts get no token or session from Google
+  login** (`N2`). `is_active` was checked for password login only. Both
+  checks now run before anything is minted.
+- **The Google callback URI comes from configuration only.** When
+  `GOOGLE_OAUTH_REDIRECT_URI` was empty, the callback rebuilt it from the
+  request's `Host` header through `request.url_for`, and `/google-api/login-url/`
+  sent no `redirect_uri` at all. Both routes now answer `503` without it.
+
+### Changed
+
+- **Behavior change: password accounts lose Google sign-in.** A user who
+  signed into a PASSWORD account with Google must now use the password. The
+  account itself is unchanged. `python -m auth_user_service.scripts.google_link_report`
+  lists the affected accounts by id (read-only). The README runbook
+  *Google sign-in refused for a password account* covers the follow-up.
+- **Behavior change: `GOOGLE_OAUTH_REDIRECT_URI` is required at startup
+  whenever `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` is set.** It must be
+  an absolute `http(s)` URL with a host and no fragment. A deployment that
+  set Google credentials and relied on the derived callback no longer starts
+  until it sets the URI registered in Google Console.
+- Every Google refusal returns the same `400`
+  (`Google sign-in could not be completed for this account.`). The reason
+  goes to a `WARNING` log line
+  (`event=google_login.refused reason=… user_id=…`, never the email or `sub`)
+  and to `oauth_attempts_total{provider="google", result="refused_<reason>"}`.
+- A new Google account's email is normalized before the collision lookup and
+  stored normalized. Its `email_verified` is always `true`, because only a
+  verified Google email gets this far.
+
+### Fixed
+
+- **Errors on the Google callback keep their own status.** The app's error
+  handler redirected every HTTP error under `oauth-callback` to a
+  `google_auth_login` route that does not exist, so each one came back as a
+  `500`, and it also wrote the error text into the session cookie. The
+  callback now returns JSON errors like every other route.
+
+### Added
+
+- `auth_user_service.scripts.google_link_report`: a read-only operator report
+  of the non-GOOGLE accounts whose session shows a Google sign-in, with
+  superadmins listed separately. It exits `1` when any account is affected.
+  The list is a lower bound: an account keeps one session row, and a later
+  password login clears the Google evidence from it.
+
+---
+
 ## [2.2.3] - 2026-09-22
 
 Dev-set drift repair — `B27-dev-set-drift-repair` of the workspace's

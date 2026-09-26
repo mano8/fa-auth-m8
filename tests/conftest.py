@@ -45,6 +45,8 @@ _TEST_ENV = {
     "TOKENS_ENCRYPTION_KEY": "TestTokens!EncKey1secureKeyABC1234",
     "GOOGLE_CLIENT_ID": "test-client-id.apps.googleusercontent.com",
     "GOOGLE_CLIENT_SECRET": "TestGoogle!Secret1secureKeyXYZ098",
+    # Mandatory whenever a Google credential is set (S1).
+    "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost:8000/user/google-auth/oauth-callback/",
 }
 for _k, _v in _TEST_ENV.items():
     os.environ.setdefault(_k, _v)

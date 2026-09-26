@@ -22,7 +22,7 @@ def _settings(**overrides):
     m = MagicMock()
     m.OAUTH_ALLOWED_REDIRECT_SCHEMES = ["chrome-extension://"]
     m.OAUTH_ALLOWED_REDIRECT_PREFIXES = []
-    m.GOOGLE_OAUTH_REDIRECT_URI = ""
+    m.GOOGLE_OAUTH_REDIRECT_URI = "https://example.com/callback"
     m.ENVIRONMENT = "local"
     m.STRICT_PRODUCTION_MODE = False
     for k, v in overrides.items():

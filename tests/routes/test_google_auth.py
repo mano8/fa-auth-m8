@@ -1,6 +1,7 @@
 """Tests for routes/google_auth.py — all runtime branches covered."""
 
 import json
+import uuid
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,13 +10,18 @@ from fastapi import HTTPException
 from httpx import HTTPError as HTTPXError
 
 from auth_user_service.routes.google_auth import (
+    _REFUSAL_DETAIL,
     _build_auth_code_payload,
     _build_redirect_response,
     _get_oauth_session,
-    _get_or_create_user,
     _inc_oauth_metric,
     _perform_oauth_exchange,
+    _resolve_google_user,
     google_auth_callback,
+)
+from auth_user_service.services.google_identity import (
+    GoogleLoginRefusal,
+    GoogleLoginRefused,
 )
 
 
@@ -86,31 +92,34 @@ class TestGetOauthSession:
 
 
 # ---------------------------------------------------------------------------
-# _get_or_create_user
+# _resolve_google_user (wiring; identity-binding rules are proven against a
+# real database in tests/security/test_google_identity_binding.py)
 # ---------------------------------------------------------------------------
 
 
-class TestGetOrCreateUser:
-    def test_existing_user_returned(self) -> None:
-        session = MagicMock()
-        oauth_token = _mock_oauth_token()
-        existing = MagicMock()
-        with patch("auth_user_service.routes.google_auth.UserController") as mock_ctrl:
-            mock_ctrl.get_user_by_email.return_value = existing
-            result = _get_or_create_user(session, oauth_token)
-        assert result is existing
-        mock_ctrl.create_user.assert_not_called()
+class TestResolveGoogleUser:
+    def test_resolved_user_is_returned(self) -> None:
+        user = MagicMock()
+        with patch(
+            "auth_user_service.routes.google_auth.GoogleIdentityController.resolve",
+            return_value=user,
+        ):
+            assert _resolve_google_user(MagicMock(), _mock_oauth_token()) is user
 
-    def test_new_user_created_when_not_found(self) -> None:
-        session = MagicMock()
-        oauth_token = _mock_oauth_token()
-        new_user = MagicMock()
-        with patch("auth_user_service.routes.google_auth.UserController") as mock_ctrl:
-            mock_ctrl.get_user_by_email.return_value = None
-            mock_ctrl.create_user.return_value = new_user
-            result = _get_or_create_user(session, oauth_token)
-        assert result is new_user
-        mock_ctrl.create_user.assert_called_once()
+    def test_refusal_becomes_generic_400_with_metric(self) -> None:
+        user_id = uuid.uuid4()
+        with (
+            patch(
+                "auth_user_service.routes.google_auth.GoogleIdentityController.resolve",
+                side_effect=GoogleLoginRefused(GoogleLoginRefusal.INACTIVE, user_id),
+            ),
+            patch("auth_user_service.routes.google_auth._inc_oauth_metric") as metric,
+        ):
+            with pytest.raises(HTTPException) as exc:
+                _resolve_google_user(MagicMock(), _mock_oauth_token())
+        assert exc.value.status_code == 400
+        assert exc.value.detail == _REFUSAL_DETAIL
+        metric.assert_called_once_with("refused_inactive")
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +208,7 @@ def _exchange_patches(*, is_stateless: bool):
             return_value=_mock_oauth_token(),
         ),
         patch(
-            "auth_user_service.routes.google_auth._get_or_create_user",
+            "auth_user_service.routes.google_auth._resolve_google_user",
             return_value=_mock_user(),
         ),
         patch(
@@ -231,7 +240,7 @@ class TestPerformOauthExchange:
                 return_value=_mock_oauth_token(),
             ),
             patch(
-                "auth_user_service.routes.google_auth._get_or_create_user",
+                "auth_user_service.routes.google_auth._resolve_google_user",
                 return_value=_mock_user(),
             ),
             patch(
@@ -279,7 +288,7 @@ class TestPerformOauthExchange:
                 return_value=_mock_oauth_token(),
             ),
             patch(
-                "auth_user_service.routes.google_auth._get_or_create_user",
+                "auth_user_service.routes.google_auth._resolve_google_user",
                 return_value=_mock_user(),
             ),
             patch(
@@ -331,7 +340,6 @@ class TestGoogleAuthCallback:
         ):
             with pytest.raises(HTTPException) as exc:
                 await google_auth_callback(
-                    request=MagicMock(),
                     session=MagicMock(),
                     code="code",
                     state="state",
@@ -353,7 +361,6 @@ class TestGoogleAuthCallback:
         ):
             with pytest.raises(HTTPException) as exc:
                 await google_auth_callback(
-                    request=MagicMock(),
                     session=MagicMock(),
                     code="code",
                     state="bad-state",
@@ -375,7 +382,6 @@ class TestGoogleAuthCallback:
         ):
             with pytest.raises(HTTPException) as exc:
                 await google_auth_callback(
-                    request=MagicMock(),
                     session=MagicMock(),
                     code="code",
                     state="state",
@@ -385,8 +391,6 @@ class TestGoogleAuthCallback:
     @pytest.mark.anyio
     async def test_exchange_httpx_error_raises_400(self) -> None:
         """HTTPXError from _perform_oauth_exchange → 400."""
-        request = MagicMock()
-        request.url_for.return_value = "http://callback"
         with (
             patch(
                 "auth_user_service.routes.google_auth.get_redis_client",
@@ -404,10 +408,9 @@ class TestGoogleAuthCallback:
             patch("auth_user_service.routes.google_auth._inc_oauth_metric"),
             patch("auth_user_service.routes.google_auth.settings") as mock_cfg,
         ):
-            mock_cfg.GOOGLE_OAUTH_REDIRECT_URI = ""
+            mock_cfg.GOOGLE_OAUTH_REDIRECT_URI = "https://example.com/callback"
             with pytest.raises(HTTPException) as exc:
                 await google_auth_callback(
-                    request=request,
                     session=MagicMock(),
                     code="code",
                     state="state",
@@ -417,8 +420,6 @@ class TestGoogleAuthCallback:
     @pytest.mark.anyio
     async def test_exchange_http_exception_reraised(self) -> None:
         """HTTPException from _perform_oauth_exchange → re-raised unchanged."""
-        request = MagicMock()
-        request.url_for.return_value = "http://callback"
         with (
             patch(
                 "auth_user_service.routes.google_auth.get_redis_client",
@@ -435,10 +436,9 @@ class TestGoogleAuthCallback:
             ),
             patch("auth_user_service.routes.google_auth.settings") as mock_cfg,
         ):
-            mock_cfg.GOOGLE_OAUTH_REDIRECT_URI = ""
+            mock_cfg.GOOGLE_OAUTH_REDIRECT_URI = "https://example.com/callback"
             with pytest.raises(HTTPException) as exc:
                 await google_auth_callback(
-                    request=request,
                     session=MagicMock(),
                     code="code",
                     state="state",
@@ -448,8 +448,6 @@ class TestGoogleAuthCallback:
     @pytest.mark.anyio
     async def test_exchange_generic_exception_raises_500(self) -> None:
         """Unexpected exception from _perform_oauth_exchange → 500."""
-        request = MagicMock()
-        request.url_for.return_value = "http://callback"
         with (
             patch(
                 "auth_user_service.routes.google_auth.get_redis_client",
@@ -467,10 +465,9 @@ class TestGoogleAuthCallback:
             patch("auth_user_service.routes.google_auth._inc_oauth_metric"),
             patch("auth_user_service.routes.google_auth.settings") as mock_cfg,
         ):
-            mock_cfg.GOOGLE_OAUTH_REDIRECT_URI = ""
+            mock_cfg.GOOGLE_OAUTH_REDIRECT_URI = "https://example.com/callback"
             with pytest.raises(HTTPException) as exc:
                 await google_auth_callback(
-                    request=request,
                     session=MagicMock(),
                     code="code",
                     state="state",
@@ -502,7 +499,6 @@ class TestGoogleAuthCallback:
         ):
             mock_cfg.GOOGLE_OAUTH_REDIRECT_URI = "https://example.com/callback"
             result = await google_auth_callback(
-                request=MagicMock(),
                 session=MagicMock(),
                 code="code",
                 state="state",
@@ -511,34 +507,23 @@ class TestGoogleAuthCallback:
         mock_metric.assert_called_once_with("success")
 
     @pytest.mark.anyio
-    async def test_success_derives_callback_uri_from_request(self) -> None:
-        """Happy path: empty GOOGLE_OAUTH_REDIRECT_URI — fallback to request.url_for."""
-        request = MagicMock()
-        request.url_for.return_value = "http://derived-callback"
-        mock_response = MagicMock()
+    async def test_empty_redirect_uri_fails_closed_before_any_work(self) -> None:
+        """Empty GOOGLE_OAUTH_REDIRECT_URI → 503; the request Host is never used (S1)."""
         with (
-            patch(
-                "auth_user_service.routes.google_auth.get_redis_client",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "auth_user_service.routes.google_auth._get_oauth_session",
-                return_value=_mock_oauth_session_data(),
-            ),
+            patch("auth_user_service.routes.google_auth.get_redis_client") as redis,
             patch(
                 "auth_user_service.routes.google_auth._perform_oauth_exchange",
                 new_callable=AsyncMock,
-                return_value=mock_response,
-            ),
-            patch("auth_user_service.routes.google_auth._inc_oauth_metric"),
+            ) as exchange,
             patch("auth_user_service.routes.google_auth.settings") as mock_cfg,
         ):
             mock_cfg.GOOGLE_OAUTH_REDIRECT_URI = ""
-            result = await google_auth_callback(
-                request=request,
-                session=MagicMock(),
-                code="code",
-                state="state",
-            )
-        assert result is mock_response
-        request.url_for.assert_called_once_with("google_auth_callback")
+            with pytest.raises(HTTPException) as exc:
+                await google_auth_callback(
+                    session=MagicMock(),
+                    code="code",
+                    state="state",
+                )
+        assert exc.value.status_code == 503
+        redis.assert_not_called()
+        exchange.assert_not_called()

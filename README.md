@@ -506,7 +506,7 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 | `FIRST_SUPERUSER_PASSWORD` | yes | Password of the bootstrap superuser — used only on first run |
 | `GOOGLE_CLIENT_ID` | no | Google OAuth2 client ID |
 | `GOOGLE_CLIENT_SECRET` | no | Google OAuth2 client secret |
-| `GOOGLE_OAUTH_REDIRECT_URI` | no | Fixed backend callback URI for native-app PKCE OAuth. Must match Google Console exactly. Defaults to auto-derived from request URL when empty. |
+| `GOOGLE_OAUTH_REDIRECT_URI` | when Google is set | Fixed backend callback URI for native-app PKCE OAuth. Must match Google Console exactly: an absolute `http(s)` URL with a host and no fragment. **Required whenever `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` is set** — startup fails without it. It is never derived from the request `Host`. |
 | `OAUTH_ALLOWED_REDIRECT_SCHEMES` | no | URI scheme(s) accepted as `redirect_target` at `/google-api/login-url/` (default `chrome-extension://`). Add `https://` only for trusted web clients; add `http://` only for local development. |
 | `OAUTH_ALLOWED_REDIRECT_PREFIXES` | no | Optional full-URI prefix allowlist. Required for `http://` and `https://` redirects to pin trusted callback origins; optional for native public-client schemes. Plain HTTP is limited to localhost and rejected in production/staging. |
 | `CORS_ALLOWED_ORIGIN_SCHEMES` | no | Scheme-level CORS origins for native-app `fetch()` calls (e.g. `chrome-extension://`). |
@@ -817,6 +817,7 @@ placeholder fails closed immediately.
 - `EVENT_SIGNING_KEY` is set when `EVENT_SIGNING_ENABLED=true` (the default).
 - `TOKEN_ISSUER` and `TOKEN_AUDIENCE` are set when `TOKEN_STRICT_VALIDATION=true` (the default).
 - `ACCESS_PUBLIC_KEY_FILE` or `JWKS_URI` is present for RS256/ES256.
+- `GOOGLE_OAUTH_REDIRECT_URI` is set when `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` is set.
 
 | Setting | SDK default | Dev / local | `hardened_m8` | Production overlay |
 | --- | --- | --- | --- | --- |
@@ -856,6 +857,51 @@ paths, production checklist, and incident response playbooks).
 
 For the complete cross-layer table including fastapi-m8 consumer defaults, see the
 [auth-sdk-m8 Defaults by layer](https://github.com/mano8/auth-sdk-m8#defaults-by-layer) section.
+
+### Google sign-in identity binding
+
+A Google login enters an account only through the Google identity it is bound to,
+`(provider=GOOGLE, oauth_user_id=<Google sub>)`. The email Google asserts never selects an
+account. There is no implicit linking between Google and password identities:
+
+- Google must assert `email_verified: true`, to create an account or to enter one.
+- A new Google identity whose email already belongs to another account is refused. That covers a
+  PASSWORD account (the first superuser included) and a Google account bound to a different `sub`.
+- A disabled (`is_active=false`) or tombstoned account is refused before any token or session is
+  issued.
+- An existing Google user keeps signing in by `sub`, even after their Google address changes.
+
+Every refusal returns the same `400` (`Google sign-in could not be completed for this account.`),
+so the response does not reveal which rule fired. The reason goes to a `WARNING` log line
+(`event=google_login.refused reason=<reason> user_id=<id or ->`) and to the
+`oauth_attempts_total{provider="google", result="refused_<reason>"}` counter. The reasons are
+`email_unverified`, `subject_missing`, `email_in_use`, `subject_mismatch`, `inactive` and
+`tombstoned`. The log never contains the email, the Google `sub`, or a token.
+
+#### Runbook: Google sign-in refused for a password account
+
+Up to `2.2.3`, a Google login entered any account whose email matched, including PASSWORD
+accounts. Users who signed in that way lose Google sign-in with this release and must use their
+password (the account, its data and its password are unchanged).
+
+1. List them. The report is read-only and prints user ids only:
+
+   ```bash
+   docker compose exec auth python -m auth_user_service.scripts.google_link_report
+   ```
+
+   It exits `1` when at least one account is affected, and lists any superadmin separately. The
+   report is a **lower bound**: an account keeps one session row, and a later password login
+   clears the Google evidence from it.
+2. Tell each affected user to sign in with their password, or to use their existing
+   password-reset process if they no longer know it. Treat a listed superadmin as a priority: its
+   Google sign-in was the path `N1` made exploitable.
+3. Do not "fix" an account by switching its `provider` to `GOOGLE` or by writing an
+   `oauth_user_id` by hand. Linking identities is deliberately unsupported. An account needs
+   exactly one sign-in method.
+4. Watch `oauth_attempts_total{result="refused_email_in_use"}` after the upgrade. A burst for the
+   same `user_id` in the log means someone is trying a Google identity against a password
+   account.
 
 ---
 
