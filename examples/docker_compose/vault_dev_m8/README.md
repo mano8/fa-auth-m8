@@ -698,3 +698,30 @@ If vault restarted after vault_init completed, re-run: `docker compose start vau
 ---
 
 > [Docker Compose examples](../README.md) · [Repository root](https://github.com/mano8/fa-auth-m8/tree/main)
+
+<!-- env-files:start -->
+## Environment files
+
+Copy each template to the name after the arrow (`init.sh` does this where the stack has one), then replace every
+`changethis`. Every key is documented in its template; each secret carries a `# Value:` line with its minimum
+and maximum length and allowed characters. Real env files are gitignored and never committed.
+
+| Template → file | Read by | Must be set (placeholders) |
+| --- | --- | --- |
+| `.env.example` → `.env` | Compose itself (`${VAR}` interpolation) and the engine init scripts | `DB_PASSWORD`, `AUTH_DB_USER`, `AUTH_DB_PASSWORD`, `API_DB_USER`, `API_DB_PASSWORD`, `REDIS_PASSWORD`, `VAULT_DEV_TOKEN` |
+| `.env.prod_example` → `.env.prod` | nobody at runtime: reference for what CI/CD injects in production | `DB_PASSWORD`, `API_DB_PASSWORD`, `REDIS_PASSWORD` |
+| `api.env.example` → `api.env` | `fastapi_full` | `DB_USER`, `DB_PASSWORD`, `REFRESH_SECRET_KEY`, `PRIVATE_API_SECRET`, `EVENT_SIGNING_KEY` |
+| `auth.env.example` → `auth.env` | `auth_user_service` | `DB_USER`, `ACCESS_KEY_ID`, `REFRESH_SECRET_KEY`, `FIRST_SUPERUSER_PASSWORD`, `PRIVATE_API_SECRET`, `SESSION_SECRET`, `TOKENS_ENCRYPTION_KEY`, `EVENT_SIGNING_KEY` |
+| `auth.env.prod_example` → `auth.env.prod` | nobody at runtime: reference for what CI/CD injects in production | `REFRESH_SECRET_KEY`, `FIRST_SUPERUSER_PASSWORD`, `PRIVATE_API_SECRET`, `SESSION_SECRET`, `TOKENS_ENCRYPTION_KEY`, `EVENT_SIGNING_KEY` |
+| `grafana.env.example` → `grafana.env` | `grafana` | `GF_SECURITY_ADMIN_PASSWORD` |
+| `test.env.example` → `test.env` | the live security tests (`shared_live_tests`), not a container | `LIVE_TEST_ADMIN_EMAIL`, `LIVE_TEST_ADMIN_PASSWORD`, `LIVE_TEST_PRIVATE_API_SECRET`, `LIVE_TEST_REFRESH_SECRET_KEY` |
+
+Generate a value that satisfies every secret rule (48 chars: upper, lower, digit and `-`):
+
+```sh
+python -c "import secrets,string; a=string.ascii_letters+string.digits; print('Aa1-'+''.join(secrets.choice(a) for _ in range(44)))"
+```
+
+Values must avoid spaces, `$`, `#`, quotes and backslashes: Compose interpolates `$`, dotenv treats `#` as a
+comment, and several values are embedded in URLs, JSON or the Redis ACL.
+<!-- env-files:end -->

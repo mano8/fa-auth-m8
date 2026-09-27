@@ -176,7 +176,7 @@ Run through this checklist **before** bringing up the production overlay.
 
 - [ ] Replace every `changethis` in `.env`, `auth.env`, `api.env`, and all
   `*.production.example` copies with a strong random value
-  (`python -c "import secrets; print(secrets.token_urlsafe(64))"`).
+  (`python -c "import secrets,string; a=string.ascii_letters+string.digits; print('Aa1-'+''.join(secrets.choice(a) for _ in range(44)))"`).
 - [ ] Ensure `SESSION_SECRET` ≠ `TOKENS_ENCRYPTION_KEY` (key separation).
 - [ ] Ensure `HEALTH_DETAIL_CREDENTIAL` ≠ `PRIVATE_API_SECRET` and `METRICS_SCRAPE_CREDENTIAL` ≠ `PRIVATE_API_SECRET` (plan 9.3 no-reuse; the settings validator rejects violations at boot).
 - [ ] Set `EVENT_SIGNING_KEY` to the same non-placeholder value in `auth.env` and in every
@@ -527,7 +527,7 @@ Validation → Rollback**.
 `iat`/`exp` do not match expected issuance patterns; external vulnerability disclosure.
 
 **Containment.** Generate a new key immediately:
-- HS256: `python -c "import secrets; print(secrets.token_urlsafe(64))"`
+- HS256: `python -c "import secrets,string; a=string.ascii_letters+string.digits; print('Aa1-'+''.join(secrets.choice(a) for _ in range(44)))"`
 - RS256: `openssl genrsa -out private.pem 2048 && openssl rsa -in private.pem -pubout -out public.pem`
 
 Replace the value in `auth.env` (and update `ACCESS_PRIVATE_KEY_FILE` mounts for asymmetric
