@@ -1005,6 +1005,14 @@ docker compose exec auth python -m auth_user_service.scripts.google_identity_unb
 It logs the actor, the reason, the id and the number of blocks lifted, and is idempotent (a
 second run lifts `0`). The next Google sign-in of that identity provisions a new account.
 
+### Account-lifecycle contract
+
+Public signup, email verification, forgotten-password recovery, and confirmed email change are
+optional and off by default. Their frozen contract — capability document, routes, challenge
+tokens, error shapes, settings, and compatibility — is
+[`docs/account-lifecycle-contract.md`](docs/account-lifecycle-contract.md). None of these routes
+is served yet.
+
 ---
 
 ## API Key Authentication

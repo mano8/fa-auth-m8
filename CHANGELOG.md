@@ -187,6 +187,16 @@ new code runs, so it can be applied ahead of the rollout.
   that generates its own migrations needs one new revision for it.
 - `PATCH /profile/update/me/` request field `current_password` (optional,
   8–128 characters, never stored).
+- `docs/account-lifecycle-contract.md`: the frozen contract for the optional
+  account-lifecycle features (public signup, email verification, password
+  recovery, confirmed email change) — capability document, routes, challenge
+  tokens, error shapes, settings, and compatibility (`C1`). Its executable
+  half, `core/challenge_tokens.py` (mint, parse, and digest of the `m8vfy_` /
+  `m8rst_` / `m8eml_` challenge tokens) and `schemas/account_lifecycle.py`
+  (capability document, error codes), is not wired to any route yet: no
+  behavior change. Tests prove that no M8 JWT validator accepts a challenge
+  token and that the challenge parser accepts no JWT, API key, or other
+  purpose's token.
 
 ---
 
