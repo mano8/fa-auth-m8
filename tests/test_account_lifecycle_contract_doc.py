@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from auth_user_service.core.challenge_tokens import CHALLENGE_TTLS, ChallengePurpose
+from auth_user_service.core.config import Settings
 from auth_user_service.core.service_meta import CONTRACT_RANGE, CONTRACT_VERSION
 from auth_user_service.schemas.account_lifecycle import (
     CAPABILITIES_PATH,
@@ -82,3 +83,32 @@ def test_routes_and_error_codes_are_documented(doc: str) -> None:
         assert f"`GET {path}`" in doc or f"`POST {path}`" in doc
     for code in AccountErrorCode:
         assert f"| `{code.value}` |" in doc
+
+
+def _settings_table(doc: str) -> dict[str, str]:
+    """Map each §7 setting name to its documented default cell."""
+    section = doc.split("## 7.", 1)[1].split("Startup fails", 1)[0]
+    rows: dict[str, str] = {}
+    for line in section.splitlines():
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) < 2 or not cells[0].startswith("`"):
+            continue
+        for name in cells[0].replace("`", "").split(","):
+            rows[name.strip()] = cells[1].strip("`")
+    return rows
+
+
+def test_every_documented_setting_exists_with_its_default(doc: str) -> None:
+    rows = _settings_table(doc)
+    assert "PASSWORD_LOGIN_ENABLED" in rows and "SMTP_TIMEOUT_SECONDS" in rows
+    fields = Settings.model_fields
+    for name, default in rows.items():
+        assert name in fields, name
+        value = fields[name].get_default(call_default_factory=True)
+        if default in {"unset", "empty"}:
+            assert value in (None, "", []), name
+            continue
+        shown = getattr(value, "value", value)
+        if isinstance(shown, bool):
+            shown = str(shown).lower()
+        assert str(shown).removesuffix(".0") == default, name

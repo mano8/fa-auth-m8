@@ -197,6 +197,26 @@ new code runs, so it can be applied ahead of the rollout.
   behavior change. Tests prove that no M8 JWT validator accepts a challenge
   token and that the challenge parser accepts no JWT, API key, or other
   purpose's token.
+- Account-lifecycle and mail settings (`C2`, contract §7), all off by
+  default: `PASSWORD_LOGIN_ENABLED`, `GOOGLE_OAUTH_ENABLED` (tri-state; unset
+  keeps the `2.2.3` behavior), `PUBLIC_SIGNUP_ENABLED`,
+  `PUBLIC_SIGNUP_ALLOWED_EMAIL_DOMAINS`, `MAIL_ENABLED`,
+  `EMAIL_VERIFICATION_MODE`, `PASSWORD_RESET_ENABLED`, `PUBLIC_UI_URL`,
+  `SMTP_USER`, `SMTP_PASSWORD` (secret, `*_FILE`-sourceable), `SMTP_TLS_MODE`,
+  `SMTP_TIMEOUT_SECONDS`, the three challenge TTLs,
+  `UNVERIFIED_SIGNUP_EXPIRY_DAYS`, the per-recipient mail budget, and the
+  per-IP and per-email limits of the account routes. Startup fails on every
+  invalid combination, with a message that names settings only. The SDK
+  `SMTP_HOST`, `SMTP_PORT`, and `EMAILS_FROM_*` settings are reused, and
+  every compose `auth.env.example` lists the new keys, commented out.
+- `PASSWORD_LOGIN_ENABLED=false` makes `POST /login/access-token` answer
+  `404 feature_unavailable`, and `GOOGLE_OAUTH_ENABLED=false` does the same
+  for every `/google-api/` and `/google-auth/` route, before any work. With
+  the defaults nothing changes.
+- `security_preflight` also logs the active unverified password accounts
+  (all and superusers) and warns about any active superuser that no enabled
+  login method admits. Its exit code still reflects role/flag mismatches
+  only.
 
 ---
 

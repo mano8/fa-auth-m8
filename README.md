@@ -506,12 +506,47 @@ Or use `bash init.sh` in any asymmetric stack — it generates the correct key t
 | `FIRST_SUPERUSER_PASSWORD` | yes | Password of the bootstrap superuser — used only on first run |
 | `GOOGLE_CLIENT_ID` | no | Google OAuth2 client ID. Set it together with `GOOGLE_CLIENT_SECRET`, or neither — startup fails with only one. |
 | `GOOGLE_CLIENT_SECRET` | no | Google OAuth2 client secret. Set it together with `GOOGLE_CLIENT_ID`. |
+| `GOOGLE_OAUTH_ENABLED` | no | Google sign-in switch. Unset (default): on exactly when both credentials are set, as before. `true`: the credentials are required. `false`: every `/google-api/` and `/google-auth/` route answers `404 feature_unavailable`, even with credentials. |
 | `GOOGLE_OAUTH_REDIRECT_URI` | when Google is set | Fixed backend callback URI for native-app PKCE OAuth. Must match Google Console exactly: an absolute URL with a host and no fragment, and `https` unless `ENVIRONMENT=local`. **Required whenever the Google credentials are set** — startup fails without it. It is never derived from the request `Host`. |
 | `OAUTH_ALLOWED_REDIRECT_SCHEMES` | no | URI scheme(s) accepted as `redirect_target` at `/google-api/login-url/` (default `chrome-extension://`). Add `https://` only for trusted web clients; add `http://` only for local development. |
 | `OAUTH_ALLOWED_REDIRECT_PREFIXES` | no | Optional full-URI prefix allowlist. Required for `http://` and `https://` redirects to pin trusted callback origins; optional for native public-client schemes. Plain HTTP is limited to localhost and rejected in production/staging. |
 | `CORS_ALLOWED_ORIGIN_SCHEMES` | no | Scheme-level CORS origins for native-app `fetch()` calls (e.g. `chrome-extension://`). |
 | `PRIVATE_API_SECRET` | yes | Signs the short-TTL service tokens and gates the `/health` detail body + `/metrics`. **No longer a private-route gate** (the legacy shared `X-Internal-Token` path was retired in v1.0.0 — `PRIVATE_API_CONSUMERS` replaces it). |
 | `PRIVATE_API_CONSUMERS` | yes¹ | Per-consumer private-API credentials: JSON map of consumer id → `{secret, scopes}` (scopes: `introspection` / `api-key-introspection` / `event-stream` / `user-create`, deny-by-default; `secret` plaintext or hashed `sha256$<salt>$<digest>`). The **only** private-API auth model — each consumer presents `X-Internal-Client` + `X-Internal-Token` (or exchanges it for a service token). `api-key-introspection` is the dedicated §3.12 grant — it is never implied by `introspection`, and the consumer id it is granted to **is** the API-key audience, so see [Provisioning the `API_KEY_INTROSPECTION` scope](#provisioning-the-api_key_introspection-scope) before granting it. ¹Empty is allowed but then every `/private/*` call fails closed (`401`) and the service-token exchange is disabled (`404`). |
+
+### Account lifecycle and mail
+
+All optional and off by default; with the defaults the service behaves as `2.2.3`. The
+authority for these settings, their bounds, and the startup rules is §7 of
+[`docs/account-lifecycle-contract.md`](docs/account-lifecycle-contract.md). The SDK's
+`SMTP_HOST`, `SMTP_PORT`, `EMAILS_FROM_EMAIL`, and `EMAILS_FROM_NAME` are reused unchanged.
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `PASSWORD_LOGIN_ENABLED` | `true` | `false` makes `POST /login/access-token` answer `404 feature_unavailable`. Sessions already issued keep refreshing. |
+| `PUBLIC_SIGNUP_ENABLED` | `false` | Public self-registration. Requires password login. |
+| `PUBLIC_SIGNUP_ALLOWED_EMAIL_DOMAINS` | empty | Comma-separated domains public signup accepts (exact match); empty accepts any. Never published. |
+| `MAIL_ENABLED` | `false` | Account mail. Requires `SMTP_HOST`, `EMAILS_FROM_EMAIL`, `PUBLIC_UI_URL`, and a non-empty `ALLOWED_HOSTS`. |
+| `EMAIL_VERIFICATION_MODE` | `off` | `off`, `optional`, or `required`. `optional` and `required` need `MAIL_ENABLED=true`. |
+| `PASSWORD_RESET_ENABLED` | `false` | Forgotten-password recovery. Requires `MAIL_ENABLED=true` and password login. |
+| `PUBLIC_UI_URL` | empty | Base of every emailed link: absolute URL, no credentials, query, or fragment; `https` unless `ENVIRONMENT=local`. |
+| `SMTP_USER` / `SMTP_PASSWORD` | empty | Relay credentials, set together or not at all. `SMTP_PASSWORD` is a secret (`SMTP_PASSWORD_FILE` accepted). |
+| `SMTP_TLS_MODE` | `starttls` | `implicit`, `starttls` (a failed upgrade is fatal), or `none` (`ENVIRONMENT=local` only). Certificates are always verified. |
+| `SMTP_TIMEOUT_SECONDS` | `10` | Connect and per-command timeout, at most 60. |
+| `EMAIL_VERIFICATION_TTL_MINUTES` | `1440` | 15 – 1440. |
+| `PASSWORD_RESET_TTL_MINUTES` | `30` | 5 – 30. |
+| `EMAIL_CHANGE_TTL_MINUTES` | `60` | 10 – 60. |
+| `UNVERIFIED_SIGNUP_EXPIRY_DAYS` | `7` | 1 – 30. |
+| `MAIL_RECIPIENT_COOLDOWN_SECONDS` / `MAIL_RECIPIENT_DAILY_CAP` | `60` / `10` | Silent per-recipient mail budget. |
+| `ACCOUNT_ACTION_RATE_LIMIT_WINDOW_MINUTES` | `15` | Window of the per-IP and per-email limits of the account routes. |
+| `ACCOUNT_ACTION_IP_RATE_LIMIT_REQUESTS` / `ACCOUNT_ACTION_EMAIL_RATE_LIMIT_REQUESTS` | `20` / `5` | Per-IP and per-email limits; exceeding one answers `429 rate_limited`. |
+
+Startup fails, naming the settings but never a value, when no login method is enabled or any
+of the rules above is broken. Before turning on `EMAIL_VERIFICATION_MODE=required` or turning a
+login method off, run `python -m auth_user_service.scripts.security_preflight`. It logs how many
+active password accounts are still unverified (every existing account starts unverified) and
+warns about any active superuser that no enabled login method admits. These warnings never
+change its exit code.
 
 ### Event Signing
 
@@ -1010,8 +1045,9 @@ second run lifts `0`). The next Google sign-in of that identity provisions a new
 Public signup, email verification, forgotten-password recovery, and confirmed email change are
 optional and off by default. Their frozen contract — capability document, routes, challenge
 tokens, error shapes, settings, and compatibility — is
-[`docs/account-lifecycle-contract.md`](docs/account-lifecycle-contract.md). None of these routes
-is served yet.
+[`docs/account-lifecycle-contract.md`](docs/account-lifecycle-contract.md). Their settings exist
+(see [Account lifecycle and mail](#account-lifecycle-and-mail)), but none of these routes is
+served yet.
 
 ---
 

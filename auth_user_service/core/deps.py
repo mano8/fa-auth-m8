@@ -41,6 +41,7 @@ from auth_sdk_m8.security.guards import INTERNAL_TOKEN_HEADER, extract_bearer_to
 from auth_user_service.core.client import RedisSessionManager
 from auth_user_service.core.config import settings
 from auth_user_service.core.consumer_registry import get_consumer_registry
+from auth_user_service.schemas.account_lifecycle import AccountErrorCode
 from auth_user_service.services.service_token import (
     ServiceTokenError,
     decode_service_token,
@@ -64,6 +65,26 @@ google_oauth2 = OAuth2PasswordBearer(
 )
 TokenDep = Annotated[str, Depends(reusable_oauth2)]
 GoogleTokenDep = Annotated[str, Depends(google_oauth2)]
+
+
+def _feature_unavailable() -> HTTPException:
+    """The contract §6 answer of a route whose feature is disabled."""
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=AccountErrorCode.FEATURE_UNAVAILABLE.value,
+    )
+
+
+def require_password_login() -> None:
+    """Refuse password sign-in before any work when it is disabled."""
+    if not settings.PASSWORD_LOGIN_ENABLED:
+        raise _feature_unavailable()
+
+
+def require_google_login() -> None:
+    """Refuse every Google sign-in step before any work when it is disabled."""
+    if not settings.google_login_enabled:
+        raise _feature_unavailable()
 
 
 class _LoggingHooks:

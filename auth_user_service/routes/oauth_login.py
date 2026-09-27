@@ -14,7 +14,7 @@ import re
 import uuid as _uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from urllib.parse import urlparse
 
@@ -24,13 +24,17 @@ from auth_user_service.core.client import (
     OAuthSessionStore,
 )
 from auth_user_service.core.config import settings
-from auth_user_service.core.deps import get_redis_client
+from auth_user_service.core.deps import get_redis_client, require_google_login
 from auth_user_service.services.auth import AuthController
 from auth_sdk_m8.observability.metrics import get as _get_metrics
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/google-api", tags=["google-api"])
+router = APIRouter(
+    prefix="/google-api",
+    tags=["google-api"],
+    dependencies=[Depends(require_google_login)],
+)
 
 # RFC 7636 §4.1 code_challenge (S256, base64url, 43-128 chars).
 _CHALLENGE_RE = re.compile(r"[A-Za-z0-9\-_]{43,128}")

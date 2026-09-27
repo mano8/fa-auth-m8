@@ -22,22 +22,29 @@ singleton ``security_policy`` set-mutation lock (3.5.3) that guards removals;
 it takes only the target row's own lock to serialize concurrent repairs of
 that one id. API-key authorization needs no separate revocation step because
 it is evaluated live against the owner's current row (3.11).
+
+The preflight also reports the account-lifecycle rollout risks: how many active
+password accounts are unverified (all of them start that way, N11) and which
+active superusers no configured login method admits. Both are informational
+and never affect :attr:`SecurityPreflightReport.clean`.
 """
 
 import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Tuple
+from typing import Optional, Tuple
 
 from sqlmodel import Session, col, func, select, update
 
-from auth_sdk_m8.schemas.base import RoleType
+from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 
+from auth_user_service.core.config import settings
 from auth_user_service.db_models.sessions import ClientSession
 from auth_user_service.db_models.users import User
 from auth_user_service.services.client_sessions import SessionController
 from auth_user_service.services.generation import next_generation
+from auth_user_service.schemas.account_lifecycle import EmailVerificationMode
 from auth_user_service.services.outbox import OutboxController
 from auth_user_service.services.users import _derive_is_superuser
 
@@ -57,6 +64,14 @@ class SecurityPreflightReport:
     superadmin_not_flagged_ids: Tuple[uuid.UUID, ...]
     active_canonical_superuser_count: int
     inconsistent_ids_with_active_sessions: Tuple[uuid.UUID, ...]
+    # Account-lifecycle rollout (N11): active password-provider accounts that
+    # ``EMAIL_VERIFICATION_MODE=required`` would block, all and superusers only.
+    unverified_active_count: int = 0
+    unverified_active_superuser_count: int = 0
+    # Active canonical superusers with no sign-in path under the configured
+    # login methods. Informational: it never changes :attr:`clean`, which
+    # gates the Enforce migration only.
+    superuser_lockout_ids: Tuple[uuid.UUID, ...] = ()
 
     @property
     def flagged_not_superadmin_count(self) -> int:
@@ -76,17 +91,47 @@ class SecurityPreflightReport:
         )
 
 
+@dataclass(frozen=True)
+class LoginMethods:
+    """The sign-in paths a deployment offers, as the preflight judges them."""
+
+    password: bool
+    google: bool
+    verification_required: bool
+
+    @classmethod
+    def from_settings(cls) -> "LoginMethods":
+        """Read the configured login methods and verification mode."""
+        return cls(
+            password=settings.PASSWORD_LOGIN_ENABLED,
+            google=settings.google_login_enabled,
+            verification_required=(
+                settings.EMAIL_VERIFICATION_MODE == EmailVerificationMode.REQUIRED
+            ),
+        )
+
+    def allows(self, provider: AuthProviderType, email_verified: bool) -> bool:
+        """Whether an active account of *provider* can sign in at all."""
+        if provider == AuthProviderType.GOOGLE:
+            return self.google
+        return self.password and (email_verified or not self.verification_required)
+
+
 class SecurityPreflightController:
     """Raw-column read-only mismatch/last-superuser preflight (4.1)."""
 
     @staticmethod
-    def run(session: Session) -> SecurityPreflightReport:
+    def run(
+        session: Session, *, login_methods: Optional[LoginMethods] = None
+    ) -> SecurityPreflightReport:
         """Scan existing rows and report mismatches; performs no writes.
 
         Every ``User``-touching query selects individual scalar columns (never
         ``select(User)`` or ``User.model_validate``), so a row this preflight
         exists to find can never itself raise while being found.
+        *login_methods* defaults to the configured ones.
         """
+        methods = login_methods or LoginMethods.from_settings()
         flagged_not_superadmin = tuple(
             session.exec(
                 select(User.id).where(
@@ -116,11 +161,55 @@ class SecurityPreflightController:
         with_active_sessions = SecurityPreflightController._ids_with_active_sessions(
             session, inconsistent_ids
         )
+        unverified_all, unverified_superusers = (
+            SecurityPreflightController._unverified_counts(session)
+        )
         return SecurityPreflightReport(
             flagged_not_superadmin_ids=flagged_not_superadmin,
             superadmin_not_flagged_ids=superadmin_not_flagged,
             active_canonical_superuser_count=active_superuser_count,
             inconsistent_ids_with_active_sessions=with_active_sessions,
+            unverified_active_count=unverified_all,
+            unverified_active_superuser_count=unverified_superusers,
+            superuser_lockout_ids=SecurityPreflightController._superuser_lockouts(
+                session, methods
+            ),
+        )
+
+    @staticmethod
+    def _unverified_counts(session: Session) -> Tuple[int, int]:
+        """Count active unverified password accounts, all and superusers (N11)."""
+        base = (
+            select(func.count())  # pylint: disable=not-callable
+            .select_from(User)
+            .where(
+                col(User.provider) == AuthProviderType.PASSWORD,
+                col(User.is_active) == True,  # noqa: E712
+                col(User.email_verified) == False,  # noqa: E712
+            )
+        )
+        total = session.exec(base).one()
+        superusers = session.exec(
+            base.where(col(User.is_superuser) == True)  # noqa: E712
+        ).one()
+        return total, superusers
+
+    @staticmethod
+    def _superuser_lockouts(
+        session: Session, methods: LoginMethods
+    ) -> Tuple[uuid.UUID, ...]:
+        """Active canonical superusers that no enabled login method admits."""
+        rows = session.exec(
+            select(User.id, User.provider, User.email_verified).where(
+                col(User.role) == RoleType.SUPERADMIN,
+                col(User.is_superuser) == True,  # noqa: E712
+                col(User.is_active) == True,  # noqa: E712
+            )
+        ).all()
+        return tuple(
+            user_id
+            for user_id, provider, email_verified in rows
+            if not methods.allows(provider, email_verified)
         )
 
     @staticmethod

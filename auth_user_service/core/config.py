@@ -4,8 +4,10 @@ This module loads environment settings securely and applies best practices.
 """
 
 import logging
+import re
+from datetime import timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Literal, Optional
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -18,15 +20,40 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_settings import SettingsConfigDict
+from pydantic_settings import NoDecode, SettingsConfigDict
 from auth_sdk_m8.utils.paths import find_dotenv
 from auth_sdk_m8.core.config import CommonSettings
 from auth_sdk_m8.observability.settings import ObservabilitySettingsMixin
 from auth_sdk_m8.schemas.auth import ASYMMETRIC_ALGORITHMS
+from auth_sdk_m8.schemas.base import AuthProviderType
+from auth_user_service.core.challenge_tokens import CHALLENGE_TTLS, ChallengePurpose
 from auth_user_service.core.key_ids import derive_kid, public_key_kind
+from auth_user_service.schemas.account_lifecycle import EmailVerificationMode
 # pylint: disable=invalid-name, import-outside-toplevel
 
 _logger = logging.getLogger(__name__)
+
+#: One DNS name for the public-signup allowlist: lowercase labels of letters,
+#: digits and inner hyphens, at least two labels, no wildcard or ``@``.
+_EMAIL_DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$"
+)
+
+
+def _ttl_minutes(purpose: ChallengePurpose) -> tuple[int, int, int]:
+    """Return a challenge TTL's (default, minimum, maximum) in whole minutes.
+
+    The bounds are owned by ``core.challenge_tokens.CHALLENGE_TTLS`` (contract
+    §4); the settings only expose them, so the two cannot drift.
+    """
+    ttl = CHALLENGE_TTLS[purpose]
+    minute = timedelta(minutes=1)
+    return ttl.default // minute, ttl.minimum // minute, ttl.maximum // minute
+
+
+_VERIFY_TTL = _ttl_minutes(ChallengePurpose.EMAIL_VERIFICATION)
+_RESET_TTL = _ttl_minutes(ChallengePurpose.PASSWORD_RESET)
+_EMAIL_CHANGE_TTL = _ttl_minutes(ChallengePurpose.EMAIL_CHANGE)
 
 
 class ConsumerCredentialConfig(BaseModel):
@@ -93,6 +120,11 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
         # of the debug dump. The strength/changethis validators skip it safely
         # (it is a mapping, not a SecretStr).
         "PRIVATE_API_CONSUMERS",
+        # SMTP credentials: out of the debug dump and never "changethis". The
+        # password is a third-party credential, so it is deliberately not in
+        # ``passwords``/``secret_keys``: this service does not own its format.
+        "SMTP_USER",
+        "SMTP_PASSWORD",
     ]
     passwords = CommonSettings.passwords + ["FIRST_SUPERUSER_PASSWORD"]
     secret_keys = CommonSettings.secret_keys + [
@@ -312,6 +344,220 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
                 "GOOGLE_OAUTH_REDIRECT_URI must use https unless ENVIRONMENT=local"
             )
         return self
+
+    # ── Account lifecycle and mail (contract §7) ────────────────────────────
+    # Every feature is off by default, and the service then behaves as 2.2.3.
+    # The SDK's SMTP_HOST, SMTP_PORT, EMAILS_FROM_EMAIL and EMAILS_FROM_NAME are
+    # reused unchanged; everything below is owned by this service, never by the
+    # SDK CommonSettings that every consumer inherits. The implications between
+    # them are enforced at startup by _validate_account_lifecycle.
+    PASSWORD_LOGIN_ENABLED: bool = True
+    # Tri-state. Unset: Google is on exactly when its credentials are set (the
+    # 2.2.3 behavior). true: the credentials are required. false: Google is off
+    # even with credentials.
+    GOOGLE_OAUTH_ENABLED: Optional[bool] = None
+    PUBLIC_SIGNUP_ENABLED: bool = False
+    # Optional allowlist of email domains public signup accepts (comma-separated,
+    # exact domain match, empty = any). Never published.
+    PUBLIC_SIGNUP_ALLOWED_EMAIL_DOMAINS: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    MAIL_ENABLED: bool = False
+    EMAIL_VERIFICATION_MODE: EmailVerificationMode = EmailVerificationMode.OFF
+    PASSWORD_RESET_ENABLED: bool = False
+    # Base of every emailed link (scheme://host[:port][/path]). Links never come
+    # from the request Host.
+    PUBLIC_UI_URL: str = ""
+
+    SMTP_USER: Optional[str] = Field(default=None, max_length=254)
+    SMTP_PASSWORD: Optional[SecretStr] = None
+    # implicit: TLS from the first byte (port 465). starttls: upgrade, and a
+    # failed upgrade is fatal, never a plaintext fallback. none: plaintext, only
+    # under ENVIRONMENT=local. Certificates and hostnames are always verified;
+    # there is deliberately no setting that turns verification off.
+    SMTP_TLS_MODE: Literal["implicit", "starttls", "none"] = "starttls"
+    # Bound on connecting to the SMTP server and on each command of a send.
+    SMTP_TIMEOUT_SECONDS: float = Field(10.0, gt=0, le=60)
+
+    EMAIL_VERIFICATION_TTL_MINUTES: int = Field(
+        _VERIFY_TTL[0], ge=_VERIFY_TTL[1], le=_VERIFY_TTL[2]
+    )
+    PASSWORD_RESET_TTL_MINUTES: int = Field(
+        _RESET_TTL[0], ge=_RESET_TTL[1], le=_RESET_TTL[2]
+    )
+    EMAIL_CHANGE_TTL_MINUTES: int = Field(
+        _EMAIL_CHANGE_TTL[0], ge=_EMAIL_CHANGE_TTL[1], le=_EMAIL_CHANGE_TTL[2]
+    )
+    UNVERIFIED_SIGNUP_EXPIRY_DAYS: int = Field(7, ge=1, le=30)
+
+    # Per-recipient mail budget: silent (the request still answers 202) so it
+    # cannot be used to probe accounts. Keyed by the normalized address.
+    MAIL_RECIPIENT_COOLDOWN_SECONDS: int = Field(60, ge=10, le=3600)
+    MAIL_RECIPIENT_DAILY_CAP: int = Field(10, ge=1, le=100)
+    # Per-IP and per-account (normalized email) limits of the unauthenticated
+    # account routes; exceeding either answers 429 rate_limited.
+    ACCOUNT_ACTION_RATE_LIMIT_WINDOW_MINUTES: int = Field(15, ge=1, le=1440)
+    ACCOUNT_ACTION_IP_RATE_LIMIT_REQUESTS: int = Field(20, ge=1, le=100000)
+    ACCOUNT_ACTION_EMAIL_RATE_LIMIT_REQUESTS: int = Field(5, ge=1, le=1000)
+
+    @field_validator("PUBLIC_SIGNUP_ALLOWED_EMAIL_DOMAINS", mode="before")
+    @classmethod
+    def _parse_signup_domains(cls, v: object) -> list[str]:
+        """Parse the comma-separated allowlist into unique lowercase domains."""
+        if v is None:
+            return []
+        items = v.split(",") if isinstance(v, str) else list(v)  # type: ignore[call-overload]
+        domains: list[str] = []
+        for item in items:
+            domain = str(item).strip().lower()
+            if not domain:
+                continue
+            if not _EMAIL_DOMAIN_RE.fullmatch(domain):
+                raise ValueError(
+                    "PUBLIC_SIGNUP_ALLOWED_EMAIL_DOMAINS entries must be plain "
+                    "domain names such as example.com (no @, wildcard, or port)"
+                )
+            if domain not in domains:
+                domains.append(domain)
+        return domains
+
+    @field_validator("PUBLIC_UI_URL")
+    @classmethod
+    def _validate_public_ui_url(cls, v: str) -> str:
+        """Require an absolute http(s) base URL with nothing a link could abuse.
+
+        The trailing slash is dropped so link builders can append a path. The
+        https requirement depends on MAIL_ENABLED and ENVIRONMENT, so it is
+        checked in :meth:`_validate_account_lifecycle`.
+        """
+        v = v.strip()
+        if not v:
+            return v
+        parsed = urlsplit(v)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError(
+                "PUBLIC_UI_URL must be an absolute http(s) URL with a host"
+            )
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("PUBLIC_UI_URL must not contain credentials")
+        if parsed.query or parsed.fragment or "?" in v or "#" in v:
+            raise ValueError("PUBLIC_UI_URL must not contain a query or fragment")
+        return v.rstrip("/")
+
+    @field_validator("SMTP_USER")
+    @classmethod
+    def _validate_smtp_user(cls, v: Optional[str]) -> Optional[str]:
+        """Reject control characters, which could inject SMTP commands."""
+        if v is not None and any(ord(ch) < 32 or ord(ch) == 127 for ch in v):
+            raise ValueError("SMTP_USER must not contain control characters")
+        return v
+
+    @property
+    def google_login_enabled(self) -> bool:
+        """Whether Google sign-in is on, resolving the tri-state flag."""
+        if self.GOOGLE_OAUTH_ENABLED is not None:
+            return self.GOOGLE_OAUTH_ENABLED
+        return (
+            self.GOOGLE_CLIENT_ID is not None and self.GOOGLE_CLIENT_SECRET is not None
+        )
+
+    @property
+    def login_providers(self) -> tuple[AuthProviderType, ...]:
+        """The enabled sign-in methods, in capability-document order."""
+        providers: list[AuthProviderType] = []
+        if self.PASSWORD_LOGIN_ENABLED:
+            providers.append(AuthProviderType.PASSWORD)
+        if self.google_login_enabled:
+            providers.append(AuthProviderType.GOOGLE)
+        return tuple(providers)
+
+    @model_validator(mode="after")
+    def _validate_account_lifecycle(self) -> "Settings":
+        """Fail startup on any invalid account-lifecycle implication (contract §7).
+
+        Every message names settings only, never a value, so no secret can
+        leak through a startup failure.
+        """
+        self._check_login_methods()
+        self._check_feature_dependencies()
+        self._check_smtp()
+        if self.MAIL_ENABLED:
+            self._check_mail_configuration()
+        return self
+
+    def _check_login_methods(self) -> None:
+        """Google's explicit flag needs credentials; some login must remain."""
+        if self.GOOGLE_OAUTH_ENABLED and (
+            self.GOOGLE_CLIENT_ID is None or self.GOOGLE_CLIENT_SECRET is None
+        ):
+            raise ValueError(
+                "GOOGLE_OAUTH_ENABLED=true requires GOOGLE_CLIENT_ID and "
+                "GOOGLE_CLIENT_SECRET"
+            )
+        if not self.login_providers:
+            raise ValueError(
+                "No login method is enabled: set PASSWORD_LOGIN_ENABLED=true or "
+                "enable Google sign-in"
+            )
+
+    def _check_feature_dependencies(self) -> None:
+        """Each account feature needs the features it is built on."""
+        if self.PUBLIC_SIGNUP_ENABLED and not self.PASSWORD_LOGIN_ENABLED:
+            raise ValueError(
+                "PUBLIC_SIGNUP_ENABLED=true requires PASSWORD_LOGIN_ENABLED=true"
+            )
+        if self.PASSWORD_RESET_ENABLED and not self.PASSWORD_LOGIN_ENABLED:
+            raise ValueError(
+                "PASSWORD_RESET_ENABLED=true requires PASSWORD_LOGIN_ENABLED=true"
+            )
+        if self.EMAIL_VERIFICATION_MODE != EmailVerificationMode.OFF and (
+            not self.MAIL_ENABLED
+        ):
+            raise ValueError(
+                f"EMAIL_VERIFICATION_MODE={self.EMAIL_VERIFICATION_MODE.value} "
+                "requires MAIL_ENABLED=true"
+            )
+        if self.PASSWORD_RESET_ENABLED and not self.MAIL_ENABLED:
+            raise ValueError("PASSWORD_RESET_ENABLED=true requires MAIL_ENABLED=true")
+
+    def _check_smtp(self) -> None:
+        """Plaintext SMTP is local-only; credentials come as a pair."""
+        if self.SMTP_TLS_MODE == "none" and self.ENVIRONMENT != "local":
+            raise ValueError(
+                "SMTP_TLS_MODE=none is allowed only with ENVIRONMENT=local"
+            )
+        if (self.SMTP_USER is None) != (self.SMTP_PASSWORD is None):
+            raise ValueError(
+                "SMTP_USER and SMTP_PASSWORD must be set together: both for an "
+                "authenticated relay, neither for an unauthenticated one"
+            )
+
+    def _check_mail_configuration(self) -> None:
+        """Mail needs a sender, an HTTPS link base, and a pinned Host (N15)."""
+        missing = [
+            name
+            for name, value in (
+                ("SMTP_HOST", self.SMTP_HOST),
+                ("EMAILS_FROM_EMAIL", self.EMAILS_FROM_EMAIL),
+                ("PUBLIC_UI_URL", self.PUBLIC_UI_URL),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"MAIL_ENABLED=true requires {', '.join(missing)}")
+        if (
+            urlsplit(self.PUBLIC_UI_URL).scheme != "https"
+            and self.ENVIRONMENT != "local"
+        ):
+            raise ValueError(
+                "PUBLIC_UI_URL must use https when MAIL_ENABLED=true, unless "
+                "ENVIRONMENT=local"
+            )
+        if not self.ALLOWED_HOSTS:
+            raise ValueError(
+                "MAIL_ENABLED=true requires a non-empty ALLOWED_HOSTS: account "
+                "mail must never be reachable through an unchecked Host header"
+            )
 
     # API key rate limiting defaults (0 = disabled for that period)
     # API_KEY_STRICT_RATE_LIMIT is an explicit opt-in, but production/strict

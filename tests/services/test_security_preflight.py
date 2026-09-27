@@ -16,11 +16,14 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import text
 
-from auth_sdk_m8.schemas.base import AuthProviderType
+from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 
+from auth_user_service.core.config import settings
 from auth_user_service.db_models.sessions import ClientSession
 from auth_user_service.db_models.users import User
+from auth_user_service.schemas.account_lifecycle import EmailVerificationMode
 from auth_user_service.services.security_preflight import (
+    LoginMethods,
     SecurityPreflightController,
     SecurityPreflightReport,
 )
@@ -202,3 +205,133 @@ class TestSecurityPreflightReport:
         )
         assert dirty.clean is False
         assert dirty.flagged_not_superadmin_count == 1
+
+
+# ── account-lifecycle rollout report (C2, N11) ───────────────────────────────
+
+_PASSWORD_ONLY = LoginMethods(password=True, google=False, verification_required=False)
+
+
+def _add_user(
+    session,
+    *,
+    provider: AuthProviderType = AuthProviderType.PASSWORD,
+    superuser: bool = False,
+    verified: bool = False,
+    active: bool = True,
+) -> uuid.UUID:
+    is_google = provider == AuthProviderType.GOOGLE
+    user = User(
+        id=uuid.uuid4(),
+        email=f"rollout_{uuid.uuid4().hex[:8]}@example.com",
+        hashed_password=None if is_google else "not-a-real-hash",
+        oauth_user_id=f"sub-{uuid.uuid4().hex}" if is_google else None,
+        provider=provider,
+        is_active=active,
+        email_verified=verified,
+        is_superuser=superuser,
+        role=RoleType.SUPERADMIN if superuser else RoleType.USER,
+    )
+    session.add(user)
+    session.commit()
+    return user.id
+
+
+class TestAccountLifecycleRollout:
+    def test_counts_active_unverified_password_accounts(self, db_session):
+        before = SecurityPreflightController.run(
+            db_session, login_methods=_PASSWORD_ONLY
+        )
+        _add_user(db_session)
+        _add_user(db_session, superuser=True)
+        # Not counted: verified, inactive, or Google (verified by Google).
+        _add_user(db_session, verified=True)
+        _add_user(db_session, active=False)
+        _add_user(db_session, provider=AuthProviderType.GOOGLE)
+        after = SecurityPreflightController.run(
+            db_session, login_methods=_PASSWORD_ONLY
+        )
+        assert after.unverified_active_count == before.unverified_active_count + 2
+        assert (
+            after.unverified_active_superuser_count
+            == before.unverified_active_superuser_count + 1
+        )
+
+    def test_password_superuser_is_locked_out_without_password_login(self, db_session):
+        su = _add_user(db_session, superuser=True, verified=True)
+        google_only = LoginMethods(
+            password=False, google=True, verification_required=False
+        )
+        report = SecurityPreflightController.run(db_session, login_methods=google_only)
+        assert su in report.superuser_lockout_ids
+
+    def test_unverified_superuser_is_locked_out_under_required(self, db_session):
+        unverified = _add_user(db_session, superuser=True)
+        verified = _add_user(db_session, superuser=True, verified=True)
+        required = LoginMethods(password=True, google=False, verification_required=True)
+        report = SecurityPreflightController.run(db_session, login_methods=required)
+        assert unverified in report.superuser_lockout_ids
+        assert verified not in report.superuser_lockout_ids
+
+    def test_google_superuser_is_locked_out_without_google(self, db_session):
+        su = _add_user(db_session, provider=AuthProviderType.GOOGLE, superuser=True)
+        report = SecurityPreflightController.run(
+            db_session, login_methods=_PASSWORD_ONLY
+        )
+        assert su in report.superuser_lockout_ids
+        with_google = LoginMethods(
+            password=True, google=True, verification_required=True
+        )
+        report = SecurityPreflightController.run(db_session, login_methods=with_google)
+        assert su not in report.superuser_lockout_ids
+
+    def test_inactive_and_plain_users_are_never_lockouts(self, db_session):
+        inactive = _add_user(db_session, superuser=True, active=False)
+        plain = _add_user(db_session)
+        nothing = LoginMethods(password=False, google=False, verification_required=True)
+        report = SecurityPreflightController.run(db_session, login_methods=nothing)
+        assert inactive not in report.superuser_lockout_ids
+        assert plain not in report.superuser_lockout_ids
+
+    def test_lockouts_never_change_clean(self, db_session):
+        _add_user(db_session, superuser=True, verified=True)
+        nothing = LoginMethods(password=False, google=False, verification_required=True)
+        report = SecurityPreflightController.run(db_session, login_methods=nothing)
+        assert report.superuser_lockout_ids
+        assert report.clean is (
+            not report.flagged_not_superadmin_ids
+            and not report.superadmin_not_flagged_ids
+        )
+
+    def test_defaults_to_the_configured_login_methods(self, db_session, monkeypatch):
+        su = _add_user(db_session, superuser=True)
+        monkeypatch.setattr(
+            settings, "EMAIL_VERIFICATION_MODE", EmailVerificationMode.REQUIRED
+        )
+        assert su in SecurityPreflightController.run(db_session).superuser_lockout_ids
+        monkeypatch.setattr(
+            settings, "EMAIL_VERIFICATION_MODE", EmailVerificationMode.OFF
+        )
+        report = SecurityPreflightController.run(db_session)
+        assert su not in report.superuser_lockout_ids
+
+    def test_login_methods_from_settings(self, monkeypatch):
+        monkeypatch.setattr(settings, "PASSWORD_LOGIN_ENABLED", False)
+        monkeypatch.setattr(settings, "GOOGLE_OAUTH_ENABLED", True)
+        monkeypatch.setattr(
+            settings, "EMAIL_VERIFICATION_MODE", EmailVerificationMode.OPTIONAL
+        )
+        assert LoginMethods.from_settings() == LoginMethods(
+            password=False, google=True, verification_required=False
+        )
+
+    def test_new_fields_default_so_existing_reports_stay_valid(self):
+        report = SecurityPreflightReport(
+            flagged_not_superadmin_ids=(),
+            superadmin_not_flagged_ids=(),
+            active_canonical_superuser_count=1,
+            inconsistent_ids_with_active_sessions=(),
+        )
+        assert report.unverified_active_count == 0
+        assert report.unverified_active_superuser_count == 0
+        assert report.superuser_lockout_ids == ()

@@ -35,6 +35,7 @@ from auth_user_service.core.deps import (
     SessionDep,
     TokenDep,
     _access_validator,
+    require_password_login,
 )
 from auth_user_service.core.security import SecurityHelper
 from auth_user_service.db_models.users import UserPublic
@@ -220,7 +221,11 @@ def _check_refresh_allowlist(
         raise HTTPException(status_code=401, detail="Token revoked or reused")
 
 
-@router.post("/access-token", response_model=Token)
+@router.post(
+    "/access-token",
+    response_model=Token,
+    dependencies=[Depends(require_password_login)],
+)
 def login_access_token(
     request: Request,
     response: Response,

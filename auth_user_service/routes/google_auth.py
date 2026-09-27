@@ -5,7 +5,7 @@ import logging
 import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from httpx import HTTPError as HTTPXError
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import SecretStr
 
@@ -24,7 +24,7 @@ from auth_user_service.core.client import (
     OAuthSessionStore,
     RedisRefreshStore,
 )
-from auth_user_service.core.deps import get_redis_client
+from auth_user_service.core.deps import get_redis_client, require_google_login
 from auth_user_service.core.config import settings
 from auth_sdk_m8.observability.metrics import get as _get_metrics
 
@@ -32,7 +32,11 @@ from auth_sdk_m8.schemas.auth import ExternalTokensData
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/google-auth", tags=["google-auth"])
+router = APIRouter(
+    prefix="/google-auth",
+    tags=["google-auth"],
+    dependencies=[Depends(require_google_login)],
+)
 
 _SECURE_COOKIE = settings.ENVIRONMENT != "local"
 _REFRESH_TTL_SECONDS = settings.REFRESH_TOKEN_EXPIRE_MINUTES * 60

@@ -95,3 +95,33 @@ class TestLogReport:
         combined = "\n".join(r.getMessage() for r in caplog.records).lower()
         for forbidden in ("@", "email", "jwt", "token", "password", "jti"):
             assert forbidden not in combined
+
+
+class TestAccountLifecycleRolloutLog:
+    def test_logs_rollout_counts(self, caplog):
+        report = _report(unverified_active_count=3, unverified_active_superuser_count=1)
+        with caplog.at_level("INFO", logger=cli.logger.name):
+            cli._log_report(report)
+        messages = "\n".join(r.getMessage() for r in caplog.records)
+        assert "unverified_active_count=3" in messages
+        assert "unverified_active_superuser_count=1" in messages
+        assert "superuser_lockout_count=0" in messages
+        assert not any(r.levelname == "WARNING" for r in caplog.records)
+
+    def test_warns_on_superuser_lockout_without_sensitive_fields(self, caplog):
+        locked = uuid.uuid4()
+        with caplog.at_level("INFO", logger=cli.logger.name):
+            cli._log_report(_report(superuser_lockout_ids=(locked,)))
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("superuser_lockout" in m and str(locked) in m for m in warnings)
+        combined = "\n".join(r.getMessage() for r in caplog.records).lower()
+        for forbidden in ("@", "email", "jwt", "token", "password", "jti"):
+            assert forbidden not in combined
+
+    def test_lockout_alone_does_not_change_the_exit_code(self):
+        report = _report(superuser_lockout_ids=(uuid.uuid4(),))
+        with (
+            patch.object(cli, "Session", return_value=MagicMock()),
+            patch.object(cli.SecurityPreflightController, "run", return_value=report),
+        ):
+            assert cli.main([]) == 0

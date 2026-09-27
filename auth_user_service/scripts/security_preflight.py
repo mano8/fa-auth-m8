@@ -14,6 +14,11 @@ Run::
 Exit codes: ``0`` when no mismatch exists, ``1`` when any mismatch is found
 (the operator must then run the audited repair command or reset disposable
 development data before the Enforce migration may proceed, 4.1).
+
+It also logs the account-lifecycle rollout risks under the configured login
+settings: unverified active accounts and superusers (read before
+``EMAIL_VERIFICATION_MODE=required``) and any active superuser no enabled login
+method admits. These are warnings only and never change the exit code.
 """
 
 from __future__ import annotations
@@ -45,6 +50,18 @@ def _log_report(report: SecurityPreflightReport) -> None:
         len(report.inconsistent_ids_with_active_sessions),
         report.clean,
     )
+    logger.info(
+        "security.preflight unverified_active_count=%d "
+        "unverified_active_superuser_count=%d superuser_lockout_count=%d",
+        report.unverified_active_count,
+        report.unverified_active_superuser_count,
+        len(report.superuser_lockout_ids),
+    )
+    if report.superuser_lockout_ids:
+        logger.warning(
+            "security.preflight superuser_lockout ids=%s",
+            [str(uid) for uid in report.superuser_lockout_ids],
+        )
     if report.flagged_not_superadmin_ids:
         logger.warning(
             "security.preflight mismatch=flagged_not_superadmin ids=%s",

@@ -1,6 +1,7 @@
 # Account-lifecycle contract
 
-Status: **frozen** (C1, 2026-09-27). Capability document version `1.0`.
+Status: **frozen** (C1, 2026-09-27; §7 amended by C2, 2026-09-27). Capability
+document version `1.0`.
 
 This document is the authority for the optional account-lifecycle features of
 `fa-auth-m8`: public signup, email verification, forgotten-password recovery,
@@ -8,14 +9,17 @@ and confirmed email change. It fixes what later implementation must follow;
 changing a frozen rule needs an explicit amendment here, in the same change as
 the code.
 
-Nothing in this contract is implemented as a route yet. The code that already
-exists is the part a later item builds on:
+No account route is implemented yet. The code that already exists is the part
+a later item builds on:
 
 | Piece | Code |
 | --- | --- |
 | Challenge-token mint, parse, digest, TTLs | `auth_user_service/core/challenge_tokens.py` |
 | Capability document, error codes, action response | `auth_user_service/schemas/account_lifecycle.py` |
 | Cross-family rejection proofs | `tests/security/test_challenge_token_family.py` |
+| Settings and startup implications (§7) | `auth_user_service/core/config.py` |
+| Login-method route guards (§7) | `auth_user_service/core/deps.py` |
+| Rollout report (§5.9) | `auth_user_service/services/security_preflight.py` |
 
 ## 1. Decisions
 
@@ -224,8 +228,19 @@ Settings belong to the service `Settings`, never to the `auth-sdk-m8`
 | `PASSWORD_RESET_TTL_MINUTES` | `30` | 5 – 30. |
 | `EMAIL_CHANGE_TTL_MINUTES` | `60` | 10 – 60. |
 | `UNVERIFIED_SIGNUP_EXPIRY_DAYS` | `7` | 1 – 30. |
-| `MAIL_RECIPIENT_COOLDOWN_SECONDS` | `60` | Per recipient address. |
-| `MAIL_RECIPIENT_DAILY_CAP` | `10` | Per recipient address, rolling 24 h. |
+| `MAIL_RECIPIENT_COOLDOWN_SECONDS` | `60` | 10 – 3600. Per recipient address. |
+| `MAIL_RECIPIENT_DAILY_CAP` | `10` | 1 – 100. Per recipient address, rolling 24 h. |
+| `SMTP_TIMEOUT_SECONDS` | `10` | Above 0, at most 60. Bounds the connection and each SMTP command. |
+| `ACCOUNT_ACTION_RATE_LIMIT_WINDOW_MINUTES` | `15` | 1 – 1440. Window of the two limits below. |
+| `ACCOUNT_ACTION_IP_RATE_LIMIT_REQUESTS` | `20` | 1 – 100000. Per client IP, across the unauthenticated account routes. |
+| `ACCOUNT_ACTION_EMAIL_RATE_LIMIT_REQUESTS` | `5` | 1 – 1000. Per normalized email, across the same routes. |
+
+`PUBLIC_SIGNUP_ALLOWED_EMAIL_DOMAINS` is a comma-separated list of plain domain
+names (lower-cased, exact match, no wildcard). `PUBLIC_UI_URL` is an absolute
+`http(s)` URL with a host and no credentials, query, or fragment; a trailing
+`/` is dropped. `SMTP_USER` and `SMTP_PASSWORD` stay out of the settings debug
+dump and refuse the `changethis` placeholder. There is no setting that turns
+certificate or hostname verification off.
 
 Startup fails, with a message that names no secret, when:
 
@@ -237,7 +252,20 @@ Startup fails, with a message that names no secret, when:
 - mail is on and `PUBLIC_UI_URL` is not HTTPS, unless `ENVIRONMENT=local`;
 - mail is on and `ALLOWED_HOSTS` is empty;
 - `SMTP_TLS_MODE=none` outside `ENVIRONMENT=local`;
+- only one of `SMTP_USER` and `SMTP_PASSWORD` is set;
 - `GOOGLE_OAUTH_ENABLED=true` without both Google credentials.
+
+The two login flags also close existing routes. With
+`PASSWORD_LOGIN_ENABLED=false`, `POST /login/access-token` answers
+`404 feature_unavailable` before any work. With Google off, every route under
+`/google-api/` and `/google-auth/` does the same. Refresh, logout, and the other
+session routes stay open, so sessions already issued keep working until they
+expire or are revoked.
+
+The read-only security preflight reports the rollout risks under the
+configured settings: the number of active, unverified password accounts (all
+and superusers), and every active superuser that no enabled login method admits.
+Both are warnings; they never change the preflight's exit code.
 
 With every new setting at its default, the service behaves as `2.2.3`, apart
 from the documented `2.2.4` security fixes.
