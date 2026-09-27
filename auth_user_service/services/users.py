@@ -15,9 +15,10 @@ from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 # is_superuser (server-derived) nor is_active (an authorization-state transition
 # owned exclusively by the route-owned transaction in ``services.role_admin``,
 # which must revoke sessions/keys under the superuser-set lock — never a bare
-# field write here).
+# field write here) nor the password: a password mutation revokes every session,
+# so only the password mutation service (``services.password``) writes it (A4).
 _ADMIN_UPDATE_FIELDS: frozenset[str] = frozenset(
-    {"email", "full_name", "avatar", "role", "oauth_user_id", "hashed_password"}
+    {"email", "full_name", "avatar", "role", "oauth_user_id"}
 )
 
 
@@ -140,16 +141,13 @@ class UserController:
 
         ``is_active`` is intentionally not in the allowlist — activation
         transitions are authorization-state changes owned by the route-owned
-        transaction, never a bare field write here.
+        transaction, never a bare field write here. Neither is ``password``: the
+        route-owned transaction applies it through the password mutation
+        service, which enforces the provider policy and revokes (A4).
         """
         previous_role = db_user.role
         user_data = user_in.model_dump(exclude_unset=True)
-        extra_data: dict[str, Any] = {}
-        if "password" in user_data:
-            extra_data["hashed_password"] = SecurityHelper.get_password_hash(
-                user_data["password"]
-            )
-        for field, value in {**user_data, **extra_data}.items():
+        for field, value in user_data.items():
             if field in _ADMIN_UPDATE_FIELDS:
                 setattr(db_user, field, value)
         # Re-derive the privilege flag from the (possibly updated) role, outside

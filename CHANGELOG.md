@@ -17,9 +17,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 Account-security patch, part one: Google login is bound to the Google identity
-and to the account state (`S1`, findings `N1` and `N2`), and the gaps found
-reviewing it are closed (`S1A`, findings `N3` re-auth part and `N16`–`N23`).
-No route is added and `CONTRACT_VERSION` stays `"2.0"`.
+and to the account state (`S1`, findings `N1` and `N2`), the gaps found
+reviewing it are closed (`S1A`, findings `N3` re-auth part and `N16`–`N23`),
+and every password mutation revokes the account's sessions (`A4`, finding
+`ACCT-G5`). No route is added and `CONTRACT_VERSION` stays `"2.0"`.
 `PATCH /profile/update/me/` gains one optional request field,
 `current_password`. One table is added, `auth_identity_block`, by an additive
 revision in each tracked compose migration chain; nothing reads it before the
@@ -86,6 +87,26 @@ new code runs, so it can be applied ahead of the rollout.
   details; the exception type and the upstream status go to the server log
   only. A missing `id_token` keeps its own `400` instead of being rewrapped as
   a `500`.
+- **A password change signs every session out** (`ACCT-G5`, decision `D-c`).
+  `PATCH /profile/me/password/` replaced the hash and left every session and
+  refresh token alive, so a thief holding a session kept it after the owner
+  changed the password. The change now bumps `auth_generation`, revokes every
+  session — the caller's included — and enqueues the durable outbox effects,
+  in the same transaction as the new hash. It is logged as
+  `event=password.changed user_id=<id> actor=self` (never the password or the
+  hash).
+- **An administrator's password set revokes too.** A `password` sent to
+  `PATCH /users/update/{user_id}/` was hashed and saved with no generation bump
+  and no revocation. It now counts as an authorization transition like a role
+  or email change: the target's sessions are revoked, the response reports
+  `revocation_enqueued: true`, and the existing `edit` audit row is written,
+  plus an `event=password.changed … actor=admin actor_id=<id>` log line.
+- **A Google account has no password to change or set.** Both routes now
+  answer `403` (`Password operations are not available for this account`) for
+  an account whose stored provider is not PASSWORD. The admin route used to
+  trust the client-supplied `provider` field, so omitting it let an
+  administrator give a Google account a password. Every password write of an
+  existing account now goes through one service, `services/password.py`.
 
 ### Changed
 
@@ -105,6 +126,12 @@ new code runs, so it can be applied ahead of the rollout.
   and signs the caller out when it applies.** A client that changes the email
   must send the password and then sign in again; its session is revoked like
   after an expiry.
+- **Behavior change: `PATCH /profile/me/password/` signs the caller out when
+  it applies.** The response is still `200` with the same message. The access
+  token stops working once the revocation propagates (stateful mode) or when
+  it expires (hybrid mode), and the refresh is refused at once, so the client
+  signs in again with the new password, as after an expiry. A GOOGLE account now gets
+  `403` instead of `400 Incorrect password`.
 - **Behavior change: a refused Google callback redirects** (`N21`). The
   callback is a top-level navigation from Google, so a refusal or an exchange
   failure ended on a raw JSON page on the API origin. When the OAuth session

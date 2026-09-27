@@ -20,11 +20,11 @@ from auth_user_service.db_models.sessions import ClientSession
 from auth_user_service.db_models.users import User, UserUpdate, UserUpdateMe
 from auth_user_service.services import profile as profile_module
 from auth_user_service.services.generation import GenerationController
+from auth_user_service.services.password import IncorrectCurrentPassword
 from auth_user_service.services.profile import (
     CurrentPasswordRequired,
     EmailAlreadyInUse,
     EmailChangeNotAllowed,
-    IncorrectCurrentPassword,
     ProfileController,
 )
 from auth_user_service.services.role_admin import change_user_authorization

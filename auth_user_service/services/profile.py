@@ -27,7 +27,8 @@ from auth_sdk_m8.schemas.base import AuthProviderType
 from auth_user_service.db_models.outbox import RevocationOutbox
 from auth_user_service.db_models.users import User, UserUpdateMe
 from auth_user_service.services.auth import AuthController
-from auth_user_service.services.role_admin import (
+from auth_user_service.services.password import IncorrectCurrentPassword
+from auth_user_service.services.revocation import (
     record_enqueued_metrics,
     revoke_and_enqueue_authorization_change,
 )
@@ -50,10 +51,6 @@ class EmailChangeNotAllowed(ProfileUpdateError):
 
 class CurrentPasswordRequired(ProfileUpdateError):
     """An email change arrived without ``current_password``. Mapped to ``400``."""
-
-
-class IncorrectCurrentPassword(ProfileUpdateError):
-    """``current_password`` did not match. Mapped to ``400``."""
 
 
 class EmailAlreadyInUse(ProfileUpdateError):
@@ -89,7 +86,8 @@ class ProfileController:
     ) -> ProfileUpdateResult:
         """Apply an allowlisted self-service update, committing once.
 
-        Raises a :class:`ProfileUpdateError` subclass when the email change is
+        Raises a :class:`ProfileUpdateError` subclass, or the password
+        service's :class:`IncorrectCurrentPassword`, when the email change is
         refused; nothing is written in that case.
         """
         # ``email`` is non-nullable, so an explicit null means "unchanged".

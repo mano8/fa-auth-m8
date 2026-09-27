@@ -145,8 +145,10 @@ class TestUpdateUser:
 
         assert updated.full_name == "New Name"
 
-    def test_update_password_rehashes(self, db_session, sample_user):
+    def test_update_never_writes_the_password(self, db_session, sample_user):
+        """Only the password mutation service writes a password (A4)."""
         old_hash = sample_user.hashed_password
+        start = sample_user.auth_generation
         update = UserUpdate(
             provider=AuthProviderType.PASSWORD,
             password="newpassword123",
@@ -158,7 +160,19 @@ class TestUpdateUser:
             user_in=update,
         )
 
-        assert updated.hashed_password != old_hash
+        assert updated.hashed_password == old_hash
+        assert updated.auth_generation == start
+
+    def test_hashed_password_is_not_an_admin_update_field(
+        self, db_session, sample_user
+    ):
+        user_in = MagicMock()
+        user_in.model_dump.return_value = {"hashed_password": "injected"}
+        old_hash = sample_user.hashed_password
+
+        UserController.apply_user_update(db_user=sample_user, user_in=user_in)
+
+        assert sample_user.hashed_password == old_hash
 
     def test_update_without_password_preserves_hash(self, db_session, sample_user):
         old_hash = sample_user.hashed_password

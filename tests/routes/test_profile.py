@@ -263,6 +263,8 @@ _NEW_PASS = "newpassword12"
 
 
 class TestUpdatePasswordMe:
+    """The route maps the password mutation service (A4) to HTTP answers."""
+
     def test_db_user_not_found_raises_404(self, sample_user) -> None:
         session = _mock_session(db_user=None)
         body = UpdatePassword(current_password=_PASS, new_password=_NEW_PASS)
@@ -270,47 +272,61 @@ class TestUpdatePasswordMe:
             update_password_me(session=session, body=body, current_user=sample_user)
         assert exc.value.status_code == 404
 
-    def test_wrong_password_raises_400(self, sample_user) -> None:
-        session = _mock_session(db_user=sample_user)
+    def test_wrong_password_raises_400(self, db_session, sample_user) -> None:
         body = UpdatePassword(current_password=_PASS, new_password=_NEW_PASS)
-        with patch("auth_user_service.routes.profile.SecurityHelper") as mock_sec:
-            mock_sec.verify_password.return_value = False
-            with pytest.raises(HTTPException) as exc:
-                update_password_me(session=session, body=body, current_user=sample_user)
+        with pytest.raises(HTTPException) as exc:
+            update_password_me(session=db_session, body=body, current_user=sample_user)
         assert exc.value.status_code == 400
+        assert exc.value.detail == "Incorrect password"
 
-    def test_same_password_raises_400(self, sample_user) -> None:
-        session = _mock_session(db_user=sample_user)
-        body = UpdatePassword(current_password=_PASS, new_password=_PASS)
-        with patch("auth_user_service.routes.profile.SecurityHelper") as mock_sec:
-            mock_sec.verify_password.return_value = True
-            with pytest.raises(HTTPException) as exc:
-                update_password_me(session=session, body=body, current_user=sample_user)
+    def test_same_password_raises_400(self, db_session, sample_user) -> None:
+        body = UpdatePassword(
+            current_password=TEST_PASSWORD, new_password=TEST_PASSWORD
+        )
+        with pytest.raises(HTTPException) as exc:
+            update_password_me(session=db_session, body=body, current_user=sample_user)
         assert exc.value.status_code == 400
+        assert "same" in exc.value.detail
 
-    def test_success(self, sample_user) -> None:
-        session = _mock_session(db_user=sample_user)
-        body = UpdatePassword(current_password=_PASS, new_password=_NEW_PASS)
-        with patch("auth_user_service.routes.profile.SecurityHelper") as mock_sec:
-            mock_sec.verify_password.return_value = True
-            mock_sec.get_password_hash.return_value = "new_hashed"
-            result = update_password_me(
-                session=session, body=body, current_user=sample_user
-            )
+    def test_google_account_raises_403(self, db_session, google_user) -> None:
+        body = UpdatePassword(current_password=TEST_PASSWORD, new_password=_NEW_PASS)
+        with pytest.raises(HTTPException) as exc:
+            update_password_me(session=db_session, body=body, current_user=google_user)
+        assert exc.value.status_code == 403
+        db_session.refresh(google_user)
+        assert google_user.hashed_password is None
+
+    def test_success_revokes_every_session(
+        self, db_session, sample_user, sample_client_session
+    ) -> None:
+        generation = sample_user.auth_generation
+        body = UpdatePassword(current_password=TEST_PASSWORD, new_password=_NEW_PASS)
+
+        result = update_password_me(
+            session=db_session, body=body, current_user=sample_user
+        )
+
         assert "Password" in result.message
+        db_session.refresh(sample_user)
+        assert sample_user.auth_generation == generation + 1
+        remaining = db_session.exec(
+            select(ClientSession).where(ClientSession.user_id == sample_user.id)
+        ).all()
+        assert remaining == []
 
     def test_generic_exception_delegated(self, sample_user) -> None:
         session = _mock_session(db_user=sample_user)
-        session.commit.side_effect = RuntimeError("db exploded")
         body = UpdatePassword(current_password=_PASS, new_password=_NEW_PASS)
         with (
-            patch("auth_user_service.routes.profile.SecurityHelper") as mock_sec,
+            patch(
+                "auth_user_service.routes.profile.PasswordController"
+                ".change_own_password",
+                side_effect=RuntimeError("db exploded"),
+            ),
             patch(
                 "auth_user_service.routes.profile.handle_route_exception"
             ) as mock_handle,
         ):
-            mock_sec.verify_password.return_value = True
-            mock_sec.get_password_hash.return_value = "hashed"
             mock_handle.return_value = MagicMock()
             update_password_me(session=session, body=body, current_user=sample_user)
         mock_handle.assert_called_once()

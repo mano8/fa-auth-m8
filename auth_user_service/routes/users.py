@@ -5,6 +5,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import func, select
 from auth_user_service.services.users import UserController
+from auth_user_service.services.password import (
+    PASSWORD_NOT_ALLOWED_DETAIL,
+    PasswordNotAllowed,
+)
 from auth_user_service.services.role_admin import (
     LastSuperuserError,
     SelfPromotionError,
@@ -195,6 +199,9 @@ def update_current_user(
     The revocation side effects are enqueued to the durable outbox in the same
     transaction; the response returns ``200`` with the updated user plus
     ``auth_generation`` and ``revocation_enqueued`` once it commits (3.5.2).
+    A new ``password`` goes through the password mutation service: refused
+    (``403``) for an account that does not sign in with a password, and
+    applied as a transition that revokes every session (A4).
     """
     try:
         db_user = session.get(User, user_id)
@@ -233,6 +240,11 @@ def update_current_user(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="last_superuser_required",
+        ) from ex
+    except PasswordNotAllowed as ex:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=PASSWORD_NOT_ALLOWED_DETAIL,
         ) from ex
     except Exception as ex:
         return handle_route_exception(ex=ex, session=session)

@@ -135,7 +135,7 @@ All routes are prefixed with `API_PREFIX` (default `/user`).
 | google-auth | GET | `/google-auth/oauth-callback/` | — | Google OAuth2 PKCE callback — exchange code, create/update user |
 | profile | GET | `/profile/get/me/` | JWT | Read own profile |
 | profile | PATCH | `/profile/update/me/` | JWT | Update own profile (`email`, `full_name`, `avatar` only — explicit allowlist) |
-| profile | PATCH | `/profile/me/password/` | JWT | Change own password |
+| profile | PATCH | `/profile/me/password/` | JWT | Change own password (PASSWORD accounts only; revokes every session, the caller's included) |
 | profile | DELETE | `/profile/delete/me/` | JWT | Delete own account (cascades to the user's sessions, API keys, and rate-limit rows) |
 | api-keys | GET | `/profile/api-keys/verify` | X-API-Key | Validate key header, enforce rate limits, return key metadata |
 | api-keys | POST | `/profile/api-keys/` | JWT | Create API key — plaintext returned once, never stored. Optional `access_mode` (`read_only`/`read_write`) and `audiences` (introspection consumer ids) are fixed at issuance (§3.11–§3.12); `409` on an invalid/ineligible audience |
@@ -961,6 +961,24 @@ as an identity change:
 An administrator's email change through `PATCH /users/update/{user_id}/` also clears
 `email_verified` and revokes, and its response reports `revocation_enqueued: true`. Re-sending the
 current address is not a change.
+
+### Password change
+
+Every write of an existing account's password goes through one service (`services/password.py`):
+
+- only a PASSWORD account has a password. `PATCH /profile/me/password/` and a `password` sent to
+  `PATCH /users/update/{user_id}/` both answer `403` for a GOOGLE account; the stored provider
+  decides, never a `provider` field in the request;
+- `PATCH /profile/me/password/` checks `current_password` with constant work (`400` when it is
+  wrong, or when the new password equals it);
+- an applied change bumps `auth_generation` and revokes every session — the caller's included —
+  with the durable outbox effects, in the same transaction as the new hash. The response stays
+  `200`. The refresh is refused at once, and the access token stops working once the revocation
+  propagates (stateful mode) or when it expires (hybrid mode); the client signs in again with the
+  new password;
+- the change is logged as `event=password.changed user_id=<id> actor=self|admin` (never the
+  password or the hash). An administrator's set also writes the privileged-action `edit` audit row,
+  and its response reports `revocation_enqueued: true`.
 
 ### Account deletion and Google identities
 

@@ -39,8 +39,6 @@ from auth_sdk_m8.authorization import has_minimum_role, has_superuser_privileges
 from auth_sdk_m8.schemas.base import AuthProviderType, RoleType
 
 from auth_user_service.db_models.outbox import (
-    EFFECT_BLACKLIST,
-    EFFECT_PUBLISH,
     RevocationOutbox,
 )
 from auth_user_service.db_models.privileged_action_audit import AuditAction
@@ -50,15 +48,21 @@ from auth_user_service.db_models.security_policy import (
     SecurityPolicy,
 )
 from auth_user_service.db_models.users import User, UserUpdate
-from auth_user_service.services import outbox_metrics
 from auth_user_service.services.api_keys import ApiKeyService
 from auth_user_service.services.client_sessions import (
-    RevocationTarget,
     SessionController,
 )
 from auth_user_service.services.generation import GenerationController
 from auth_user_service.services.identity_blocks import IdentityBlockController
 from auth_user_service.services.outbox import OutboxController
+from auth_user_service.services.password import (
+    apply_new_password,
+    log_password_changed,
+)
+from auth_user_service.services.revocation import (
+    record_enqueued_metrics,
+    revoke_and_enqueue_authorization_change,
+)
 from auth_user_service.services.users import UserController, _derive_is_superuser
 
 
@@ -199,13 +203,6 @@ def _lock_user_row(session: Session, user: User) -> None:
     session.exec(select(User).where(col(User.id) == user.id).with_for_update()).first()
 
 
-def record_enqueued_metrics(rows: list[RevocationOutbox]) -> None:
-    """Count the enqueued effects by type after the transaction commits."""
-    blacklist = sum(1 for row in rows if row.effect_type == EFFECT_BLACKLIST)
-    outbox_metrics.record_enqueued(EFFECT_BLACKLIST, blacklist)
-    outbox_metrics.record_enqueued(EFFECT_PUBLISH, len(rows) - blacklist)
-
-
 @dataclass(frozen=True)
 class _UpdateIntent:
     """The classified intent of one admin user update.
@@ -291,27 +288,6 @@ def _enforce_last_superuser_invariant(
         raise LastSuperuserError("last_superuser_required")
 
 
-def revoke_and_enqueue_authorization_change(
-    session: Session, db_user: User
-) -> list[RevocationOutbox]:
-    """Bump the generation, drop the user's sessions, and enqueue the side effects.
-
-    Records the Redis blacklist + user-wide v2 event as durable outbox rows
-    committed atomically with the DB revocation; a post-commit worker drains them
-    (3.5.2). This replaces the best-effort post-commit push on the role-change
-    path — the database delete is already authoritative (3.5.4).
-    """
-    new_generation = GenerationController.bump_user_generation(db_user)
-    targets: list[RevocationTarget]
-    targets, _ = SessionController.capture_and_delete_user_sessions(session, db_user.id)
-    return OutboxController.enqueue_role_change_effects(
-        session,
-        user_id=db_user.id,
-        auth_generation=new_generation,
-        targets=targets,
-    )
-
-
 def change_user_authorization(
     *,
     session: Session,
@@ -328,8 +304,11 @@ def change_user_authorization(
     revoked, and the revocation side effects enqueued to the durable outbox on any
     authorization transition, and the owner's API keys are revoked on
     deactivation — all committed once. An applied email change counts as such a
-    transition and also clears ``email_verified`` (S1A). Any other profile update
-    takes no lock and revokes nothing. Returns an :class:`AuthorizationChangeResult` carrying the
+    transition and also clears ``email_verified`` (S1A). A new ``password`` is
+    applied through the password mutation service (A4): it is refused for a
+    non-PASSWORD account (``PasswordNotAllowed``, nothing written) and, when
+    applied, counts as a transition too. Any other profile update takes no lock
+    and revokes nothing. Returns an :class:`AuthorizationChangeResult` carrying the
     refreshed user, its current generation, and whether revocation was enqueued.
 
     A single ``edit`` privileged-action audit row is written **in this
@@ -347,6 +326,10 @@ def change_user_authorization(
         _enforce_last_superuser_invariant(session, db_user, intent)
 
     previous_email = db_user.email
+    password_changed = user_in.password is not None
+    if user_in.password is not None:
+        # The stored provider decides, never the client-supplied ``provider``.
+        apply_new_password(db_user, user_in.password)
     outcome = UserController.apply_user_update(db_user=db_user, user_in=user_in)
     if intent.active_requested:
         db_user.is_active = intent.intended_active
@@ -357,7 +340,10 @@ def change_user_authorization(
         db_user.email_verified = False
 
     authorization_changed = (
-        outcome.role_changed or intent.activation_changed or email_changed
+        outcome.role_changed
+        or intent.activation_changed
+        or email_changed
+        or password_changed
     )
 
     enqueued: list[RevocationOutbox] = []
@@ -385,6 +371,8 @@ def change_user_authorization(
 
     if authorization_changed:
         record_enqueued_metrics(enqueued)
+    if password_changed:
+        log_password_changed(db_user, actor_id=actor_id)
     return AuthorizationChangeResult(
         user=db_user,
         auth_generation=db_user.auth_generation,

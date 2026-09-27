@@ -4,7 +4,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from auth_user_service.core.deps import CurrentUser, SessionDep
-from auth_user_service.core.security import SecurityHelper
 from auth_user_service.db_models.users import (
     UpdatePassword,
     User,
@@ -13,11 +12,17 @@ from auth_user_service.db_models.users import (
 )
 from auth_user_service.events import EVENT_USER_DELETED, emit
 from auth_user_service.schemas.user import ResponseUser
+from auth_user_service.services.password import (
+    PASSWORD_NOT_ALLOWED_DETAIL,
+    IncorrectCurrentPassword,
+    PasswordController,
+    PasswordNotAllowed,
+    PasswordUnchanged,
+)
 from auth_user_service.services.profile import (
     CurrentPasswordRequired,
     EmailAlreadyInUse,
     EmailChangeNotAllowed,
-    IncorrectCurrentPassword,
     ProfileController,
 )
 from auth_user_service.services.role_admin import delete_user_account
@@ -86,24 +91,31 @@ def update_password_me(
 ) -> Any:
     """
     Update own password.
+
+    Refused for an account that does not sign in with a password (GOOGLE). An
+    applied change bumps ``auth_generation`` and revokes every session, this
+    one included, so the client signs in again with the new password (``D-c``).
     """
     try:
         db_user = session.get(User, current_user.id)
         if db_user is None:
             raise HTTPException(status_code=404, detail="User not found")
-        if not db_user.hashed_password or not SecurityHelper.verify_password(
-            body.current_password, db_user.hashed_password
-        ):
-            raise HTTPException(status_code=400, detail="Incorrect password")
-        if body.current_password == body.new_password:
-            raise HTTPException(
-                status_code=400,
-                detail="New password cannot be the same as the current one",
-            )
-        db_user.hashed_password = SecurityHelper.get_password_hash(body.new_password)
-        session.add(db_user)
-        session.commit()
+        PasswordController.change_own_password(
+            session,
+            db_user,
+            current_password=body.current_password,
+            new_password=body.new_password,
+        )
         return Message(message="Password updated successfully")
+    except PasswordNotAllowed as ex:
+        raise HTTPException(status_code=403, detail=PASSWORD_NOT_ALLOWED_DETAIL) from ex
+    except IncorrectCurrentPassword as ex:
+        raise HTTPException(status_code=400, detail="Incorrect password") from ex
+    except PasswordUnchanged as ex:
+        raise HTTPException(
+            status_code=400,
+            detail="New password cannot be the same as the current one",
+        ) from ex
     except HTTPException:
         raise
     except Exception as ex:

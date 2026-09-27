@@ -39,7 +39,7 @@ from auth_user_service.services.client_sessions import SessionController
 from auth_user_service.services.generation import GenerationController
 from auth_user_service.services.google_link_report import GoogleLinkReportController
 from auth_user_service.services.outbox import OutboxController
-from auth_user_service.services.role_admin import record_enqueued_metrics
+from auth_user_service.services.revocation import record_enqueued_metrics
 
 
 class RemediationScope(str, Enum):
