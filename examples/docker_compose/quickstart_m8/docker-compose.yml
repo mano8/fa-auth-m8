@@ -198,6 +198,27 @@ services:
     networks:
       - m8_app_network
 
+  # Optional local mail catcher, only with `--profile mail`. It accepts every
+  # message on mailpit:1025 inside the network and delivers nothing onward.
+  # Its web UI is on loopback only (http://127.0.0.1:8025): the messages carry
+  # live account tokens, so never publish it. Settings: README "Local mail with
+  # Mailpit".
+  mailpit:
+    image: axllent/mailpit:v1.31.3
+    profiles: ["mail"]
+    ports:
+      - "127.0.0.1:8025:8025"
+    environment:
+      - MP_MAX_MESSAGES=500
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+    networks:
+      - m8_app_network
+
 networks:
   m8_app_network:
     driver: bridge

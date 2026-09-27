@@ -1049,6 +1049,15 @@ tokens, error shapes, settings, and compatibility — is
 (see [Account lifecycle and mail](#account-lifecycle-and-mail)), but none of these routes is
 served yet.
 
+The mail pieces exist but nothing sends yet. There is an SMTP transport and an in-memory fake
+for tests (`core/mail_transport.py`), and the seven account messages in English, Spanish, and
+French with an English fallback (`services/mail_templates.py`). `services/mailer.py` builds
+each message from configuration only: the headers from `EMAILS_FROM_*` and the validated
+recipient, and the links from `PUBLIC_UI_URL` with the token in the URL fragment. With
+`MAIL_ENABLED=false`, no transport is built and no SMTP server is needed. To catch the mail
+locally, the `quickstart_m8` stack has an optional Mailpit profile: see its README,
+*Local mail with Mailpit*.
+
 ---
 
 ## API Key Authentication

@@ -217,6 +217,25 @@ new code runs, so it can be applied ahead of the rollout.
   (all and superusers) and warns about any active superuser that no enabled
   login method admits. Its exit code still reflects role/flag mismatches
   only.
+- Account mail building blocks (`M1`), not wired to any route yet, so no
+  behavior change. `core/mail_transport.py` holds an SMTP transport
+  (`implicit` or `starttls` TLS with the certificate and hostname verified; a
+  missing or failed STARTTLS is fatal, never a plaintext fallback; one timeout
+  bounds the connection and every command; optional authentication) and an
+  in-memory fake for tests. Failures raise `MailDeliveryError` with a bounded
+  reason and no server text. `services/mail_templates.py` holds the seven
+  account messages (verification, reset, reset completed, email change,
+  email changed, password changed, account already exists) as text and HTML
+  in English, Spanish, and French, with an English fallback.
+  `services/mailer.py` builds the headers from configuration and the validated
+  recipient only, and builds the links from `PUBLIC_UI_URL` with the token in
+  the URL fragment. With `MAIL_ENABLED=false` no transport is built.
+- `EMAILS_FROM_NAME` with a control character now fails startup, like
+  `SMTP_USER`, so it cannot inject a `From` header.
+- `quickstart_m8`: an optional Mailpit mail catcher (`--profile mail`). Its
+  web UI is on `127.0.0.1:8025` and its SMTP port stays inside the network.
+  `auth.env.example` has a commented *Local mail with Mailpit* block, and the
+  stack README explains it. Without the profile, the stack is unchanged.
 
 ---
 

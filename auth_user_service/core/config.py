@@ -7,7 +7,7 @@ import logging
 import re
 from datetime import timedelta
 from pathlib import Path
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Optional
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -17,6 +17,7 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -28,6 +29,7 @@ from auth_sdk_m8.schemas.auth import ASYMMETRIC_ALGORITHMS
 from auth_sdk_m8.schemas.base import AuthProviderType
 from auth_user_service.core.challenge_tokens import CHALLENGE_TTLS, ChallengePurpose
 from auth_user_service.core.key_ids import derive_kid, public_key_kind
+from auth_user_service.core.mail_transport import SmtpTlsMode
 from auth_user_service.schemas.account_lifecycle import EmailVerificationMode
 # pylint: disable=invalid-name, import-outside-toplevel
 
@@ -375,7 +377,7 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
     # failed upgrade is fatal, never a plaintext fallback. none: plaintext, only
     # under ENVIRONMENT=local. Certificates and hostnames are always verified;
     # there is deliberately no setting that turns verification off.
-    SMTP_TLS_MODE: Literal["implicit", "starttls", "none"] = "starttls"
+    SMTP_TLS_MODE: SmtpTlsMode = "starttls"
     # Bound on connecting to the SMTP server and on each command of a send.
     SMTP_TIMEOUT_SECONDS: float = Field(10.0, gt=0, le=60)
 
@@ -444,12 +446,18 @@ class Settings(ObservabilitySettingsMixin, CommonSettings):
             raise ValueError("PUBLIC_UI_URL must not contain a query or fragment")
         return v.rstrip("/")
 
-    @field_validator("SMTP_USER")
+    @field_validator("SMTP_USER", "EMAILS_FROM_NAME")
     @classmethod
-    def _validate_smtp_user(cls, v: Optional[str]) -> Optional[str]:
-        """Reject control characters, which could inject SMTP commands."""
+    def _reject_control_characters(
+        cls, v: Optional[str], info: ValidationInfo
+    ) -> Optional[str]:
+        """Reject control characters, which could inject SMTP commands or headers.
+
+        ``EMAILS_FROM_NAME`` is the SDK field, unchanged; the check is this
+        service's, because only this service puts it into a ``From`` header.
+        """
         if v is not None and any(ord(ch) < 32 or ord(ch) == 127 for ch in v):
-            raise ValueError("SMTP_USER must not contain control characters")
+            raise ValueError(f"{info.field_name} must not contain control characters")
         return v
 
     @property

@@ -17,6 +17,7 @@
 - [Port map](#port-map)
 - [Configuration reference](#configuration-reference)
 - [Google OAuth](#google-oauth-optional)
+- [Local mail with Mailpit](#local-mail-with-mailpit-optional)
 - [Volumes](#volumes)
 - [Database isolation](#database-isolation)
 - [Common operations](#common-operations)
@@ -54,6 +55,7 @@ Traefik is the single entry point. Both services run on the internal `m8_app_net
 | redis_cache | redis:8.8.0-alpine | `127.0.0.1:6379` |
 | auth_user_service | local build | via Traefik at `/user` |
 | fastapi_full | local build | via Traefik at `/fastapi` |
+| mailpit (profile `mail`, optional) | axllent/mailpit:v1.31.3 | `127.0.0.1:8025` (web UI); SMTP `mailpit:1025` inside the network only |
 
 ---
 
@@ -164,6 +166,7 @@ All requests go through Traefik. Use port `9000` (HTTP) during development:
 | `8080` | `127.0.0.1` | Traefik dashboard |
 | `3306` | `127.0.0.1` | MariaDB (use with any MySQL-compatible DB client) |
 | `6379` | `127.0.0.1` | Redis |
+| `8025` | `127.0.0.1` | Mailpit web UI (only with `--profile mail`) |
 
 ---
 
@@ -232,6 +235,43 @@ OAUTH_ALLOWED_REDIRECT_SCHEMES=chrome-extension://
 # OAUTH_ALLOWED_REDIRECT_PREFIXES=chrome-extension://your-extension-id.../
 CORS_ALLOWED_ORIGIN_SCHEMES=chrome-extension://
 ```
+
+---
+
+## Local mail with Mailpit (optional)
+
+Account mail is off by default and this stack needs no mail server. To see the account
+mail locally, run [Mailpit](https://mailpit.axllent.org/). It is a mail catcher: it accepts
+every message and delivers nothing onward. It starts only with the `mail` profile:
+
+```bash
+docker compose --profile mail up -d
+```
+
+In `auth.env`, uncomment the *Local mail with Mailpit* block, then recreate the service
+(`docker compose --profile mail up -d auth_user_service`):
+
+```ini
+MAIL_ENABLED=true
+SMTP_HOST=mailpit
+SMTP_PORT=1025
+SMTP_TLS_MODE=none
+EMAILS_FROM_EMAIL=no-reply@example.com
+PUBLIC_UI_URL=http://localhost:4321
+ALLOWED_HOSTS=localhost,127.0.0.1,auth_user_service
+```
+
+- `SMTP_TLS_MODE=none` is allowed only because this stack runs `ENVIRONMENT=local`. A
+  real relay uses `starttls` or `implicit`, with a verified certificate.
+- Mail requires a non-empty `ALLOWED_HOSTS`. List every host this stack reaches the
+  service by: Traefik (`localhost`), the `:9000` entry point (`127.0.0.1`), and the
+  consumer and healthcheck calls (`auth_user_service`).
+- `PUBLIC_UI_URL` is where the emailed links point: your UI's address.
+- Read the messages at <http://127.0.0.1:8025>. The web UI is bound to loopback only and
+  the SMTP port is not published. The messages contain live account tokens, so never
+  expose Mailpit beyond your machine, and never copy a message body into a log or ticket.
+
+Without the profile, Mailpit does not run and the stack is unchanged.
 
 ---
 

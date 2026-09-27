@@ -1,7 +1,7 @@
 # Account-lifecycle contract
 
-Status: **frozen** (C1, 2026-09-27; §7 amended by C2, 2026-09-27). Capability
-document version `1.0`.
+Status: **frozen** (C1, 2026-09-27; §7 amended by C2 and M1, 2026-09-27).
+Capability document version `1.0`.
 
 This document is the authority for the optional account-lifecycle features of
 `fa-auth-m8`: public signup, email verification, forgotten-password recovery,
@@ -20,6 +20,9 @@ a later item builds on:
 | Settings and startup implications (§7) | `auth_user_service/core/config.py` |
 | Login-method route guards (§7) | `auth_user_service/core/deps.py` |
 | Rollout report (§5.9) | `auth_user_service/services/security_preflight.py` |
+| Mail transport: SMTP and in-memory fake (§7) | `auth_user_service/core/mail_transport.py` |
+| Mail templates, EN/ES/FR (§4 delivery) | `auth_user_service/services/mail_templates.py` |
+| Mail composition: headers, fragment links (§4, §5.8) | `auth_user_service/services/mailer.py` |
 
 ## 1. Decisions
 
@@ -145,6 +148,23 @@ Consuming a verification challenge does not bump the generation. Consuming a
 reset or an email-change challenge does, through the revoking mutation below,
 so the account's other challenges die with it.
 
+**Mail messages.** There are seven. Three carry a link: verification, reset,
+and email change (sent to the new address). Four are notices without one:
+reset completed, email changed (sent to the old address), password changed,
+and "account already exists" (also used for "address already in use"). Each
+message is `multipart/alternative`, with a text part and an HTML part, in
+English, Spanish, or French; an unknown language gets English.
+
+- The subject is fixed text. It never carries a token, a name, or an address.
+- `From` comes from `EMAILS_FROM_EMAIL` and `EMAILS_FROM_NAME`. `To` is the
+  bare recipient address, with no display name. An address with a control
+  character, a space, or a non-ASCII character is refused before sending.
+- The account name is the only user-controlled value in a body. It is stripped
+  of control and format characters, capped at 100 characters, and HTML-escaped.
+- The token appears only in the link fragment, and only after it parses for
+  the message's purpose.
+- With mail disabled, no transport is built, so no SMTP server is needed.
+
 ## 5. Behavior rules
 
 1. **Mail is off by default.** `optional` or `required` verification, reset,
@@ -239,7 +259,9 @@ Settings belong to the service `Settings`, never to the `auth-sdk-m8`
 names (lower-cased, exact match, no wildcard). `PUBLIC_UI_URL` is an absolute
 `http(s)` URL with a host and no credentials, query, or fragment; a trailing
 `/` is dropped. `SMTP_USER` and `SMTP_PASSWORD` stay out of the settings debug
-dump and refuse the `changethis` placeholder. There is no setting that turns
+dump and refuse the `changethis` placeholder. `SMTP_USER` and
+`EMAILS_FROM_NAME` refuse control characters, so neither can inject an SMTP
+command or a header. There is no setting that turns
 certificate or hostname verification off.
 
 Startup fails, with a message that names no secret, when:
