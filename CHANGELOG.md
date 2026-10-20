@@ -14,6 +14,37 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.2.4] - 2026-10-20
+
+Security release. The shipped `requirements_prod.lock` pinned versions of
+PyJWT and urllib3 with advisories published after the last green image scan
+(2026-09-27); every PR's `trivy-image` job has failed on them since. No route,
+request or response shape moves. `SERVICE_VERSION` moves to `2.2.4`.
+
+### Security
+
+- **PyJWT `2.13.0` → `2.15.1`** in `auth_user_service/requirements_prod.lock`.
+  Fixes one critical and several high advisories in token verification,
+  including CVE-2026-102268, CVE-2026-102266 (empty HMAC key accepted),
+  CVE-2026-102267 (JWKS key substitution via redirects), CVE-2026-102271 and
+  CVE-2026-102273 (public keys accepted as HMAC secrets) and CVE-2026-102272
+  (BOM handling), plus PYSEC-2026-4141 and PYSEC-2026-4183, which are fixed
+  only in `2.15.0`.
+- **urllib3 `2.7.0` → `2.8.0`** in the same lock: CVE-2026-97687 (HTTPS proxy
+  TLS override) and CVE-2026-97689 (chunk-parser memory exhaustion).
+- **`PyJWT` floor raised to `>=2.15.0`** (was `>=2.13.0`) in
+  `auth_user_service/requirements_base.txt`, so a fresh resolve can no longer
+  pick a vulnerable release.
+
+The lock was edited surgically, not regenerated: both packages have identical
+dependency metadata across the move, and `redis` (the other PyJWT dependant)
+accepts `PyJWT>=2.9.0`. That makes this the complete diff a narrow
+`pip-compile --upgrade-package` would produce. The new hashes come from PyPI's
+JSON API. `examples/fastapi_full/requirements_prod.lock` already pins PyJWT
+`2.15.0` and does not ship urllib3, so it is unchanged.
+
+---
+
 ## [2.2.3] - 2026-09-22
 
 Dev-set drift repair — `B27-dev-set-drift-repair` of the workspace's
